@@ -5,9 +5,9 @@ import httpx
 from ipaddress import ip_address, ip_network
 from api.subscriptions import activate_subscription
 from api.db import update_payment_status, is_payment_processed, get_payment_status, get_payment_by_id, get_or_create_user, create_vpn_key, get_subscription_until, get_used_client_ips
-from api.wireguard import get_client_config, create_client,  generate_keypair, choose_client_ip, add_peer_via_wg_set
+from api.wireguard import AmneziaWGClient
 from bot.tariffs import TARIFFS
-from config import TELEGRAM_BOT_TOKEN, WG_CONF_PATH, WG_BIN, WG_INTERFACE
+from config import TELEGRAM_BOT_TOKEN, WG_CONF_PATH, WG_BIN, WG_INTERFACE, AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD
 from bot.bot import bot
 
 from aiogram.types import BufferedInputFile
@@ -106,25 +106,32 @@ async def yookassa_webhook(request: Request):
         # подписка до
         subscription_until = get_subscription_until(tg_id)
 
-        # информация по конфигу
-        created_client = create_client(tg_id)
-        client_ip = choose_client_ip()
-        client_config = get_client_config(created_client, client_ip)
+        # создание клиента через AmneziaWG API
+        wg_client = AmneziaWGClient(api_url=AMNEZIA_WG_API_URL, password=AMNEZIA_WG_API_PASSWORD)
 
-        # запись VPN ключа (один раз!)
-        create_vpn_key(
-            user_id=user_id,
-            payment_id=payment_id,
-            client_ip=client_ip,
-            client_public_key=public_key,
-            config=client_config,
-            expires_at=subscription_until
-        )
-        add_peer_via_wg_set(
-            interface=WG_INTERFACE,
-            client_public_key=public_key,
-            client_ip=client_ip,
-        )
+        # формирование имени клиента
+        client_name = f"user_{tg_id}_{subscription_until.strftime('%Y%m%d')}"
+
+        # асинхронно создаем клиента
+        client_data = await wg_client.create_client(name=client_name)
+
+        if client_data:
+            client_id = client_data.get('id')
+            client_ip = client_data.get('address')
+            client_public_key = client_data.get('publicKey')
+
+            # получаем конфигурацию клиента
+            client_config = await wg_client.get_client_config(client_id)
+
+            # запись VPN ключа (один раз!)
+            create_vpn_key(
+                user_id=user_id,
+                payment_id=payment_id,
+                client_ip=client_ip,
+                client_public_key=client_public_key,
+                config=client_config,
+                expires_at=subscription_until
+            )
 
     # ===== Идемпотентность =====
     if is_payment_processed(payment_id):
