@@ -5,7 +5,7 @@ import httpx
 from ipaddress import ip_address, ip_network
 from api.subscriptions import activate_subscription
 from api.db import update_payment_status, is_payment_processed, get_payment_status, get_payment_by_id, get_or_create_user, create_vpn_key, get_subscription_until, get_used_client_ips
-from api.wireguard import generate_client_config, generate_keypair, choose_client_ip, add_peer_via_wg_set
+from api.wireguard import get_client_config, create_client,  generate_keypair, choose_client_ip, add_peer_via_wg_set
 from bot.tariffs import TARIFFS
 from config import TELEGRAM_BOT_TOKEN, WG_CONF_PATH, WG_BIN, WG_INTERFACE
 from bot.bot import bot
@@ -107,9 +107,9 @@ async def yookassa_webhook(request: Request):
         subscription_until = get_subscription_until(tg_id)
 
         # информация по конфигу
-        private_key, public_key = generate_keypair()
+        created_client = create_client(tg_id)
         client_ip = choose_client_ip()
-        client_config = generate_client_config(private_key, client_ip)
+        client_config = get_client_config(created_client, client_ip)
 
         # запись VPN ключа (один раз!)
         create_vpn_key(
