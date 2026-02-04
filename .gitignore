@@ -1,0 +1,55 @@
+# Environment variables
+.env
+*.env
+!.env.example
+
+# Docker volumes and data
+docker/amneziawg/config/
+docker/amneziawg/amneziawg-data/
+mysql_data/
+redis_data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Database backups
+*.sql
+backups/
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+
+# Nginx
+.htpasswd
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+tmp/
+temp/
