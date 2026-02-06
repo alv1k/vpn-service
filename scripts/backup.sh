@@ -13,16 +13,16 @@ mkdir -p $BACKUP_DIR
 
 # Backup MySQL database
 echo "Backing up MySQL database..."
-docker exec vpn_mysql mysqldump -u vpn_admin -p$(grep MYSQL_PASSWORD $INSTALL_DIR/docker/amneziawg/.env | cut -d '=' -f2) vpn_service > $BACKUP_DIR/db_backup_$TIMESTAMP.sql
+docker exec vpn_mysql mysqldump -u vpn_admin -p$(grep MYSQL_PASSWORD $INSTALL_DIR/docker-config/.env | cut -d '=' -f2) vpn_service > $BACKUP_DIR/db_backup_$TIMESTAMP.sql
 
 # Backup WireGuard configs
 echo "Backing up WireGuard configs..."
-tar -czf $BACKUP_DIR/wg_configs_$TIMESTAMP.tar.gz -C $INSTALL_DIR/docker/amneziawg config/
+tar -czf $BACKUP_DIR/wg_configs_$TIMESTAMP.tar.gz -C $INSTALL_DIR/config/
 
 # Backup environment files
 echo "Backing up environment files..."
 tar -czf $BACKUP_DIR/env_files_$TIMESTAMP.tar.gz \
-    $INSTALL_DIR/docker/amneziawg/.env \
+    $INSTALL_DIR/docker-config/.env \
     $INSTALL_DIR/bot/.env
 
 # Remove backups older than 30 days

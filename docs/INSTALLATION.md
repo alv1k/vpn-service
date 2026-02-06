@@ -64,7 +64,7 @@ bash install.sh
 
 ### Docker (.env для AmneziaWG)
 ```bash
-nano ~/vpn-service/docker/amneziawg/.env
+nano ~/vpn-service/docker-config/.env
 ```
 
 Заполните:
@@ -95,7 +95,7 @@ BASE_URL=https://yourdomain.com
 
 ## Шаг 5: Запуск Docker контейнеров
 ```bash
-cd ~/vpn-service/docker/amneziawg
+cd ~/vpn-service
 docker-compose up -d
 
 # Проверка
@@ -187,6 +187,8 @@ curl https://yourdomain.com/health
 
 ### Docker контейнеры не запускаются
 ```bash
+# Убедитесь, что вы находитесь в корне проекта
+cd ~/vpn-service
 docker-compose logs
 ```
 
