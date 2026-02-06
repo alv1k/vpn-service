@@ -14,7 +14,7 @@ git pull
 
 # Update Docker containers
 echo "Updating Docker containers..."
-cd docker/amneziawg
+cd $INSTALL_DIR
 docker-compose pull
 docker-compose up -d
 

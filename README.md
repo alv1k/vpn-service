@@ -25,7 +25,7 @@
 curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/vpn-service/main/scripts/install.sh | bash
 
 # 2. Настроить переменные окружения
-nano ~/vpn-service/docker/amneziawg/.env
+nano ~/vpn-service/docker-config/.env
 nano ~/vpn-service/bot/.env
 
 # 3. Настроить SSL

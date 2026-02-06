@@ -70,6 +70,8 @@ async def amnezia_login(client: httpx.AsyncClient):
     r.raise_for_status()
 
 async def amnezia_create_client(client: httpx.AsyncClient, name: str):
+    client_data = await wg_client.create_client(name="user_123456789")
+
     r = await client.post(
         f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
         json={"name": name},
@@ -140,19 +142,31 @@ async def process_successful_payment(payment_id: str, payment_data: dict) -> boo
         # ===== 5. Работа с AmneziaWG =====
         async with httpx.AsyncClient(timeout=15) as client:
             # 5.1 Login
-            r = await client.post(
-                f"{AMNEZIA_WG_API_URL}/api/session",
-                json={"password": AMNEZIA_WG_API_PASSWORD},
-            )
-            r.raise_for_status()
+            # r = await client.post(
+            #     f"{AMNEZIA_WG_API_URL}/api/session",
+            #     json={"password": AMNEZIA_WG_API_PASSWORD},
+            # )
+            # r.raise_for_status()
 
             # 5.2 Create client
-            r = await client.post(
-                f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
-                # json={"name": client_name},
-                json={"name": "test555"},
+            # r = await client.post(
+            #     f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
+            #     # json={"name": client_name},
+            #     json={"name": "test555"},
+            # )
+            # r.raise_for_status()
+
+            
+            wg_client = AmneziaWGClient(
+                api_url="http://localhost:51821",
+                password="vtnfvjhajp03"
             )
-            r.raise_for_status()
+
+            # Создаем клиента
+            client_data = await wg_client.create_client(name="user_123456789")
+
+            logger.info(f"client_data: {client_data}")
+
 
             # 5.3 Получение client_id
             r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")

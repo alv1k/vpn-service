@@ -70,9 +70,9 @@ fi
 
 echo -e "${GREEN}Step 7: Setup environment files${NC}"
 # Docker environment
-if [ ! -f docker/amneziawg/.env ]; then
-    cp docker/amneziawg/.env.example docker/amneziawg/.env
-    echo -e "${YELLOW}Edit docker/amneziawg/.env with your settings${NC}"
+if [ ! -f docker-config/.env ]; then
+    cp docker-config/.env.example docker-config/.env
+    echo -e "${YELLOW}Edit docker-config/.env with your settings${NC}"
 fi
 
 # Bot environment
@@ -101,7 +101,7 @@ sudo sed -i "s|your_user|$USER|g" /etc/systemd/system/vpn-webhook.service
 sudo systemctl daemon-reload
 
 echo -e "${GREEN}Step 10: Start Docker containers${NC}"
-cd $INSTALL_DIR/docker/amneziawg
+cd $INSTALL_DIR
 docker-compose up -d
 
 echo -e "${GREEN}Step 11: Wait for MySQL to be ready${NC}"
@@ -112,7 +112,7 @@ echo -e "${GREEN}Installation completed!${NC}"
 echo ""
 echo "Next steps:"
 echo "1. Edit environment files:"
-echo "   - $INSTALL_DIR/docker/amneziawg/.env"
+echo "   - $INSTALL_DIR/docker-config/.env"
 echo "   - $INSTALL_DIR/bot/.env"
 echo ""
 echo "2. Configure domain and SSL:"
