@@ -1,0 +1,82 @@
+services:
+  amneziawg:
+    image: ghcr.io/imbtqd/amnezia-wg-easy:latest
+    container_name: amneziawg
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - PASSWORD=vtnfvjhajp03    # для веб-UI
+      - WG_HOST=91.132.161.112   # публичный IP сервера
+      - WG_PORT=51888                # UDP порт
+      - PORT=51821    
+      - WG_DEFAULT_ADDRESS=10.10.0.x
+      - WG_DEFAULT_DNS=1.1.1.1,8.8.8.8
+      - WG_ALLOWED_IPS=0.0.0.0/0
+      - WG_NETWORK=10.10.0.0/24
+      - DNS=1.1.1.1
+      - WG_PATH=/etc/amnezia/amneziawg
+      - WG_MTU=1280
+      - WG_PERSISTENT_KEEPALIVE=25
+      - UI_TRAFFIC_STATS=true
+    restart: unless-stopped
+    volumes:
+      - ./config:/etc/wireguard
+      - ./amneziawg-data:/app/data
+
+  mysql:
+    image: mysql:8.0
+    container_name: vpn_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: vpn
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../database/mysql-init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    networks:
+      - backend
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: phpmyadmin
+    environment:
+      PMA_HOST: vpn_mysql
+      PMA_PORT: 3306
+      PMA_USER: alvik
+      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      UPLOAD_LIMIT: 50M
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    networks:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    container_name: vpn_redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - backend
+
+volumes:
+  mysql_data:
+  redis_data:
+  amneziawg-data:
+
+networks:
+  backend:
+    driver: bridge

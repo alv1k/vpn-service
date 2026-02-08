@@ -142,30 +142,29 @@ async def process_successful_payment(payment_id: str, payment_data: dict) -> boo
         # ===== 5. Работа с AmneziaWG =====
         async with httpx.AsyncClient(timeout=15) as client:
             # 5.1 Login
-            # r = await client.post(
-            #     f"{AMNEZIA_WG_API_URL}/api/session",
-            #     json={"password": AMNEZIA_WG_API_PASSWORD},
-            # )
-            # r.raise_for_status()
+            r = await client.post(
+                f"{AMNEZIA_WG_API_URL}/api/session",
+                json={"password": AMNEZIA_WG_API_PASSWORD},
+            )
+            r.raise_for_status()
 
             # 5.2 Create client
-            # r = await client.post(
-            #     f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
-            #     # json={"name": client_name},
-            #     json={"name": "test555"},
-            # )
-            # r.raise_for_status()
+            r = await client.post(
+                f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
+                json={"name": client_name},
+            )
+            r.raise_for_status()
 
             
-            wg_client = AmneziaWGClient(
-                api_url="http://localhost:51821",
-                password="vtnfvjhajp03"
-            )
+            # wg_client = AmneziaWGClient(
+            #     api_url="http://localhost:51821",
+            #     password="vtnfvjhajp03"
+            # )
 
-            # Создаем клиента
-            client_data = await wg_client.create_client(name="user_123456789")
+            # # Создаем клиента
+            # client_data = await wg_client.create_client(name="user_123456789")
 
-            logger.info(f"client_data: {client_data}")
+            # logger.info(f"client_data: {client_data}")
 
 
             # 5.3 Получение client_id
@@ -186,7 +185,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict) -> boo
             if not client_id:
                 raise RuntimeError("Client ID not found after creation")
 
-            logger.info(f"✅ VPN client created: id={client_id}, ip={client_ip}")
+            logger.info(f"✅ VPN client created: client_id={client_id}, ip={client_ip}")
 
             # 5.4 Получение конфигурации
             r = await client.get(
@@ -231,9 +230,9 @@ async def process_successful_payment(payment_id: str, payment_data: dict) -> boo
                 f"📅 Активен до: {subscription_until:%d.%m.%Y}\n\n"
                 f"📱 Инструкция:\n"
                 f"1. Установите AmneziaVPN\n"
-                f"2. Импортируйте файл\n"
+                f"2. Импортируйте файл конфигурации\n"
                 f"3. Подключитесь\n\n"
-                f"💬 Поддержка: @your_support"
+                f"💬 Поддержка: @al_v1k"
             )
 
             await bot.send_document(
@@ -246,10 +245,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict) -> boo
 
         except Exception:
             logger.exception("⚠️ Failed to send config to Telegram")
-
-        # ===== 8. Идемпотентность =====
-        mark_payment_processed(payment_id)
-        logger.info(f"🎉 Payment {payment_id} fully processed")
 
         return True
 

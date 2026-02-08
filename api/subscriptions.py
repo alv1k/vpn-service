@@ -16,7 +16,7 @@ def activate_subscription(payment_id: str):
         raise ValueError(f"Unknown tariff: {tariff_id}")
 
     duration = timedelta(days=tariff["days"])
-    paid_at = payment["paid_at"] or payment["created_at"]
+    paid_at = payment["created_at"]
 
     user = get_user_by_tg_id(tg_id)
 
