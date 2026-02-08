@@ -64,7 +64,7 @@ curl -s -X GET \
   -o "$RESPONSE_FILE"
 
 echo "Клиенты до создания нового:"
-cat "$RESPONSE_FILE" | python -m json.tool || echo "Не удалось распарсить JSON"
+cat "$RESPONSE_FILE" | python3 -m json.tool || echo "Не удалось распарсить JSON"
 
 echo ""
 echo "3. Создание нового клиента..."
@@ -77,7 +77,7 @@ CREATE_RESPONSE=$(curl -s -X POST \
   -H "Content-Type: application/json" \
   -b "$COOKIES_FILE" \
   -d "{\"name\":\"$CLIENT_NAME\"}" \
-  "$API_URL/api/wireguard/client" \
+  "http://344988.snk.wtf:51821/api/wireguard/client" \
   -w "\nHTTP Status: %{http_code}" \
   -o "$RESPONSE_FILE")
 
@@ -89,7 +89,7 @@ CREATE_STATUS=$(curl -s -w "%{http_code}" -o /dev/null -X POST \
 
 if [ "$CREATE_STATUS" -eq 200 ]; then
     echo "✓ Клиент '$CLIENT_NAME' успешно создан"
-    CLIENT_ID=$(cat "$RESPONSE_FILE" | python -m json.tool | grep -o '"id":[^,}]*' | head -1 | cut -d'"' -f4)
+    CLIENT_ID=$(cat "$RESPONSE_FILE" | python3 -m json.tool | grep -o '"id":[^,}]*' | head -1 | cut -d'"' -f4)
     echo "ID клиента: $CLIENT_ID"
 else
     echo "✗ Ошибка создания клиента (HTTP $CREATE_STATUS)"
@@ -131,7 +131,7 @@ curl -s -X GET \
   -o "$RESPONSE_FILE"
 
 echo "Клиенты после создания нового:"
-cat "$RESPONSE_FILE" | python -m json.tool || echo "Не удалось распарсить JSON"
+cat "$RESPONSE_FILE" | python3 -m json.tool || echo "Не удалось распарсить JSON"
 
 echo ""
 echo "6. Удаление тестового клиента..."

@@ -1,0 +1,27 @@
+Правильная структура проекта:
+
+~/vpn-service/
+├── .gitignore
+├── README.md
+├── docker/
+│   ├── amneziawg/
+│   │   ├── docker-compose.yml  ← ЕДИНСТВЕННЫЙ docker-compose.yml!
+│   │   ├── .env                ← Конфиг для Docker
+│   │   ├── .env.example
+│   │   └── config/             ← Создается автоматически
+│   └── database/
+│       └── mysql-init/
+│           └── init.sql
+├── bot/
+│   ├── .env                    ← Конфиг для бота
+│   ├── .env.example
+│   ├── requirements.txt
+│   └── *.py
+└── scripts/
+    └── *.sh
+
+ВАЖНО:
+- docker-compose.yml ТОЛЬКО в docker/amneziawg/
+- В корне НЕ должно быть docker-compose.yml
+- В корне НЕ должно быть .env
+- В корне НЕ должно быть config/

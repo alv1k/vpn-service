@@ -1,7 +1,16 @@
+import sys
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# Абсолютный путь к .env внутри docker/amneziawg
+DOTENV_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),  # папка vpn-service
+    "docker", 
+    "amneziawg", 
+    ".env"
+)
+load_dotenv(DOTENV_PATH)
+
 
 YOO_KASSA_SHOP_ID = os.getenv("YOO_KASSA_SHOP_ID")
 YOO_KASSA_SECRET_KEY = os.getenv("YOO_KASSA_SECRET_KEY")

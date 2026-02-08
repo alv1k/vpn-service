@@ -53,3 +53,8 @@ Thumbs.db
 *.tmp
 tmp/
 temp/
+
+# Docker compose только в docker/amneziawg/
+/docker-compose.yml
+/.env
+/config/

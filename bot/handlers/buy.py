@@ -16,6 +16,7 @@ router = Router()
 
 Configuration.account_id = YOO_KASSA_SHOP_ID
 Configuration.secret_key = YOO_KASSA_SECRET_KEY
+
 YOOKASSA_URL = "https://api.yookassa.ru/v3/payments"
 
 @router.callback_query(F.data.startswith("buy_"))

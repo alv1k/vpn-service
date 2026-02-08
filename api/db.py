@@ -152,13 +152,17 @@ def get_or_create_user(tg_id: int) -> int:
     return user_id
 
 
-def create_vpn_key(user_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at):
+def create_vpn_key(user_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at): 
+    db = get_db()
+    cursor = db.cursor()
+
     cursor.execute(
         """
         INSERT INTO vpn_keys (user_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             payment_id = %s,
+            client_id = %s,
             client_name = %s,
             client_ip = %s,
             client_public_key = %s,
@@ -175,6 +179,7 @@ def create_vpn_key(user_id, payment_id, client_id, client_name, client_ip, clien
             config, 
             expires_at, 
             payment_id,
+            client_id,
             client_name,
             client_ip, 
             client_public_key, 
