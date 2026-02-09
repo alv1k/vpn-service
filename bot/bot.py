@@ -3,16 +3,19 @@ import sys
 import mysql.connector
 import asyncio
 import signal
+import json
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import CommandStart
 from io import BytesIO
-from config import TELEGRAM_BOT_TOKEN
+from config import TELEGRAM_BOT_TOKEN, XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH
 from api.db import get_db
 from .phrases import START_TEXT, TARIFF_INFO
 from .tariffs import TARIFFS
 from .handlers.buy import router as buy_router
 from .handlers.get_vpn import router as get_vpn_router
+from .utils_xui import XUIClient, generate_vless_link, format_bytes
+
 
 LOCK_FILE = "/tmp/vpn_bot.lock"
 
@@ -38,6 +41,13 @@ dp.include_router(buy_router)
 dp.include_router(get_vpn_router)
 
 
+# Инициализация XUI клиента
+xui = XUIClient(
+    os.getenv('XUI_HOST'),
+    os.getenv('XUI_USERNAME'),
+    os.getenv('XUI_PASSWORD')
+)
+
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     print("🔥 Start command detected!")
@@ -58,6 +68,24 @@ async def start_handler(message: Message):
         reply_markup=kb,
         parse_mode="Markdown"
     )
+
+    inbounds = xui.get_inbounds()
+    
+    if not inbounds:
+        await query.edit_message_text("❌ Конфиги не найдены")
+        return
+    
+    inbound = inbounds[0]  # Берем первый inbound
+    settings = json.loads(inbound.get('settings', '{}'))
+    clients = settings.get('clients', [])
+    
+    if not clients:
+        await query.edit_message_text("❌ Клиенты не найдены")
+        return
+    
+    client = clients[0]  # Первый клиент
+    uuid = client['id']
+    print('!!!uuid!!!', uuid)
 
 
 @router.message(F.text == "/myvpn")

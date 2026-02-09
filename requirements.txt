@@ -39,3 +39,5 @@ uvicorn==0.40.0
 wrapt==2.0.1
 yarl==1.22.0
 yookassa==3.9.0
+qrcode[pil]
+python-telegram-bot==20.7
