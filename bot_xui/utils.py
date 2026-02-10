@@ -49,6 +49,68 @@ class XUIClient:
                     }
         return None
 
+    def add_client(self, inbound_id, email, uuid, expiry_time=0, total_gb=0, limit_ip=2):
+        """Добавить клиента в inbound"""
+        import uuid as uuid_lib
+        import time
+        
+        # Формируем данные клиента
+        client_data = {
+            "id": inbound_id,
+            "settings": json.dumps({
+                "clients": [{
+                    "id": uuid,
+                    "email": email,
+                    "limitIp": limit_ip,
+                    "totalGB": total_gb,
+                    "expiryTime": expiry_time,
+                    "enable": True,
+                    "tgId": "",
+                    "subId": str(uuid_lib.uuid4()).replace('-', '')[:16],
+                    "reset": 0
+                }]
+            })
+        }
+        
+        try:
+            response = self.session.post(
+                f"{self.host}/panel/api/inbounds/addClient",
+                json=client_data,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            result = response.json()
+            return result.get('success', False)
+            
+        except Exception as e:
+            print(f"Error adding client: {e}")
+            return False
+
+    def delete_client(self, inbound_id, email):
+        """Удалить клиента"""
+        try:
+            response = self.session.post(
+                f"{self.host}/panel/api/inbounds/{inbound_id}/delClient/{email}",
+            )
+            result = response.json()
+            return result.get('success', False)
+        except Exception as e:
+            print(f"Error deleting client: {e}")
+            return False
+
+    def reset_client_traffic(self, inbound_id, email):
+        """Сбросить трафик клиента"""
+        try:
+            response = self.session.post(
+                f"{self.host}/panel/api/inbounds/{inbound_id}/resetClientTraffic/{email}",
+            )
+            result = response.json()
+            return result.get('success', False)
+        except Exception as e:
+            print(f"Error resetting traffic: {e}")
+            return False
+
+
 def generate_vless_link(uuid, domain, port, path, email="User"):
     """Генерация VLESS ссылки для WebSocket + TLS"""
     params = {
@@ -93,3 +155,5 @@ def format_bytes(bytes_value):
             return f"{bytes_value:.2f} {unit}"
         bytes_value /= 1024.0
     return f"{bytes_value:.2f} PB"
+
+
