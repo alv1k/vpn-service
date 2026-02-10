@@ -1,4 +1,7 @@
+version: "3.9"
+
 services:
+  # WireGuard контейнер — нужен host-сетевой режим
   amneziawg:
     image: ghcr.io/imbtqd/amnezia-wg-easy:latest
     container_name: amneziawg
@@ -9,9 +12,9 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
-      - PASSWORD=vtnfvjhajp03    # для веб-UI
-      - WG_HOST=91.132.161.112   # публичный IP сервера
-      - WG_PORT=51888                # UDP порт
+      - PASSWORD=vtnfvjhajp03
+      - WG_HOST=91.132.161.112
+      - WG_PORT=51888
       - PORT=51821    
       - WG_DEFAULT_ADDRESS=10.10.0.x
       - WG_DEFAULT_DNS=1.1.1.1,8.8.8.8
@@ -22,11 +25,17 @@ services:
       - WG_MTU=1280
       - WG_PERSISTENT_KEEPALIVE=25
       - UI_TRAFFIC_STATS=true
+      # MySQL хост для amneziawg — используем localhost
+      - MYSQL_HOST=127.0.0.1
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
     restart: unless-stopped
     volumes:
       - ./config:/etc/wireguard
       - ./amneziawg-data:/app/data
 
+  # MySQL контейнер на пользовательской сети
   mysql:
     image: mysql:8.0
     container_name: vpn_mysql
@@ -40,16 +49,32 @@ services:
       - ../database/mysql-init:/docker-entrypoint-initdb.d
     restart: unless-stopped
     command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3306:3306"
     networks:
-      - backend
+      - vpn_net
+  
+  # Бот подключается к MySQL по имени контейнера
+  bot:
+    build: 
+      context: ../../
+      dockerfile: bot_xui/Dockerfile
+    container_name: vpn_bot
+    depends_on:
+      - mysql
+    env_file:
+      - .env
+    networks:
+      - vpn_net
 
+  # PhpMyAdmin для MySQL
   phpmyadmin:
     image: phpmyadmin:latest
     container_name: phpmyadmin
     environment:
       PMA_HOST: vpn_mysql
       PMA_PORT: 3306
-      PMA_USER: alvik
+      PMA_USER: ${MYSQL_USER}
       PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       UPLOAD_LIMIT: 50M
     ports:
@@ -58,8 +83,9 @@ services:
       - mysql
     restart: unless-stopped
     networks:
-      - backend
+      - vpn_net
 
+  # Redis
   redis:
     image: redis:7-alpine
     container_name: vpn_redis
@@ -70,8 +96,9 @@ services:
       - redis_data:/data
     command: redis-server --appendonly yes
     networks:
-      - backend
+      - vpn_net
 
+  # X-UI контейнер — host-сеть для прямого доступа к портам
   x-ui:
     image: ghcr.io/mhsanaei/3x-ui:latest
     container_name: x-ui
@@ -91,5 +118,5 @@ volumes:
   amneziawg-data:
 
 networks:
-  backend:
+  vpn_net:
     driver: bridge
