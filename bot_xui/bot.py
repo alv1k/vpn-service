@@ -3,8 +3,10 @@ import os
 import json
 import logging
 import qrcode
+import uuid
 import sys
 sys.path.insert(0, '/home/alvik/vpn-service')
+from datetime import datetime, timedelta
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -12,6 +14,16 @@ from utils import XUIClient, generate_vless_link, format_bytes
 from io import BytesIO
 from dotenv import load_dotenv
 from bot.tariffs import TARIFFS
+from api.db import (
+    get_or_create_user,
+    create_payment,
+    update_payment_status,
+    get_payment_by_id,
+    upsert_user_subscription,
+    create_vpn_key,
+    get_subscription_until,
+    get_keys_by_tg_id
+)
 
 
 # Загрузка переменных окружения
@@ -32,6 +44,8 @@ xui = XUIClient(
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tg_id = update.effective_user.id
+    get_or_create_user(tg_id)  # ← связь с БД
     """Обработчик команды /start"""
     keyboard = [
         [InlineKeyboardButton("📊 Мои конфиги", callback_data='my_configs')],
@@ -74,7 +88,7 @@ async def back_to_menu(query):
     keyboard = [
         [InlineKeyboardButton("📊 Мои конфиги", callback_data='my_configs')],
         [InlineKeyboardButton("📈 Статистика", callback_data='stats')],
-        [InlineKeyboardButton("📊 Тарифы", callback_data='tariffs')],
+        [InlineKeyboardButton("📃 Тарифы", callback_data='tariffs')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -82,6 +96,30 @@ async def back_to_menu(query):
         '👋 Добро пожаловать в VPN Manager!\n\n'
         'Выберите действие:',
         reply_markup=reply_markup
+    )
+
+async def process_payment(query, tariff_id, type):
+    payment = get_payment_by_id(payment_id)
+
+    if payment and payment["status"] != "paid":
+        update_payment_status(payment_id, "paid")
+
+    expires_at = datetime.now() + timedelta(days=tariff["period"], hours=tariff["hours"])
+
+    upsert_user_subscription(
+        tg_id=query.from_user.id,
+        subscription_until=expires_at
+    )
+
+    create_vpn_key(
+        user_id=get_or_create_user(query.from_user.id),
+        payment_id=payment_id,
+        client_id=client_uuid,
+        client_name=client_email,
+        client_ip="",
+        client_public_key="",
+        config=vless_link,
+        expires_at=expires_at
     )
 
 async def buy_tariff(query, tariff_id):
@@ -115,6 +153,18 @@ async def buy_tariff(query, tariff_id):
             # [InlineKeyboardButton("🪙 Криптовалюта", callback_data=f'pay_crypto_{tariff_id}')],
             [InlineKeyboardButton("◀️ Назад к тарифам", callback_data='tariffs')],
         ]
+        
+        payment_id = str(uuid.uuid4())
+        tg_id = query.from_user.id
+        amount = tariff["price"]
+
+        create_payment(
+            payment_id=payment_id,
+            tg_id=tg_id,
+            tariff=tariff_id,
+            amount=amount,
+            status="pending"
+        )
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -158,56 +208,66 @@ async def show_tariffs(query):
     )
 
 async def show_configs(query):
-    """Показать конфиги пользователя"""
-    # Для демо - показываем первого клиента из inbound
-    inbounds = xui.get_inbounds()
-    
-    if not inbounds:
-        await query.edit_message_text("❌ Конфиги не найдены")
+    """Показать конфиги пользователя (ТОЛЬКО через БД)"""
+
+    tg_id = query.from_user.id
+    keys = get_keys_by_tg_id(tg_id)
+
+    if not keys:
+        await query.edit_message_text(
+            "❌ У вас нет активных VPN-конфигов",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📃 Тарифы", callback_data="tariffs")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
+            ])
+        )
         return
-    
-    inbound = inbounds[0]  # Берем первый inbound
-    settings = json.loads(inbound.get('settings', '{}'))
-    clients = settings.get('clients', [])
-    
-    if not clients:
-        await query.edit_message_text("❌ Клиенты не найдены")
-        return
-    
-    client = clients[0]  # Первый клиент
-    uuid = client['id']
-    email = client['email']
-    
-    # Генерируем VLESS ссылку
-    vless_link = generate_vless_link(
-        uuid,
-        os.getenv('VLESS_DOMAIN'),
-        os.getenv('VLESS_PORT'),
-        os.getenv('VLESS_PATH'),
-        email
-    )
-    
-    # Создаем QR код
-    qr = qrcode.QRCode(version=1, box_size=10, border=5)
-    qr.add_data(vless_link)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    
-    bio = BytesIO()
-    bio.name = 'qr.png'
-    img.save(bio, 'PNG')
-    bio.seek(0)
-    
-    # Отправляем QR код и ссылку
-    await query.message.reply_photo(
-        photo=bio,
-        caption=f"🔐 **VLESS конфиг**\n\n"
-                f"👤 Email: `{email}`\n"
-                f"🌐 Домен: `{os.getenv('VLESS_DOMAIN')}`\n"
-                f"🔌 Порт: `{os.getenv('VLESS_PORT')}`\n\n"
-                f"📱 Ссылка для подключения:\n`{vless_link}`\n\n"
-                f"Отсканируйте QR код или скопируйте ссылку в приложение v2rayNG/Nekoray",
-        parse_mode='Markdown'
+
+    now = datetime.now()
+
+    for key in keys:
+        expires_at = key["expires_at"]
+
+        # Пропускаем истёкшие
+        if expires_at and expires_at < now:
+            continue
+
+        vless_link = key["config"]
+
+        # QR код
+        qr = qrcode.QRCode(version=1, box_size=8, border=4)
+        qr.add_data(vless_link)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        bio = BytesIO()
+        bio.name = "qr.png"
+        img.save(bio, "PNG")
+        bio.seek(0)
+
+        expires_text = (
+            expires_at.strftime("%d.%m.%Y %H:%M")
+            if expires_at else "∞"
+        )
+
+        await query.message.reply_photo(
+            photo=bio,
+            caption=
+                "🔐 **Ваш VPN конфиг**\n\n"
+                f"👤 Имя: `{key['client_name']}`\n"
+                f"⏱ Действителен до: `{expires_text}`\n\n"
+                f"📱 **Ссылка для подключения:**\n"
+                f"`{vless_link}`\n\n"
+                "Поддержка: v2rayNG / Nekoray",
+            parse_mode="Markdown"
+        )
+
+    # Кнопка назад после вывода всех конфигов
+    await query.message.reply_text(
+        "⬆️ Ваши активные конфиги выше",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
+        ])
     )
 
 async def show_stats(query):
