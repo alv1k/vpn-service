@@ -2,6 +2,7 @@
 .env
 *.env
 !.env.example
+YOO_KASSA_SECRET_KEY.txt
 
 # Docker volumes and data
 docker/amneziawg/config/

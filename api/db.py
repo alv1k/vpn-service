@@ -130,6 +130,84 @@ def upsert_user_subscription(tg_id: int, subscription_until):
     db.close()
 
 
+def set_awg_test_activated(tg_id: int, activated: bool = True):
+    """Устанавливает статус активации тестового периода"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        UPDATE users
+        SET test_awg_activated = %s
+        WHERE tg_id = %s
+        """,
+        (1 if activated else 0, tg_id)
+    )
+    db.commit()
+    cursor.close()
+    db.close()
+
+
+def is_awg_test_activated(tg_id: int) -> bool:
+    """Проверяет, активирован ли тестовый период"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        SELECT test_awg_activated
+        FROM users
+        WHERE tg_id = %s
+        """,
+        (tg_id,)
+    )
+    result = cursor.fetchone()
+    cursor.close()
+    db.close()
+    
+    if result is None:
+        return False
+    
+    return bool(result[0])
+
+    
+def set_vless_test_activated(tg_id: int, activated: bool = True):
+    """Устанавливает статус активации тестового периода"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        UPDATE users
+        SET test_vless_activated = %s
+        WHERE tg_id = %s
+        """,
+        (1 if activated else 0, tg_id)
+    )
+    db.commit()
+    cursor.close()
+    db.close()
+
+
+def is_vless_test_activated(tg_id: int) -> bool:
+    """Проверяет, активирован ли тестовый период"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        SELECT test_vless_activated
+        FROM users
+        WHERE tg_id = %s
+        """,
+        (tg_id,)
+    )
+    result = cursor.fetchone()
+    cursor.close()
+    db.close()
+    
+    if result is None:
+        return False
+    
+    return bool(result[0])
+
+
 def get_or_create_user(tg_id: int) -> int:
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -152,14 +230,14 @@ def get_or_create_user(tg_id: int) -> int:
     return user_id
 
 
-def create_vpn_key(user_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at): 
+def create_vpn_key(tg_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at, vpn_type='awg'): 
     db = get_db()
     cursor = db.cursor()
 
     cursor.execute(
         """
-        INSERT INTO vpn_keys (user_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO vpn_keys (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at, vpn_type)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             payment_id = %s,
             client_id = %s,
@@ -167,10 +245,11 @@ def create_vpn_key(user_id, payment_id, client_id, client_name, client_ip, clien
             client_ip = %s,
             client_public_key = %s,
             config = %s,
-            expires_at = %s
+            expires_at = %s,
+            vpn_type = %s
         """,
         (
-            user_id, 
+            tg_id, 
             payment_id, 
             client_id,
             client_name,
@@ -178,13 +257,15 @@ def create_vpn_key(user_id, payment_id, client_id, client_name, client_ip, clien
             client_public_key, 
             config, 
             expires_at, 
+            vpn_type,
             payment_id,
             client_id,
             client_name,
             client_ip, 
             client_public_key, 
             config, 
-            expires_at
+            expires_at,
+            vpn_type
         )
     )
 
