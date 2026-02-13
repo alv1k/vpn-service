@@ -2,9 +2,13 @@ from fastapi import FastAPI, Request, HTTPException, Response
 import json
 import sys
 import httpx
-from ipaddress import ip_address, ip_network
-from datetime import datetime
 import logging
+from ipaddress import ip_address, ip_network
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN
+from datetime import datetime
+from bot_xui.bot import send_link_safely
+import qrcode
+from io import BytesIO
 
 # Импорты из вашего проекта
 from api.subscriptions import activate_subscription
@@ -22,7 +26,10 @@ from bot.tariffs import TARIFFS
 from config import (
     TELEGRAM_BOT_TOKEN, 
     AMNEZIA_WG_API_URL, 
-    AMNEZIA_WG_API_PASSWORD
+    AMNEZIA_WG_API_PASSWORD, 
+    VLESS_DOMAIN, 
+    VLESS_PORT,
+    VLESS_PATH
 )
 from bot.bot import bot
 
@@ -97,7 +104,7 @@ async def amnezia_get_config(client: httpx.AsyncClient, client_id: str) -> str:
     r.raise_for_status()
     return r.text
 
-async def process_successful_payment(payment_id: str, payment_data: dict) -> bool:
+async def process_successful_payment(payment_id: str, payment_data: dict, vpn_type: str) -> bool:
     """
     ⭐ ОБРАБОТКА УСПЕШНОГО ПЛАТЕЖА ⭐
     
@@ -137,69 +144,122 @@ async def process_successful_payment(payment_id: str, payment_data: dict) -> boo
         client_name = f"tg_{tg_id}_{payment_id[:8]}"
         logger.info(f"🔑 VPN client name: {client_name}")
 
-        logger.info(f"AMNEZIA_WG_API_URL: {AMNEZIA_WG_API_URL}")
+        client_id = None
+        client_ip = None
+        client_public_key = None
 
-        # ===== 5. Работа с AmneziaWG =====
-        async with httpx.AsyncClient(timeout=15) as client:
-            # 5.1 Login
-            r = await client.post(
-                f"{AMNEZIA_WG_API_URL}/api/session",
-                json={"password": AMNEZIA_WG_API_PASSWORD},
-            )
-            r.raise_for_status()
-
-            # 5.2 Create client
-            r = await client.post(
-                f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
-                json={"name": client_name},
-            )
-            r.raise_for_status()
-
+        # ===== 5. Создание конфига в зависимости от типа VPN =====
+        if vpn_type == "vless":
+            # ========== VLESS (3x-ui) ==========
+            logger.info("🟢 Creating VLESS config via 3x-ui")
             
-            # wg_client = AmneziaWGClient(
-            #     api_url="http://localhost:51821",
-            #     password="vtnfvjhajp03"
-            # )
-
-            # # Создаем клиента
-            # client_data = await wg_client.create_client(name="user_123456789")
-
-            # logger.info(f"client_data: {client_data}")
-
-
-            # 5.3 Получение client_id
-            r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
-            r.raise_for_status()
-
-            client_id = None
-            client_ip = None
-            client_public_key = None
-
-            for c in r.json():
-                if c.get("name") == client_name:
-                    client_id = c.get("id")
-                    client_ip = c.get("address")
-                    client_public_key = c.get("publicKey")
-                    break
-
-            if not client_id:
-                raise RuntimeError("Client ID not found after creation")
-
-            logger.info(f"✅ VPN client created: client_id={client_id}, ip={client_ip}")
-
-            # 5.4 Получение конфигурации
-            r = await client.get(
-                f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration"
+            import uuid
+            from bot_xui.utils import XUIClient, generate_vless_link
+            
+            # Инициализируем 3x-ui клиент
+            xui = XUIClient(
+                XUI_HOST,
+                XUI_USERNAME,
+                XUI_PASSWORD
             )
-            r.raise_for_status()
+            
+            # Генерируем UUID для клиента
+            client_id = str(uuid.uuid4())
+            
+            # Получаем inbound
+            inbounds = xui.get_inbounds()
+            if not inbounds:
+                raise RuntimeError("3x-ui inbound not found")
+            
+            inbound_id = inbounds[0]['id']
+            
+            # Время истечения (миллисекунды)
+            import time
+            duration_days = TARIFFS[tariff_key].get('duration_days', 30)
+            expiry_time = int((time.time() + (duration_days * 86400)) * 1000)
+            
+            # Создаем клиента в 3x-ui
+            success = xui.add_client(
+                inbound_id=inbound_id,
+                email=client_name,
+                tg_id=tg_id,
+                uuid=client_id,
+                expiry_time=expiry_time,
+                total_gb=0,  # Безлимит
+                limit_ip=TARIFFS[tariff_key].get('device_limit', 5)
+            )
+            
+            if not success:
+                raise RuntimeError("Failed to create VLESS client")
+            
+            # Генерируем VLESS ссылку
+            client_config = generate_vless_link(
+                client_id,
+                VLESS_DOMAIN,
+                VLESS_PORT,
+                VLESS_PATH,
+                client_name
+            )            
+            
+            # Создаем QR код            
+            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            qr.add_data(client_config)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            bio = BytesIO()
+            img.save(bio, 'PNG')
+            bio.seek(0)            
+            
+        else:
+            # ========== AmneziaWG ==========
+            logger.info("🔵 Creating AmneziaWG config")
+            
+            async with httpx.AsyncClient(timeout=15) as client:
+                # 5.1 Login
+                r = await client.post(
+                    f"{AMNEZIA_WG_API_URL}/api/session",
+                    json={"password": AMNEZIA_WG_API_PASSWORD},
+                )
+                r.raise_for_status()
 
-            client_config = r.text
-            if not client_config:
-                raise RuntimeError("Empty client configuration")
+                # 5.2 Create client
+                r = await client.post(
+                    f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
+                    json={"name": client_name},
+                )
+                r.raise_for_status()
+
+                # 5.3 Получение client_id
+                r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
+                r.raise_for_status()
+
+                for c in r.json():
+                    if c.get("name") == client_name:
+                        client_id = c.get("id")
+                        client_ip = c.get("address")
+                        client_public_key = c.get("publicKey")
+                        break
+
+                if not client_id:
+                    raise RuntimeError("Client ID not found after creation")
+
+                logger.info(f"✅ VPN client created: client_id={client_id}, ip={client_ip}")
+
+                # 5.4 Получение конфигурации
+                r = await client.get(
+                    f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration"
+                )
+                r.raise_for_status()
+
+                client_config = r.text
+                if not client_config:
+                    raise RuntimeError("Empty client configuration")
+
 
         # ===== 6. Сохранение в БД =====
         create_vpn_key(
-            user_id=user_id,
+            tg_id=tg_id,
             payment_id=payment_id,
             client_id=client_id,
             client_name=client_name,
@@ -207,6 +267,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict) -> boo
             client_public_key=client_public_key,
             config=client_config,
             expires_at=subscription_until,
+            vpn_type=vpn_type  # ← Добавьте это поле в функцию create_vpn_key
         )
 
         logger.info("💾 VPN config saved to DB")
@@ -216,30 +277,57 @@ async def process_successful_payment(payment_id: str, payment_data: dict) -> boo
         tariff_name = tariff_info.get("name", tariff_key)
 
         try:
-            filename = f"vpn_{tg_id}_{payment_id[:8]}.conf"
+            if vpn_type == "vless":
+                # Отправляем VLESS как текст с QR кодом  
+                
+                await send_telegram_photo_from_bytes(
+                    tg_id=tg_id,
+                    image_bytes=bio,
+                    caption=f"🟢 **Ваш VLESS конфиг**\n\n"
+                            f"👤 ID: {client_name}\n"
+                            f"⏱ Действителен: 1 час\n"
+                            f"**Инструкция:**\n"
+                            f"1. Установите v2rayNG (Android) или Nekoray (Windows/Linux)\n"
+                            f"2. Отсканируйте QR или скопируйте ссылку\n"
+                            f"3. Подключитесь\n\n"
+                            f"💬 Поддержка: @al_v1k",
+                )
 
-            file = BufferedInputFile(
-                client_config.encode(),
-                filename=filename,
-            )
+                # Отправка текста в безопасном code-блоке
+                message = (
+                    f"🔑 Конфиг:\n\n"
+                    f"```\n{client_config}\n```"
+                    f"Скопируйте эту ссылку и вставьте в ваше приложение\n\n"
+                )
+                
+                await send_telegram_notification(tg_id, message)
+                
+            else:
+                # Отправляем AmneziaWG как файл
+                filename = f"amneziawg_{tg_id}_{payment_id[:8]}.conf"
 
-            caption = (
-                f"✅ Ваш VPN готов!\n\n"
-                f"🔑 Тариф: {tariff_name}\n"
-                f"🌐 IP: {client_ip}\n"
-                f"📅 Активен до: {subscription_until:%d.%m.%Y}\n\n"
-                f"📱 Инструкция:\n"
-                f"1. Установите AmneziaVPN\n"
-                f"2. Импортируйте файл конфигурации\n"
-                f"3. Подключитесь\n\n"
-                f"💬 Поддержка: @al_v1k"
-            )
+                file = BufferedInputFile(
+                    client_config.encode(),
+                    filename=filename,
+                )
 
-            await bot.send_document(
-                chat_id=tg_id,
-                document=file,
-                caption=caption,
-            )
+                caption = (
+                    f"✅ Ваш AmneziaWG конфиг готов!\n\n"
+                    f"🔑 Тариф: {tariff_name}\n"
+                    f"🌐 IP: {client_ip}\n"
+                    f"📅 Активен до: {subscription_until:%d.%m.%Y}\n\n"
+                    f"📱 Инструкция:\n"
+                    f"1. Установите AmneziaVPN\n"
+                    f"2. Импортируйте файл конфигурации\n"
+                    f"3. Подключитесь\n\n"
+                    f"💬 Поддержка: @al_v1k"
+                )
+
+                await bot.send_document(
+                    chat_id=tg_id,
+                    document=file,
+                    caption=caption,
+                )
 
             logger.info("📤 Config sent to Telegram")
 
@@ -267,7 +355,11 @@ async def send_telegram_notification(tg_id: int, message: str):
         try:
             response = await client.post(
                 TELEGRAM_API,
-                data={"chat_id": tg_id, "text": message}
+                data={
+                    "chat_id": tg_id,
+                    "text": message,
+                    "parse_mode": "Markdown"
+                }
             )
             
             if response.status_code == 200:
@@ -278,6 +370,49 @@ async def send_telegram_notification(tg_id: int, message: str):
         except Exception as e:
             logger.error(f"❌ Failed to send Telegram notification: {e}")
 
+async def send_telegram_photo_from_bytes(tg_id: int, image_bytes: BytesIO, caption: str = ""):
+    """
+    Отправка фото в Telegram через HTTP API из BytesIO    
+    """
+    if not tg_id:
+        return
+    
+    # Меняем endpoint на sendPhoto
+    telegram_photo_api = TELEGRAM_API.replace('sendMessage', 'sendPhoto')
+    
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            # Сбрасываем позицию в начало
+            image_bytes.seek(0)
+            
+            # Правильный формат для httpx
+            files = {
+                'photo': ('qr.png', image_bytes, 'image/png')
+            }
+            data = {
+                'chat_id': tg_id
+            }
+            
+            if caption:
+                data['caption'] = caption
+                data['parse_mode'] = 'HTML'
+            
+            response = await client.post(
+                telegram_photo_api,
+                data=data,
+                files=files
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"📸 Photo sent to user: {tg_id}")
+                return True
+            else:
+                logger.warning(f"⚠️ Telegram API returned {response.status_code}: {response.text}")
+                return False
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to send Telegram photo: {e}")
+            return False
 
 @app.post("/webhook")
 async def yookassa_webhook(request: Request):
@@ -308,6 +443,7 @@ async def yookassa_webhook(request: Request):
     
     tg_id = metadata.get("tg_id")
     tariff = metadata.get("tariff", "default")
+    vpn_type = metadata.get("vpn_type")
     
     if not payment_id:
         logger.warning("⚠️ No payment_id in webhook")
@@ -347,7 +483,7 @@ async def yookassa_webhook(request: Request):
     
     # ===== 9. ⭐ ОБРАБОТКА УСПЕШНОГО ПЛАТЕЖА ⭐ =====
     if current_status == "pending" and new_status == "paid":
-        success = await process_successful_payment(payment_id, payment_data)
+        success = await process_successful_payment(payment_id, payment_data, vpn_type)
         
         if not success:
             logger.error(f"❌ Failed to process payment {payment_id}")

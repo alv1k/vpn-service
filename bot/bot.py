@@ -85,8 +85,6 @@ async def start_handler(message: Message):
     
     client = clients[0]  # Первый клиент
     uuid = client['id']
-    print('!!!uuid!!!', uuid)
-
 
 @router.message(F.text == "/myvpn")
 async def myvpn(message: Message):

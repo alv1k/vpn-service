@@ -22,7 +22,7 @@ services:
       - WG_NETWORK=10.10.0.0/24
       - DNS=1.1.1.1
       - WG_PATH=/etc/amnezia/amneziawg
-      - WG_MTU=1280
+      - WG_MTU=1360
       - WG_PERSISTENT_KEEPALIVE=25
       - UI_TRAFFIC_STATS=true
       # MySQL хост для amneziawg — используем localhost

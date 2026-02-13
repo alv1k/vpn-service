@@ -40,3 +40,5 @@ yarl==1.22.0
 yookassa==3.9.0
 qrcode[pil]
 python-telegram-bot==20.7
+qrcode==7.4.2
+pillow==10.2.0

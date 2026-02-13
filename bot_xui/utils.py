@@ -3,6 +3,15 @@ import json
 import subprocess
 from urllib.parse import quote
 import os
+import logging
+
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 class XUIClient:
     def __init__(self, host, username, password):
@@ -49,7 +58,7 @@ class XUIClient:
                     }
         return None
 
-    def add_client(self, inbound_id, email, uuid, expiry_time=0, total_gb=0, limit_ip=2):
+    def add_client(self, inbound_id, email, tg_id, uuid, expiry_time=0, total_gb=0, limit_ip=2):
         """Добавить клиента в inbound"""
         import uuid as uuid_lib
         import time
@@ -65,7 +74,7 @@ class XUIClient:
                     "totalGB": total_gb,
                     "expiryTime": expiry_time,
                     "enable": True,
-                    "tgId": "",
+                    "tgId": tg_id,
                     "subId": str(uuid_lib.uuid4()).replace('-', '')[:16],
                     "reset": 0
                 }]
@@ -73,6 +82,10 @@ class XUIClient:
         }
         
         try:
+
+            # Логируем запрос
+            logger.info(f"Sending addClient request to: {self.host}/panel/api/inbounds/addClient")
+            
             response = self.session.post(
                 f"{self.host}/panel/api/inbounds/addClient",
                 json=client_data,
@@ -80,6 +93,9 @@ class XUIClient:
             )
             
             result = response.json()
+    
+            # Логируем полный ответ
+            logger.info(f"API Response: {result}")
             return result.get('success', False)
             
         except Exception as e:
@@ -110,22 +126,47 @@ class XUIClient:
             print(f"Error resetting traffic: {e}")
             return False
 
-
 def generate_vless_link(uuid, domain, port, path, email="User"):
     """Генерация VLESS ссылки для WebSocket + TLS"""
-    params = {
-        "type": "ws",
-        "path": path,
-        "security": "tls",
-        "sni": domain,
-        "host": domain,
-        "encryption": "none"
-    }
+    # params = {
+    #     "type": "ws",
+    #     "path": path,
+    #     "security": "tls",
+    #     "sni": domain,
+    #     "host": domain,
+    #     "encryption": "none",
+    #     "alpn": "h2,http/1.1"
+    # }
     
-    param_str = "&".join([f"{k}={quote(str(v))}" for k, v in params.items()])
-    vless_link = f"vless://{uuid}@{domain}:{port}?{param_str}#{quote(email)}"
+    # param_str = "&".join([f"{k}={quote(str(v))}" for k, v in params.items()])
+    # vless_link = f"vless://{uuid}@{domain}:{port}?{param_str}#{quote(email)}"
     
-    return vless_link
+    # return vless_link
+    """
+    Генерация VLESS ссылки для клиента.
+    """
+
+    from urllib.parse import quote
+    
+    # Кодируем путь и remark
+    encoded_path = quote(path, safe='')
+    encoded_remark = quote(email, safe='')
+    
+    # Формируем полную ссылку с дополнительными параметрами
+    vless_link = (
+        f"vless://{uuid}@{domain}:{port}"
+        f"?type=ws"
+        f"&security=tls"
+        f"&path={encoded_path}"
+        f"&host={domain}"  # Важно для WebSocket
+        f"&sni={domain}"   # Server Name Indication для TLS
+        f"&fp=chrome"      # Fingerprint (или random/firefox)
+        f"&alpn=h2,http/1.1"  # ALPN для TLS
+        f"&encryption=none"
+        f"#{encoded_remark}"
+    )
+
+    return f"vless://{uuid}@{domain}:{port}?type=ws&security=tls&path={path}&encryption=none#{email}"
 
 def get_amneziawg_config(client_email):
     """Получить конфиг AmneziaWG из контейнера"""

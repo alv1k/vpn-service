@@ -57,7 +57,8 @@ def generate_vless_link(uuid, domain, port, path, email="User"):
         "security": "tls",
         "sni": domain,
         "host": domain,
-        "encryption": "none"
+        "encryption": "none",
+        "alpn": "h2,http/1.1"
     }
     
     param_str = "&".join([f"{k}={quote(str(v))}" for k, v in params.items()])
