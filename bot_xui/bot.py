@@ -143,7 +143,7 @@ async def buy_tariff(query, tariff_id):
         # Платные - выбор протокола перед оплатой
         keyboard = [
             [InlineKeyboardButton("🔵 AmneziaWG", callback_data=f'select_awg_{tariff_id}')],
-            [InlineKeyboardButton("🟢 VLESS", callback_data=f'select_vless_{tariff_id}')],
+            [InlineKeyboardButton("🟢 VLESS (recommended)", callback_data=f'select_vless_{tariff_id}')],
             [InlineKeyboardButton("◀️ Назад к тарифам", callback_data='tariffs')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -396,7 +396,7 @@ async def create_test_config(query, tariff_id):
     """Выбор типа VPN для тестового периода"""
     keyboard = [
         [InlineKeyboardButton("🔵 AmneziaWG", callback_data='test_awg')],
-        [InlineKeyboardButton("🟢 VLESS", callback_data='test_vless')],
+        [InlineKeyboardButton("🟢 VLESS (recommended)", callback_data='test_vless')],
         [InlineKeyboardButton("◀️ Назад к тарифам", callback_data='tariffs')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
