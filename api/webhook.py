@@ -186,7 +186,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 uuid=client_id,
                 expiry_time=expiry_time,
                 total_gb=0,  # Безлимит
-                limit_ip=TARIFFS[tariff_key].get('device_limit', 5)
+                limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
             )
             
             if not success:
@@ -286,8 +286,9 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     caption=f"🟢 **Ваш VLESS конфиг**\n\n"
                             f"👤 ID: {client_name}\n"
                             f"⏱ Действителен: 1 час\n"
+                            f"👥 Устройств: {TARIFFS[tariff_key].get('device_limit', 10)}\n"
                             f"**Инструкция:**\n"
-                            f"1. Установите v2rayNG (Android) или Nekoray (Windows/Linux)\n"
+                            f"1. Установите v2rayNG (Android) или Nekoray (Windows/macOS)\n"
                             f"2. Отсканируйте QR или скопируйте ссылку\n"
                             f"3. Подключитесь\n\n"
                             f"💬 Поддержка: @al_v1k",
@@ -301,6 +302,15 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 )
                 
                 await send_telegram_notification(tg_id, message)
+
+                message = ("Выберите действие:")
+                # С одной кнопкой
+                buttons = [
+                    [{"text": "📑 Инструкция и ссылки", "callback_data": "instructions"}],
+                    [{"text": "◀️ В меню", "callback_data": "back_to_menu"}]
+                ]
+                await send_telegram_notification(tg_id, message, buttons)
+                
                 
             else:
                 # Отправляем AmneziaWG как файл
@@ -340,27 +350,34 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         logger.exception(f"❌ Critical error processing payment {payment_id}")
         return False
 
-async def send_telegram_notification(tg_id: int, message: str):
+async def send_telegram_notification(tg_id: int, message: str, buttons: list = None):
     """
     Отправка уведомления в Telegram через HTTP API
     
     Args:
         tg_id: Telegram ID пользователя
         message: Текст сообщения
+        buttons: Список кнопок (опционально)
     """
     if not tg_id:
         return
+
+    data = {
+        "chat_id": tg_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     
+    # Добавляем кнопки если они есть
+    if buttons:
+        keyboard = {
+            "inline_keyboard": buttons
+        }
+        data["reply_markup"] = json.dumps(keyboard)
+
     async with httpx.AsyncClient(timeout=5) as client:
         try:
-            response = await client.post(
-                TELEGRAM_API,
-                data={
-                    "chat_id": tg_id,
-                    "text": message,
-                    "parse_mode": "Markdown"
-                }
-            )
+            response = await client.post(TELEGRAM_API, data=data)
             
             if response.status_code == 200:
                 logger.info(f"📨 Notification sent to user: {tg_id}")

@@ -6,11 +6,10 @@ import qrcode
 import uuid
 import sys
 import httpx
-import uuid
 sys.path.insert(0, '/home/alvik/vpn-service')
 from datetime import datetime, timedelta
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, YOO_KASSA_SECRET_KEY, YOO_KASSA_SHOP_ID, AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from bot_xui.utils import XUIClient, generate_vless_link, format_bytes
 from io import BytesIO
@@ -20,10 +19,6 @@ from bot.tariffs import TARIFFS
 from api.db import (
     get_or_create_user,
     create_payment,
-    update_payment_status,
-    get_payment_by_id,
-    upsert_user_subscription,
-    get_subscription_until,
     get_keys_by_tg_id,
     set_awg_test_activated,
     set_vless_test_activated,
@@ -55,7 +50,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📊 Мои конфиги", callback_data='my_configs')],
         [InlineKeyboardButton("📈 Статистика", callback_data='stats')],
-        [InlineKeyboardButton("🏷 Тарифы", callback_data='tariffs')]
+        [InlineKeyboardButton("🏷 Тарифы", callback_data='tariffs')],
+        [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data='instructions')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -64,6 +60,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'Выберите действие:',
         reply_markup=reply_markup
     )
+
+async def post_init(application):
+    """Установка команд меню после инициализации бота."""
+    commands = [
+        BotCommand(command="start", description="Начать взаимодействие с ботом"),
+        BotCommand(command="stats", description="Посмотреть статистику"),
+        BotCommand(command="tariffs", description="Ознакомиться с тарифами"),
+        BotCommand(command="instructions", description="Инструкция и ссылки"),
+        # Можно добавить другие команды, например:
+        # BotCommand(command="help", description="Помощь"),
+    ]
+    await application.bot.set_my_commands(commands)
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий кнопок"""
@@ -81,7 +90,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith('buy_tariff_'):
         tariff_id = query.data.replace('buy_tariff_', '')
         await buy_tariff(query, tariff_id)
-    elif query.data.startswith('create_test_config_'):  # Новый обработчик
+    elif query.data.startswith('create_test_config_'):
         tariff_id = query.data.replace('create_test_config_', '')
         await create_test_config(query, tariff_id)
     elif query.data == 'test_awg':
@@ -96,29 +105,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tariff_id = query.data.replace('select_vless_', '')
         context.user_data['vpn_type'] = 'vless'
         await process_payment(query, tariff_id, 'vless')
-    elif query.data.startswith('check_btn'):
-        await check_handler(query)
+    elif query.data.startswith('instructions'):
+        await show_instructions(query)
 
         
-async def check_handler(query):
-    print('🕯 !checking config output! 🕯')
-    
-    await query.message.reply_text(
-        text=(
-            f"🔑 Конфиг:\n\n"
-            f"```\nvless://e5959df1-9bf2-4fbb-8aca-19c17b5766d5@344988.snk.wtf:443?type=ws&security=tls&path=/vless&encryption=none#tg_364224373_311f9ce7\n```"
-            f"Скопируйте эту ссылку и вставьте в ваше приложение\n\n"
-        ),
-        parse_mode="Markdown"
-    )
-
-
 async def back_to_menu(query):
     """Вернуться в главное меню"""
     keyboard = [
         [InlineKeyboardButton("📊 Мои конфиги", callback_data='my_configs')],
         [InlineKeyboardButton("📈 Статистика", callback_data='stats')],
         [InlineKeyboardButton("🏷 Тарифы", callback_data='tariffs')],
+        [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data='instructions')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -127,6 +124,57 @@ async def back_to_menu(query):
         'Выберите действие:',
         reply_markup=reply_markup
     )
+
+async def show_instructions(query):
+
+    caption = (
+        "📱 *Инструкция по подключению:*\n\n"
+        "*1️⃣* Выберите приложение для вашей ОС (кнопки ниже)\n"
+        "*2️⃣* Отсканируйте QR-код или скопируйте ссылку\n"
+        "*3️⃣* Подключитесь к VPN\n\n"
+        "💬 *Поддержка:* @al_v1k"
+    )
+
+    keyboard = [        
+        # [InlineKeyboardButton("🍎 AmneziaVPN (iOS) - AWG", url="https://apps.apple.com/app/amneziavpn/id1600529900")],       
+        # macOS - AWG
+        # [InlineKeyboardButton("💻 AmneziaVPN (macOS) - AWG", url="https://github.com/amnezia-vpn/amnezia-client/releases")],        
+        # Windows - AWG
+        # [InlineKeyboardButton("🖥 AmneziaVPN (Windows) - AWG", url="https://github.com/amnezia-vpn/amnezia-client/releases")],
+        # Linux - AWG
+        # [InlineKeyboardButton("🐧 AmneziaVPN (Linux) - AWG", url="https://github.com/amnezia-vpn/amnezia-client/releases")],
+
+
+        # Android - VLESS
+        [InlineKeyboardButton("🤖 v2rayNG (Android) - VLESS", url="https://play.google.com/store/apps/details?id=com.v2raytun.android")],
+        [InlineKeyboardButton("🤖 Nekoha (Android) - VLESS", url="https://play.google.com/store/apps/details?id=moe.matsuri.lite")],
+                
+        # iOS
+        [InlineKeyboardButton("🍎 Hiddify (iOS) - AWG/VLESS", url="https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532")], 
+
+        # macOS - VLESS
+        [InlineKeyboardButton("💻 NekoRay (macOS) - VLESS", url="https://en.nekoray.org/")],
+        [InlineKeyboardButton("💻 Fox VPN (macOS) - VLESS", url="https://bestfoxapp.com/en/products/mac")],
+        
+        # Windows - VLESS
+        [InlineKeyboardButton("🖥 NekoRay (Windows) - VLESS", url="https://en.nekoray.org/download/")],
+        [InlineKeyboardButton("🖥 Hiddify (Windows) - VLESS", url="https://hiddify.com/")],
+                
+        # TV
+        [InlineKeyboardButton("📺 HitTV (TV) - VLESS", url="https://play.google.com/store/apps/details?id=io.hittv.android&hl=ru")],
+        [InlineKeyboardButton("📺 VPN4TV: VPN для ТВ (TV) - VLESS", url="https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify")],
+        
+        [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        text=caption,
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
+    
 
 async def buy_tariff(query, tariff_id):
     """Обработка покупки тарифа"""
@@ -151,9 +199,10 @@ async def buy_tariff(query, tariff_id):
         text = f"🛒 **Покупка тарифа {tariff['name']}**\n\n"
         text += f"💰 Стоимость: {tariff['price']} ₽\n"
         text += f"⏱ Период: {tariff['period']}\n\n"
-        text += f"Выберите протокол VPN:"
+        # text += f"Выберите протокол VPN:"
         
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        # await query.edit_message_text(text, parse_mode='Markdown')
+        await process_payment(query, tariff_id, 'vless')
 
 async def process_payment(query, tariff_id, vpn_type):
     """Создание платежа в YooKassa"""
@@ -223,6 +272,7 @@ async def process_payment(query, tariff_id, vpn_type):
         text = f"💳 **Оплата тарифа {tariff['name']}**\n\n"
         text += f"💰 Сумма: {tariff['price']} ₽\n"
         text += f"⏱ Период: {tariff['period']}\n\n"
+        text += f"👥 Устройств: {tariff['device_limit']}\n\n"
         text += f"Нажмите кнопку для перехода к оплате.\n"
         text += f"После оплаты конфиг придет автоматически."
         
@@ -249,25 +299,16 @@ async def show_tariffs(query):
     
     awg_test_already_activated = is_awg_test_activated(tg_id)
     vless_test_already_activated = is_vless_test_activated(tg_id)
-
-    print('🚑 Test status:', awg_test_already_activated, vless_test_already_activated)
     
     text = "💳 **Доступные тарифы VPN**\n\n"
     
     for tariff_id, tariff in TARIFFS.items():
-        print(f"\n--- Processing tariff: {tariff_id} ---")
-        print(f"is_test: {tariff.get('is_test')}")
-        print(f"awg_test: {awg_test_already_activated}")
-        print(f"vless_test: {vless_test_already_activated}")
-        print(f"OR result: {awg_test_already_activated or vless_test_already_activated}")
-        print(f"Full condition: {tariff.get('is_test') and (awg_test_already_activated or vless_test_already_activated)}")
         
         # Пропускаем тестовый тариф, если он уже активирован
         if tariff.get('is_test') and (awg_test_already_activated or vless_test_already_activated):
             print(f"✅ SKIPPING {tariff_id}")
             continue
         
-        print(f"➕ ADDING {tariff_id}")
         text += f"**{tariff['name']}**\n"
         text += f"💰 Цена: {tariff['price']} ₽\n"
         text += f"⏱ Период: {tariff['period']}\n"
@@ -286,7 +327,7 @@ async def show_tariffs(query):
             continue
         keyboard.append([
             InlineKeyboardButton(
-                f"💳 Купить {tariff['name']} - {tariff['price']} ₽",
+                f"  💳 {'Попробовать' if tariff.get('is_test') and awg_test_already_activated and vless_test_already_activated else 'Купить'} {tariff['name']} - {tariff['price']} ₽  ",
                 callback_data=f'buy_tariff_{tariff_id}'
             )
         ])
@@ -353,7 +394,7 @@ async def show_configs(query):
                 f"⏱ Действителен до: `{expires_text}`\n\n"
                 f"📱 **Ссылка для подключения:**\n"
                 f"`{vless_link}`\n\n"
-                "Поддержка: v2rayNG / Nekoray",
+                "Поддержка: @al_v1k",
             parse_mode="Markdown"
         )
 
@@ -380,17 +421,12 @@ async def show_stats(query):
     text += f"⬆️ Отправлено: {format_bytes(total_up)}\n"
     text += f"⬇️ Получено: {format_bytes(total_down)}\n"
     text += f"📦 Всего: {format_bytes(total_up + total_down)}\n"
-    
-    await query.edit_message_text(text, parse_mode='Markdown')
-    
-    # Кнопка назад после вывода всех конфигов
-    await query.message.reply_text(
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
-        ])
-    )
 
-
+    reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
+    ])
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def create_test_config(query, tariff_id):
     """Выбор типа VPN для тестового периода"""
@@ -412,7 +448,7 @@ async def create_test_config(query, tariff_id):
     text += "   • Работает в сложных сетях"
     
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-
+    await create_test_vless_config(query)
 
 async def create_test_awg_config(query):
     """Создание тестового AmneziaWG конфига"""
@@ -579,7 +615,11 @@ async def create_test_vless_config(query):
                     f"👤 ID: {client_email}\n"
                     f"⏱ Действителен: 1 час\n"
                     f"**Инструкция:**\n"
-                    f"1. Установите v2rayNG (Android) или Nekoray (Windows/Linux)\n"
+                    f"1. Установите v2rayNG/Nekoha (Android) \n"
+                    f"Fox VPN (iOS/iPasOS)\n"
+                    f"NekoRay/Fox VPN (macOS)\n"
+                    f"NekoRay/Veilbox (Windows)\n"
+                    f"HitTV (Android TV, Smart TV) \n"
                     f"2. Отсканируйте QR или скопируйте ссылку\n"
                     f"3. Подключитесь\n\n"
                     f"💬 Поддержка: @al_v1k",
@@ -597,7 +637,15 @@ async def create_test_vless_config(query):
         )
         
         set_vless_test_activated(user_id)
-    
+        
+        # Кнопка назад
+        await query.message.reply_text(
+            "Выберите действие:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data="instructions")],
+                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]               
+            ])
+        )
         
     except Exception as e:
         logger.error(f"Error creating VLESS config: {e}")
@@ -662,7 +710,7 @@ def main():
         return
     
     # Создаем приложение
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(post_init).build()
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
