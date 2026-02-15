@@ -146,23 +146,22 @@ async def show_instructions(query):
 
 
         # Android - VLESS
-        [InlineKeyboardButton("🤖 v2rayNG (Android) - VLESS", url="https://play.google.com/store/apps/details?id=com.v2raytun.android")],
-        [InlineKeyboardButton("🤖 Nekoha (Android) - VLESS", url="https://play.google.com/store/apps/details?id=moe.matsuri.lite")],
+        [InlineKeyboardButton("🤖 v2rayNG - Android", url="https://play.google.com/store/apps/details?id=com.v2raytun.android")],
+        [InlineKeyboardButton("🤖 Nekoha - Android", url="https://play.google.com/store/apps/details?id=moe.matsuri.lite")],
                 
         # iOS
-        [InlineKeyboardButton("🍎 Hiddify (iOS) - AWG/VLESS", url="https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532")], 
+        [InlineKeyboardButton("🍎 Hiddify - iOS", url="https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532")], 
 
         # macOS - VLESS
-        [InlineKeyboardButton("💻 NekoRay (macOS) - VLESS", url="https://en.nekoray.org/")],
-        [InlineKeyboardButton("💻 Fox VPN (macOS) - VLESS", url="https://bestfoxapp.com/en/products/mac")],
+        [InlineKeyboardButton("💻 NekoRay - macOS", url="https://en.nekoray.org/")],
+        [InlineKeyboardButton("💻 Fox VPN - macOS", url="https://bestfoxapp.com/en/products/mac")],
         
         # Windows - VLESS
-        [InlineKeyboardButton("🖥 NekoRay (Windows) - VLESS", url="https://en.nekoray.org/download/")],
-        [InlineKeyboardButton("🖥 Hiddify (Windows) - VLESS", url="https://hiddify.com/")],
+        [InlineKeyboardButton("🖥 NekoRay - Windows", url="https://en.nekoray.org/download/")],
+        [InlineKeyboardButton("🖥 Hiddify - Windows", url="https://hiddify.com/")],
                 
         # TV
-        [InlineKeyboardButton("📺 HitTV (TV) - VLESS", url="https://play.google.com/store/apps/details?id=io.hittv.android&hl=ru")],
-        [InlineKeyboardButton("📺 VPN4TV: VPN для ТВ (TV) - VLESS", url="https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify")],
+        [InlineKeyboardButton("📺 VPN4TV: VPN для ТВ - TV", url="https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify")],
         
         [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
     ]
@@ -615,11 +614,7 @@ async def create_test_vless_config(query):
                     f"👤 ID: {client_email}\n"
                     f"⏱ Действителен: 1 час\n"
                     f"**Инструкция:**\n"
-                    f"1. Установите v2rayNG/Nekoha (Android) \n"
-                    f"Fox VPN (iOS/iPasOS)\n"
-                    f"NekoRay/Fox VPN (macOS)\n"
-                    f"NekoRay/Veilbox (Windows)\n"
-                    f"HitTV (Android TV, Smart TV) \n"
+                    f"1. Установите приложение из раздела 'Инструкция' \n"
                     f"2. Отсканируйте QR или скопируйте ссылку\n"
                     f"3. Подключитесь\n\n"
                     f"💬 Поддержка: @al_v1k",
