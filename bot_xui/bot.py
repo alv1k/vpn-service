@@ -65,9 +65,6 @@ async def post_init(application):
     """Установка команд меню после инициализации бота."""
     commands = [
         BotCommand(command="start", description="Начать взаимодействие с ботом"),
-        BotCommand(command="stats", description="Посмотреть статистику"),
-        BotCommand(command="tariffs", description="Ознакомиться с тарифами"),
-        BotCommand(command="instructions", description="Инструкция и ссылки"),
         # Можно добавить другие команды, например:
         # BotCommand(command="help", description="Помощь"),
     ]
@@ -387,14 +384,15 @@ async def show_configs(query):
 
         await query.message.reply_photo(
             photo=bio,
-            caption=
-                "🔐 **Ваш VPN конфиг**\n\n"
-                f"👤 Имя: `{key['client_name']}`\n"
-                f"⏱ Действителен до: `{expires_text}`\n\n"
-                f"📱 **Ссылка для подключения:**\n"
-                f"`{vless_link}`\n\n"
-                "Поддержка: @al_v1k",
-            parse_mode="Markdown"
+            caption=(
+                "🔐 <b>Ваш VPN конфиг</b>\n\n"
+                f"👤 Имя: <code>{key['client_name']}</code>\n"
+                f"⏱ Действителен до: <code>{expires_text}</code>\n\n"
+                f"📱 <b>Ссылка для подключения:</b>\n"
+                f"<code>{vless_link}</code>\n\n"
+                "Поддержка: @al_v1k"
+            ),
+            parse_mode="HTML"
         )
 
     # Кнопка назад после вывода всех конфигов
