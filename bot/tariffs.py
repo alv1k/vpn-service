@@ -39,5 +39,14 @@ TARIFFS = {
         "device_limit": 10,
         "is_test": False
     },
+    "admin_test": {
+        "name": "для тестирования платежа",
+        "price": 5,
+        "period": "0 дней",
+        "yookassa_description": "Персональный цифровой доступ на 12 месяцев",
+        "days": 365,
+        "device_limit": 10,
+        "is_test": False
+    },
 }
 
