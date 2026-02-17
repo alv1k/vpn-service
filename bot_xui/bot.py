@@ -8,7 +8,7 @@ import sys
 import httpx
 import time
 sys.path.insert(0, '/home/alvik/vpn-service')
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from yookassa import Configuration, Payment
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, YOO_KASSA_SECRET_KEY, YOO_KASSA_SHOP_ID, AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -345,6 +345,19 @@ async def show_tariffs(query):
         parse_mode='Markdown'
     )
 
+
+def convert_to_local(dt: datetime, offset_hours: int = 9) -> str:
+    """
+    Конвертирует UTC datetime в локальное время и возвращает строку.
+    
+    :param dt: datetime в UTC
+    :param offset_hours: смещение часового пояса (по умолчанию +9)
+    :return: строка в формате "дд.мм.гггг чч:мм"
+    """
+    if dt is None:
+        return "∞"
+    return (dt + timedelta(hours=offset_hours)).strftime("%d.%m.%Y %H:%M")
+
 async def show_configs(query):
     """Показать конфиги пользователя (ТОЛЬКО через БД)"""
 
@@ -361,18 +374,26 @@ async def show_configs(query):
         )
         return
 
-    now = datetime.now()
+    active_keys = [
+        key for key in keys
+        if not key["expires_at"] or key["expires_at"] > datetime.utcnow()
+    ]
 
-    for key in keys:
+    if not active_keys:
+        await query.edit_message_text(
+            "❌ У вас нет активных VPN-конфигов",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏷 Тарифы", callback_data="tariffs")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
+            ])
+        )
+        return
+
+    for key in active_keys:
         expires_at = key["expires_at"]
-
-        # Пропускаем истёкшие
-        if expires_at and expires_at < now:
-            continue
-
+        expires_text = convert_to_local(expires_at)  # Используем функцию из прошлого шага
         vless_link = key["config"]
 
-        # QR код
         qr = qrcode.QRCode(version=1, box_size=8, border=4)
         qr.add_data(vless_link)
         qr.make(fit=True)
@@ -382,11 +403,6 @@ async def show_configs(query):
         bio.name = "qr.png"
         img.save(bio, "PNG")
         bio.seek(0)
-
-        expires_text = (
-            expires_at.strftime("%d.%m.%Y %H:%M")
-            if expires_at else "∞"
-        )
 
         await query.message.reply_photo(
             photo=bio,
@@ -448,11 +464,10 @@ async def show_stats(query):
     
     # Если есть срок действия
     if 'expiryTime' in stats and stats['expiryTime'] > 0:
-        expiry = datetime.fromtimestamp(stats['expiryTime'] / 1000)
-        now = datetime.now()
-        days_left = (expiry - now).days
+        expiry = datetime.utcfromtimestamp(stats['expiryTime'] / 1000)
+        days_left = (expiry - datetime.utcnow()).days
         
-        text += f"⏰ Действует до: {expiry.strftime('%Y-%m-%d %H:%M')}\n"
+        text += f"⏰ Действует до: {convert_to_local(expiry)}\n"
         text += f"📅 Осталось дней: {days_left}\n"
     
     reply_markup=InlineKeyboardMarkup([
