@@ -3,6 +3,7 @@ import json
 import sys
 import httpx
 import logging
+import time
 from ipaddress import ip_address, ip_network
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN
 from datetime import datetime
@@ -174,7 +175,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             inbound_id = inbounds[0]['id']
             
             # Время истечения (миллисекунды)
-            import time
             duration_days = TARIFFS[tariff_key].get('duration_days', 30)
             expiry_time = int((time.time() + (duration_days * 86400)) * 1000)
             
@@ -267,7 +267,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             client_public_key=client_public_key,
             config=client_config,
             expires_at=subscription_until,
-            vpn_type=vpn_type  # ← Добавьте это поле в функцию create_vpn_key
+            vpn_type=vpn_type
         )
 
         logger.info("💾 VPN config saved to DB")

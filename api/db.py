@@ -308,6 +308,25 @@ def get_used_client_ips() -> set[str]:
     return ips
 
 
+
+def get_user_email(tg_id: int):
+    """Получить email пользователя"""
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute(
+        """
+        SELECT client_name FROM vpn_keys 
+        WHERE tg_id = %s
+        """,
+        (tg_id,)
+    )
+    result = cursor.fetchone()
+    db.close()
+    return result[0] if result else None
+
+
+
 def get_last_paid_payment(tg_id: int):
     """
     Возвращает последний оплаченный платёж пользователя

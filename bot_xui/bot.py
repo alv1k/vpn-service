@@ -6,8 +6,10 @@ import qrcode
 import uuid
 import sys
 import httpx
+import time
 sys.path.insert(0, '/home/alvik/vpn-service')
 from datetime import datetime, timedelta
+from yookassa import Configuration, Payment
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, YOO_KASSA_SECRET_KEY, YOO_KASSA_SHOP_ID, AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -24,6 +26,8 @@ from api.db import (
     set_vless_test_activated,
     is_awg_test_activated,
     is_vless_test_activated,
+    get_user_email,
+    create_vpn_key
 )
 
 # Загрузка переменных окружения
@@ -49,7 +53,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     keyboard = [
         [InlineKeyboardButton("📊 Мои конфиги", callback_data='my_configs')],
-        [InlineKeyboardButton("📈 Статистика", callback_data='stats')],
+        # [InlineKeyboardButton("📈 Статистика", callback_data='stats')],
         [InlineKeyboardButton("🏷 Тарифы", callback_data='tariffs')],
         [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data='instructions')]
     ]
@@ -110,7 +114,7 @@ async def back_to_menu(query):
     """Вернуться в главное меню"""
     keyboard = [
         [InlineKeyboardButton("📊 Мои конфиги", callback_data='my_configs')],
-        [InlineKeyboardButton("📈 Статистика", callback_data='stats')],
+        # [InlineKeyboardButton("📈 Статистика", callback_data='stats')],
         [InlineKeyboardButton("🏷 Тарифы", callback_data='tariffs')],
         [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data='instructions')]
     ]
@@ -147,7 +151,7 @@ async def show_instructions(query):
         [InlineKeyboardButton("🤖 Nekoha - Android", url="https://play.google.com/store/apps/details?id=moe.matsuri.lite")],
                 
         # iOS
-        [InlineKeyboardButton("🍎 Hiddify - iOS", url="https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532")], 
+        [InlineKeyboardButton("🍎 V2Box app - iOS", url="https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690")], 
 
         # macOS - VLESS
         [InlineKeyboardButton("💻 NekoRay - macOS", url="https://en.nekoray.org/")],
@@ -201,10 +205,7 @@ async def buy_tariff(query, tariff_id):
         await process_payment(query, tariff_id, 'vless')
 
 async def process_payment(query, tariff_id, vpn_type):
-    """Создание платежа в YooKassa"""
-    import uuid
-    from yookassa import Configuration, Payment
-    
+    """Создание платежа в YooKassa"""    
     user_id = query.from_user.id
     tariff = TARIFFS.get(tariff_id)
     
@@ -302,6 +303,11 @@ async def show_tariffs(query):
         
         # Пропускаем тестовый тариф, если он уже активирован
         if tariff.get('is_test') and (awg_test_already_activated or vless_test_already_activated):
+            print(f"✅ SKIPPING {tariff_id}")
+            continue
+            
+        # Показываем тестовый платежный тариф
+        if tg_id != 364224373:
             print(f"✅ SKIPPING {tariff_id}")
             continue
         
@@ -404,26 +410,86 @@ async def show_configs(query):
     )
 
 async def show_stats(query):
+    tg_id = query.from_user.id
+
+    client_email = get_user_email(tg_id)
+
+    # Получаем статистику этого клиента
+    stats = get_client_stats_by_email_api(client_email)
+
     """Показать статистику"""
-    inbounds = xui.get_inbounds()
-    
-    if not inbounds:
-        await query.edit_message_text("❌ Данные не найдены")
+    if not stats:
+        await query.message.reply_text("❌ Статистика не найдена")
         return
     
-    total_up = sum(ib.get('up', 0) for ib in inbounds)
-    total_down = sum(ib.get('down', 0) for ib in inbounds)
+    up = stats.get('up', 0)
+    down = stats.get('down', 0)
+    total = up + down
+    enable = stats.get('enable', True)
     
-    text = f"📊 **Статистика VPN**\n\n"
-    text += f"⬆️ Отправлено: {format_bytes(total_up)}\n"
-    text += f"⬇️ Получено: {format_bytes(total_down)}\n"
-    text += f"📦 Всего: {format_bytes(total_up + total_down)}\n"
-
+    text = f"📊 **Ваша статистика**\n\n"
+    text += f"👤 Клиент: `{client_email}`\n"
+    text += f"Статус: {'✅ Активен' if enable else '❌ Отключен'}\n\n"
+    text += f"⬆️ Отправлено: **{format_bytes(up)}**\n"
+    text += f"⬇️ Получено: **{format_bytes(down)}**\n"
+    text += f"📦 Всего: **{format_bytes(total)}**\n\n"
+    
+    # Если есть лимит трафика
+    if 'total' in stats and stats['total'] > 0:
+        limit = stats['total']
+        used_percent = (total / limit) * 100 if limit > 0 else 0
+        text += f"📊 Лимит: {format_bytes(limit)}\n"
+        text += f"📈 Использовано: {used_percent:.1f}%\n\n"
+        
+        # Прогресс-бар
+        progress = int(used_percent / 10)
+        bar = "█" * progress + "░" * (10 - progress)
+        text += f"[{bar}]\n\n"
+    
+    # Если есть срок действия
+    if 'expiryTime' in stats and stats['expiryTime'] > 0:
+        expiry = datetime.fromtimestamp(stats['expiryTime'] / 1000)
+        now = datetime.now()
+        days_left = (expiry - now).days
+        
+        text += f"⏰ Действует до: {expiry.strftime('%Y-%m-%d %H:%M')}\n"
+        text += f"📅 Осталось дней: {days_left}\n"
+    
     reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
     ])
     
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+# Альтернативный метод через API 3X-UI
+def get_client_stats_by_email_api(client_email):
+    """Получить через прямой API запрос"""
+    try:
+        # Метод зависит от версии 3X-UI
+        response = xui.session.post(
+            f"http://{VLESS_DOMAIN}:51999/panel/api/inbounds/clientStats",
+            json={"email": client_email}
+        )
+        
+        # response = xui.session.get(
+        #     f"http://{VLESS_DOMAIN}:51999/panel/api/inbounds/getClientTraffics/{client_email}",
+        #     json={"email": client_email}
+        # )
+
+        
+        print('yyyd', response.status_code, client_email)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('success'):
+                stats_list = data.get('obj', [])
+                return next((s for s in stats_list if s.get('email') == client_email), None)
+        
+        return None
+        
+    except Exception as e:
+        print(f"Ошибка API: {e}")
+        return None
+
 
 async def create_test_config(query, tariff_id):
     """Выбор типа VPN для тестового периода"""
@@ -446,16 +512,18 @@ async def create_test_config(query, tariff_id):
     
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     await create_test_vless_config(query)
+    
 
 async def create_test_awg_config(query):
     """Создание тестового AmneziaWG конфига"""
-    user_id = query.from_user.id
+    tg_id = query.from_user.id
     
     await query.edit_message_text("⏳ Создаю тестовый AmneziaWG конфиг...")
+    print('🤜🏻 🤜🏻 🤜🏻 query', query)
     
     try:
         
-        client_name = f"user-{user_id}-{uuid.uuid4().hex[:8]}"
+        client_name = f"user-{tg_id}-{uuid.uuid4().hex[:8]}"
         
         async with httpx.AsyncClient(timeout=15) as client:
             # Login
@@ -500,12 +568,30 @@ async def create_test_awg_config(query):
             client_config = r.text
             if not client_config:
                 raise RuntimeError("Empty configuration")
+
         
-        # Отправляем конфиг файлом
-        from io import BytesIO
+        payment_id = None
+        client_public_key = None
+        expiry_time = None
         
+        # ===== 6. Сохранение в БД =====
+        create_vpn_key(
+            tg_id=tg_id,
+            payment_id=payment_id,
+            client_id=client_id,
+            client_name=client_name,
+            client_ip=client_ip,
+            client_public_key=client_public_key,
+            config=client_config,
+            expires_at=expiry_time,
+            vpn_type='awg'
+        )
+
+        logger.info("💾 VPN config saved to DB")
+        
+        # Отправляем конфиг файлом        
         config_file = BytesIO(client_config.encode('utf-8'))
-        config_file.name = f'amneziawg_test_{user_id}.conf'
+        config_file.name = f'amneziawg_test_{tg_id}.conf'
         
         await query.message.reply_document(
             document=config_file,
@@ -521,7 +607,7 @@ async def create_test_awg_config(query):
             parse_mode ='HTML'
         )
 
-        set_awg_test_activated(user_id)
+        set_awg_test_activated(tg_id)
         
         # Возврат в меню
         keyboard = [[InlineKeyboardButton("◀️ В главное меню", callback_data='back_to_menu')]]
@@ -544,16 +630,14 @@ async def create_test_awg_config(query):
 
 async def create_test_vless_config(query):
     """Создание тестового VLESS конфига"""
-    user_id = query.from_user.id
+    tg_id = query.from_user.id
     
     await query.edit_message_text("⏳ Создаю тестовый VLESS конфиг...")
     
     try:
-        import uuid
-        import time
         
         # Генерируем данные клиента
-        client_email = f"user-{user_id}-{uuid.uuid4().hex[:8]}"
+        client_email = f"user-{tg_id}-{uuid.uuid4().hex[:8]}"
         client_uuid = str(uuid.uuid4())
         
         # Время истечения: 1 час
@@ -570,7 +654,7 @@ async def create_test_vless_config(query):
         success = xui.add_client(
             inbound_id=inbound_id,
             email=client_email,
-            tg_id=user_id,
+            tg_id=tg_id,
             uuid=client_uuid,
             expiry_time=expiry_time,
             total_gb=0,   # no limit
@@ -605,6 +689,26 @@ async def create_test_vless_config(query):
         img.save(bio, 'PNG')
         bio.seek(0)
         
+        payment_id = None
+        client_ip = None
+        client_public_key = None
+        expiry_time = datetime.now() + timedelta(hours=1)
+
+        # ===== 6. Сохранение в БД =====
+        create_vpn_key(
+            tg_id=tg_id,
+            payment_id=payment_id,
+            client_id=client_uuid,
+            client_name=client_email,
+            client_ip=client_ip,
+            client_public_key=client_public_key,
+            config=vless_link,
+            expires_at=expiry_time,
+            vpn_type='vless'
+        )
+
+        logger.info("💾 VPN config saved to DB")
+        
         # Отправляем QR и конфиг
         await query.message.reply_photo(
             photo=bio,
@@ -623,13 +727,14 @@ async def create_test_vless_config(query):
         await query.message.reply_text(
             text=(
                 f"🔑 Конфиг:\n\n"
-                f"```\n{vless_link}\n```"
-                f"Скопируйте эту ссылку и вставьте в ваше приложение\n\n"
+                f"<code>{vless_link}</code>\n\n"
+                f"Скопируйте эту ссылку и вставьте в ваше приложение"
             ),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
+
         
-        set_vless_test_activated(user_id)
+        set_vless_test_activated(tg_id)
         
         # Кнопка назад
         await query.message.reply_text(
