@@ -20,7 +20,9 @@ from api.db import (
     get_payment_by_id, 
     get_or_create_user, 
     create_vpn_key, 
-    get_subscription_until
+    get_subscription_until,
+    get_user_email,
+    deactivate_key_by_payment
 )
 from api.wireguard import AmneziaWGClient
 from bot.tariffs import TARIFFS
@@ -104,6 +106,38 @@ async def amnezia_get_config(client: httpx.AsyncClient, client_id: str) -> str:
     )
     r.raise_for_status()
     return r.text
+
+async def process_refund(payment_id: str) -> bool:
+    """Деактивирует VPN конфиг при возврате платежа"""
+    try:
+        # Получаем данные платежа
+        payment_data = get_payment_by_id(payment_id)
+        if not payment_data:
+            logger.error(f"❌ Payment not found for refund: {payment_id}")
+            return False
+        
+        tg_id = payment_data.get("tg_id")
+        client_name = get_user_email(tg_id)
+        
+        if not client_name:
+            logger.error(f"❌ No client_name for refund: {payment_id}")
+            return False
+        
+        # Деактивируем в XUI
+        xui_success = await deactivate_xui_client(client_name)
+        if not xui_success:
+            logger.error(f"❌ Failed to deactivate XUI client: {client_name}")
+            return False
+        
+        # Деактивируем в БД
+        deactivate_key_by_payment(payment_id)
+        
+        logger.info(f"✅ Refund processed: {payment_id}, client: {client_name}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing refund {payment_id}: {e}")
+        return False
 
 async def process_successful_payment(payment_id: str, payment_data: dict, vpn_type: str) -> bool:
     """
@@ -467,6 +501,34 @@ async def yookassa_webhook(request: Request):
         return Response(status_code=200)
     
     logger.info(f"📋 Payment ID: {payment_id}, Status: {status_raw}, Event: {event}")
+
+
+    # ===== 3.5 ОБРАБОТКА ВОЗВРАТА =====
+    if event == "payment.refunded":
+        refund_amount = obj.get("refunded_amount", {})
+        amount_value = refund_amount.get("value", "0")
+        amount_currency = refund_amount.get("currency", "RUB")
+        
+        logger.info(f"💸 Refund received: {payment_id}, amount: {amount_value} {amount_currency}")
+        
+        # Обновляем статус платежа в БД
+        update_payment_status(payment_id, "refunded")
+        
+        # Деактивируем VPN конфиг пользователя
+        success = await process_refund(payment_id)
+        
+        # Уведомляем пользователя
+        if tg_id:
+            await send_telegram_notification(
+                tg_id,
+                f"💸 Возврат платежа выполнен\n\n"
+                f"💳 ID платежа: {payment_id}\n"
+                f"💰 Сумма возврата: {amount_value} {amount_currency}\n\n"
+                f"Ваш VPN конфиг был деактивирован.\n"
+                f"Если это ошибка — обратитесь в поддержку: @al_v1k"
+            )
+        
+        return Response(status_code=200)
     
     # ===== 4. Проверка существования платежа =====
     current_status = get_payment_status(payment_id)

@@ -325,7 +325,13 @@ def get_user_email(tg_id: int):
     db.close()
     return result[0] if result else None
 
-
+def deactivate_key_by_payment(payment_id: str):
+    """Деактивирует ключ по payment_id"""
+    execute_query("""
+        UPDATE vpn_keys 
+        SET expires_at = NOW()
+        WHERE payment_id = %s
+    """, (payment_id,))
 
 def get_last_paid_payment(tg_id: int):
     """
