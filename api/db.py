@@ -112,6 +112,17 @@ def get_user_by_tg_id(tg_id: int):
     db.close()
     return user
 
+def get_all_users_tg_ids():
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT tg_id FROM users"
+    )
+    user = cursor.fetchall()
+    cursor.close()
+    db.close()
+    return [u['tg_id'] for u in users]  # список tg_id
+
 
 def upsert_user_subscription(tg_id: int, subscription_until):
     db = get_db()

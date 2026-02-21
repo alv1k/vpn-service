@@ -1,0 +1,105 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "dns-remote",
+        "address": "8.8.8.8",
+        "detour": "proxy"
+      },
+      {
+        "tag": "dns-direct",
+        "address": "1.1.1.1",
+        "detour": "direct"
+      }
+    ],
+    "rules": [
+      {
+        "geosite": ["ru"],
+        "server": "dns-direct"
+      }
+    ],
+    "final": "dns-remote"
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "inet4_address": "172.19.0.1/30",
+      "inet6_address": "fdfe:dcba:9876::1/126",
+      "auto_route": true,
+      "strict_route": true,
+      "sniff": true
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "Germany VLESS Reality-ajs",
+      "server": "344988.snk.wtf",
+      "server_port": 31852,
+      "uuid": "d93bd70b-a5ec-439c-8de1-8caa46d08f6d",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.yandex.ru",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "roVVvuq4ZkvEu43rKEBm9fC0VXwMO1PVVd2YzvhiWEQ",
+          "short_id": "f6c9863acf"
+        }
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    },
+    {
+      "type": "dns",
+      "tag": "dns-out"
+    }
+  ],
+  "route": {
+    "geoip": {
+      "download_url": "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db"
+    },
+    "geosite": {
+      "download_url": "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db"
+    },
+    "rules": [
+      {
+        "protocol": "dns",
+        "outbound": "dns-out"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "geosite": ["ru"],
+        "outbound": "direct"
+      },
+      {
+        "geoip": ["ru"],
+        "outbound": "direct"
+      },
+      {
+        "geosite": ["category-ru"],
+        "outbound": "direct"
+      }
+    ],
+    "final": "proxy",
+    "auto_detect_interface": true
+  }
+}

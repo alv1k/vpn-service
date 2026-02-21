@@ -11,7 +11,7 @@ sys.path.insert(0, '/home/alvik/vpn-service')
 from datetime import datetime, timedelta, timezone
 from yookassa import Configuration, Payment
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, YOO_KASSA_SECRET_KEY, YOO_KASSA_SHOP_ID, AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from bot_xui.utils import XUIClient, generate_vless_link, format_bytes
 from io import BytesIO
@@ -27,9 +27,11 @@ from api.db import (
     is_awg_test_activated,
     is_vless_test_activated,
     get_user_email,
-    create_vpn_key
+    create_vpn_key,
+    get_all_users_tg_ids
 )
 
+ADMIN_TG_ID = 364224373  # твой tg_id
 # Загрузка переменных окружения
 load_dotenv()
 
@@ -175,6 +177,76 @@ async def show_instructions(query):
         parse_mode='HTML'
     )
     
+async def send_message_by_tg_id(tg_id: int, text: str, parse_mode: str = None, reply_markup=None):
+    """Отправка сообщения пользователю по tg_id"""    
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    try:
+        await bot.send_message(
+            chat_id=tg_id,
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup
+        )
+        return True
+    except Exception as e:
+        print(f"[send_message] Ошибка отправки для {tg_id}: {e}")
+        return False
+
+async def send_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда: /send <tg_id> <сообщение>"""
+    if update.effective_user.id != ADMIN_TG_ID:
+        await update.message.reply_text("❌ Нет доступа")
+        return
+
+    
+    # парсим вручную из текста сообщения
+    raw = update.message.text.split(maxsplit=2)  # ['/send', 'tg_id', 'text']
+    
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /send <tg_id> <сообщение>")
+        return
+    
+    try:
+        tg_id = int(raw[1])
+    except ValueError:
+        await update.message.reply_text("❌ tg_id должен быть числом")
+        return
+        
+    text = raw[2] 
+    
+    success = await send_message_by_tg_id(tg_id, text)
+    
+    if success:
+        await update.message.reply_text(f"✅ Сообщение отправлено пользователю {tg_id}")
+    else:
+        await update.message.reply_text(f"❌ Не удалось отправить. Пользователь мог заблокировать бота.")
+
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/broadcast <сообщение> — рассылка всем пользователям"""
+    if update.effective_user.id != ADMIN_TG_ID:
+        await update.message.reply_text("❌ Нет доступа")
+        return
+
+    raw = update.message.text.split(maxsplit=1)  # ['/broadcast', 'текст сообщения']
+    
+    if len(raw) < 2:
+        await update.message.reply_text("Использование: /broadcast <сообщение>")
+        return
+
+    text = raw[1]
+    users = get_all_users_tg_ids()
+
+    ok, fail = 0, 0
+    for tg_id in users:
+        success = await send_message_by_tg_id(tg_id, text)
+        if success:
+            ok += 1
+        else:
+            fail += 1
+
+    await update.message.reply_text(f"📬 Рассылка завершена\n✅ Успешно: {ok}\n❌ Ошибок: {fail}")
+
 
 async def buy_tariff(query, tariff_id):
     """Обработка покупки тарифа"""
@@ -482,12 +554,12 @@ def get_client_stats_by_email_api(client_email):
     try:
         # Метод зависит от версии 3X-UI
         response = xui.session.post(
-            f"http://{VLESS_DOMAIN}:51999/panel/api/inbounds/clientStats",
+            f"http://{VLESS_DOMAIN}:51999/panel-3x-ui/panel/api/inbounds/clientStats",
             json={"email": client_email}
         )
         
         # response = xui.session.get(
-        #     f"http://{VLESS_DOMAIN}:51999/panel/api/inbounds/getClientTraffics/{client_email}",
+        #     f"http://{VLESS_DOMAIN}:51999/panel-3x-ui/panel/api/inbounds/getClientTraffics/{client_email}",
         #     json={"email": client_email}
         # )
 
@@ -814,6 +886,7 @@ async def send_link_safely(
         logger.error(f"❌ Error: {e}")
         return False
 
+
 def main():
     """Запуск бота"""
     token = TELEGRAM_BOT_TOKEN
@@ -828,6 +901,8 @@ def main():
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(CommandHandler("send", send_to_user))
+    application.add_handler(CommandHandler("broadcast", broadcast))
     
     # Запускаем бота
     logger.info("Bot started!")
