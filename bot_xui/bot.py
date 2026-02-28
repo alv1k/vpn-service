@@ -10,14 +10,14 @@ import time
 sys.path.insert(0, '/home/alvik/vpn-service')
 from datetime import datetime, timedelta, timezone
 from yookassa import Configuration, Payment
-from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, YOO_KASSA_SECRET_KEY, YOO_KASSA_SHOP_ID, AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, YOO_KASSA_SECRET_KEY, YOO_KASSA_SHOP_ID, AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD, VLESS_PBK, VLESS_SID, VLESS_SNI 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from bot_xui.utils import XUIClient, generate_vless_link, format_bytes
+from bot_xui.utils import XUIClient, generate_vless_link, format_bytes, send_telegram_notification
+from bot_xui.tariffs import TARIFFS
 from io import BytesIO
 from typing import Optional, List, Dict
 from dotenv import load_dotenv
-from bot.tariffs import TARIFFS
 from api.db import (
     get_or_create_user,
     create_payment,
@@ -57,7 +57,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 Мои конфиги", callback_data='my_configs')],
         # [InlineKeyboardButton("📈 Статистика", callback_data='stats')],
         [InlineKeyboardButton("🏷 Тарифы", callback_data='tariffs')],
-        [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data='instructions')]
+        [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data='instructions')],
+        # [InlineKeyboardButton("test", callback_data='test')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -91,8 +92,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'back_to_menu':
         await back_to_menu(query)
     elif query.data.startswith('buy_tariff_'):
-        tariff_id = query.data.replace('buy_tariff_', '')
-        await buy_tariff(query, tariff_id)
+        parts = query.data.replace('buy_tariff_', '')
+        is_renew = parts.endswith('_renew')
+        tariff_id = parts.replace('_renew', '')    
+        renew_info = context.user_data.get('renew_info', {})    
+        await buy_tariff(query, tariff_id, is_renew=is_renew, **renew_info)
     elif query.data.startswith('create_test_config_'):
         tariff_id = query.data.replace('create_test_config_', '')
         await create_test_config(query, tariff_id)
@@ -110,6 +114,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_payment(query, tariff_id, 'vless')
     elif query.data.startswith('instructions'):
         await show_instructions(query)
+    elif query.data.startswith('show_key_'):
+        await handle_show_key(query)
+    elif query.data.startswith('renew_'):
+        parts = query.data.replace('renew_', '', 1)
+        client_name, inbound_id = parts.split('_', 1)
+        await renew_client(query, context, inbound_id, client_name)
+    elif query.data.startswith('test'):
+        # xui.add_or_extend_client(5, 'tg_364224373_312f2bfb',  364224373, 'e5c376a6-29d1-4e04-af7b-8fe9680b1503' )
+        await send_telegram_notification(364224373, 'test here<pre>https://example.com/some/long/link</pre>test here')
 
         
 async def back_to_menu(query):
@@ -118,15 +131,35 @@ async def back_to_menu(query):
         [InlineKeyboardButton("📊 Мои конфиги", callback_data='my_configs')],
         # [InlineKeyboardButton("📈 Статистика", callback_data='stats')],
         [InlineKeyboardButton("🏷 Тарифы", callback_data='tariffs')],
-        [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data='instructions')]
+        [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data='instructions')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(
+    text = (
         '👋 Добро пожаловать в tiin vpn manager!\n\n'
-        'Выберите действие:',
-        reply_markup=reply_markup
+        'Выберите действие:'
     )
+
+    try:
+        # Если сообщение текстовое
+        await query.edit_message_text(text, reply_markup=reply_markup)
+    except Exception:
+        try:
+            # Если сообщение с фото/медиа — редактируем caption
+            # await query.edit_message_caption(caption=text, reply_markup=reply_markup)
+            # Если совсем не получается редактировать — удаляем и отправляем новое
+            await query.message.delete()
+            await query.message.answer(text, reply_markup=reply_markup)
+        except Exception:
+            logger.error(f"Welcome message error")        
+            # Кнопка назад
+            await query.message.reply_text(
+                "❌ Ошибка возвращения в стартовое меню. Попробуйте написать команду '/start' или нажать кнопку ниже.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
+                ])
+            )
+
 
 async def show_instructions(query):
 
@@ -149,10 +182,11 @@ async def show_instructions(query):
 
 
         # Android - VLESS
-        [InlineKeyboardButton("🤖 v2rayNG - Android", url="https://play.google.com/store/apps/details?id=com.v2raytun.android")],
-        [InlineKeyboardButton("🤖 Nekoha - Android", url="https://play.google.com/store/apps/details?id=moe.matsuri.lite")],
+        [InlineKeyboardButton("🤖 Amnezia VPN - Android", url="https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru")],
+        [InlineKeyboardButton("🤖 v2rayTun - Android", url="https://play.google.com/store/apps/details?id=com.v2raytun.android")],
                 
         # iOS
+        [InlineKeyboardButton("🍎 v2RayTun app - iOS", url="https://apps.apple.com/ru/app/v2raytun/id6476628951")], 
         [InlineKeyboardButton("🍎 V2Box app - iOS", url="https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690")], 
 
         # macOS - VLESS
@@ -160,8 +194,8 @@ async def show_instructions(query):
         [InlineKeyboardButton("💻 Fox VPN - macOS", url="https://bestfoxapp.com/en/products/mac")],
         
         # Windows - VLESS
-        [InlineKeyboardButton("🖥 NekoRay - Windows", url="https://en.nekoray.org/download/")],
         [InlineKeyboardButton("🖥 Hiddify - Windows", url="https://hiddify.com/")],
+        [InlineKeyboardButton("💻 NekoRay - Windows", url="https://en.nekoray.org/")],
                 
         # TV
         [InlineKeyboardButton("📺 VPN4TV: VPN для ТВ - TV", url="https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify")],
@@ -221,7 +255,6 @@ async def send_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"❌ Не удалось отправить. Пользователь мог заблокировать бота.")
 
-
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/broadcast <сообщение> — рассылка всем пользователям"""
     if update.effective_user.id != ADMIN_TG_ID:
@@ -248,19 +281,19 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📬 Рассылка завершена\n✅ Успешно: {ok}\n❌ Ошибок: {fail}")
 
 
-async def buy_tariff(query, tariff_id):
+async def buy_tariff(query, tariff_id, is_renew = False, inbound_id=None, client_name=None): 
     """Обработка покупки тарифа"""
     if tariff_id not in TARIFFS:
-        await query.edit_message_text("❌ Тариф не найден")
+        await query.edit_message_text("❌ Тариф не найден buy tariff")
         return
     
     tariff = TARIFFS[tariff_id]
     
-    if tariff_id == "test_1h":
+    if tariff_id == "test_24h":
         # Тестовый - выбор протокола
         await create_test_config(query, tariff_id)
     else:
-        # Платные - выбор протокола перед оплатой
+        # Платные - выбор протокола
         keyboard = [
             [InlineKeyboardButton("🔵 AmneziaWG", callback_data=f'select_awg_{tariff_id}')],
             [InlineKeyboardButton("🟢 VLESS (recommended)", callback_data=f'select_vless_{tariff_id}')],
@@ -274,10 +307,10 @@ async def buy_tariff(query, tariff_id):
         # text += f"Выберите протокол VPN:"
         
         # await query.edit_message_text(text, parse_mode='Markdown')
-        await process_payment(query, tariff_id, 'vless')
+        await process_payment(query, tariff_id, 'vless', is_renew, client_name, inbound_id)
 
-async def process_payment(query, tariff_id, vpn_type):
-    """Создание платежа в YooKassa"""    
+async def process_payment(query, tariff_id, vpn_type, is_renew = False, client_name=None, inbound_id=None):
+    """Создание платежа в YooKassa"""
     user_id = query.from_user.id
     tariff = TARIFFS.get(tariff_id)
     
@@ -304,12 +337,15 @@ async def process_payment(query, tariff_id, vpn_type):
                 "return_url": "https://t.me/tiin_service_bot"
             },
             "capture": True,
-            "description": f"Оплата тарифа {tariff['name']}",
+            "description": f"{'Оплата' if is_renew else 'Продление'} тарифа {tariff['name']}",
             "metadata": {
                 "tg_id": str(user_id),
                 "tariff": tariff_id,
                 "vpn_type": vpn_type,  # ← Добавляем тип VPN
-                "username": query.from_user.username or ""
+                "username": query.from_user.username or "",
+                "is_renew": "true" if is_renew else "false",
+                "client_name": client_name if is_renew else "",  # передай client_name в функцию
+                "inbound_id": str(inbound_id) if is_renew else "",  # и inbound_id
             }
         }, idempotency_key)
         
@@ -334,7 +370,7 @@ async def process_payment(query, tariff_id, vpn_type):
         # Отправляем ссылку на оплату
         keyboard = [
             [InlineKeyboardButton("💳 Оплатить", url=payment.confirmation.confirmation_url)],
-            [InlineKeyboardButton("◀️ Назад к тарифам", callback_data='tariffs')],
+            [InlineKeyboardButton("◀️ Назад к тарифам", callback_data='tariffs')] if not is_renew else [InlineKeyboardButton("◀️ Назад в меню", callback_data='back_to_menu')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -361,6 +397,90 @@ async def process_payment(query, tariff_id, vpn_type):
             ])
         )
 
+async def renew_client(query, context, inbound_id: int, client_email: str):
+    
+    # Сохраняем до цикла
+    context.user_data['renew_info'] = {
+        'inbound_id': inbound_id,
+        'client_email': client_email
+    }
+
+    regular_tariffs = []
+
+    for tariff_id, tariff in TARIFFS.items():
+        tariff_info = {**tariff, 'id': tariff_id}
+        if tariff.get('is_test'):
+            continue
+        elif tariff_id == "admin_test":
+            continue
+        else:
+            regular_tariffs.append(tariff_info)
+
+    regular_tariffs.sort(key=lambda x: x.get('days', 0))
+
+    text = "💎 **Выберите длительность продления подписки VPN**\n\n"
+    text += "📦 **Основные тарифы**\n"
+
+    for i, tariff in enumerate(regular_tariffs):
+        bullet = "├" if i < len(regular_tariffs) - 1 else "└"
+        price_per_day = tariff['price'] / tariff['days'] if tariff.get('days') else 0
+        
+        text += f"{bullet}─ **{tariff['name']}**\n"
+        text += f"{bullet}   💰 {tariff['price']} ₽  ·  ⏱ {tariff['period']}  ·  👥 {tariff['device_limit']} устройств\n"
+        
+        if tariff.get('days', 0) > 3:
+            text += f"{bullet}   💫 всего {price_per_day:.1f} ₽/день\n"
+        
+        if tariff.get('features'):
+            text += f"{bullet}   ✨ {', '.join(tariff['features'])}\n"
+        
+        if tariff.get('days', 0) >= 90:
+            text += f"{bullet}   🌟 **Самый выгодный!**\n"
+        
+        if i < len(regular_tariffs) - 1:
+            text += f"{bullet}  \n"
+
+    text += "_Выберите подходящий тариф ниже:_ ⬇️"
+
+    keyboard = []
+    regular_row = []
+
+    for i, tariff in enumerate(regular_tariffs):
+        if tariff.get('days', 0) <= 3:
+            emoji = "⚡️"
+        elif tariff.get('days', 0) <= 7:
+            emoji = "📱"
+        elif tariff.get('days', 0) <= 14:
+            emoji = "📊"
+        elif tariff.get('days', 0) <= 30:
+            emoji = "📦"
+        else:
+            emoji = "💎"
+        
+        button_text = f"{emoji} {tariff['days']}дн | {tariff['price']}₽"
+
+        regular_row.append(
+            InlineKeyboardButton(
+                button_text,
+                callback_data=f'buy_tariff_{tariff["id"]}_renew'
+            )
+        )
+        
+        if len(regular_row) == 2 or i == len(regular_tariffs) - 1:
+            keyboard.append(regular_row)
+            regular_row = []
+
+    keyboard.append([InlineKeyboardButton("◀️ Вернуться в меню", callback_data='back_to_menu')])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.message.reply_text(
+        text,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+
 async def show_tariffs(query):
     """Показать доступные тарифы"""
 
@@ -369,48 +489,142 @@ async def show_tariffs(query):
     awg_test_already_activated = is_awg_test_activated(tg_id)
     vless_test_already_activated = is_vless_test_activated(tg_id)
     
-    text = "💳 **Доступные тарифы VPN**\n\n"
-    
+    # Группируем тарифы по типам для красивого отображения
+    test_tariffs = []
+    regular_tariffs = []
+    special_tariffs = []  # для админа
+
     for tariff_id, tariff in TARIFFS.items():
+        tariff_info = {**tariff, 'id': tariff_id}
+        if tariff.get('is_test'):
+            test_tariffs.append(tariff_info)
+        elif tariff_id == "admin_test":
+            special_tariffs.append(tariff_info)
+        else:
+            regular_tariffs.append(tariff_info)
+
+    # Сортируем обычные тарифы по количеству дней
+    regular_tariffs.sort(key=lambda x: x.get('days', 0))
+
+    text = "💎 **Доступные тарифы VPN**\n\n"
+
+    # Показываем тестовый тариф, если он еще не активирован
+    if test_tariffs and not (awg_test_already_activated or vless_test_already_activated):
+        text += "🎁 **Попробуйте бесплатно**\n"
+        text += "┌─────────────────────\n"
+        for tariff in test_tariffs:
+            text += f"│ ✨ **{tariff['name']}**\n"
+            text += f"│    ▸ Цена: **{tariff['price']} ₽**\n"
+            text += f"│    ▸ Период: {tariff['period']}\n"
+            text += f"│    ▸ Устройств: {tariff['device_limit']}\n"
+            if tariff.get('features'):
+                text += f"│    ▸ {', '.join(tariff['features'])}\n"
+        text += "└─────────────────────\n\n"
+
+    # Основные тарифы
+    text += "📦 **Основные тарифы**\n"
+
+    # Создаем красивое отображение для основных тарифов
+    for i, tariff in enumerate(regular_tariffs):
+        # Используем разные символы для разнообразия
+        bullet = "├" if i < len(regular_tariffs) - 1 else "└"
         
-        # Пропускаем тестовый тариф, если он уже активирован
-        if tariff.get('is_test') and (awg_test_already_activated or vless_test_already_activated):
-            print(f"✅ SKIPPING {tariff_id}")
-            continue
-            
-        # Показываем тестовый платежный тариф
-        if tg_id != 364224373:
-            print(f"✅ SKIPPING {tariff_id}")
-            continue
+        # Рассчитываем цену за день для информативности
+        price_per_day = tariff['price'] / tariff['days'] if tariff.get('days') else 0
         
-        text += f"**{tariff['name']}**\n"
-        text += f"💰 Цена: {tariff['price']} ₽\n"
-        text += f"⏱ Период: {tariff['period']}\n"
-        text += f"👥 Устройств: {tariff['device_limit']}\n"
+        # Основная строка тарифа
+        text += f"{bullet}─ **{tariff['name']}**\n"
+        text += f"{bullet}   💰 {tariff['price']} ₽  ·  ⏱ {tariff['period']}  ·  👥 {tariff['device_limit']} устройств\n"
         
+        # Показываем цену за день для длинных тарифов
+        if tariff.get('days', 0) > 3:
+            text += f"{bullet}   💫 всего {price_per_day:.1f} ₽/день\n"
+        
+        # Особенности если есть
         if tariff.get('features'):
-            text += f"✨ Особенности: {', '.join(tariff['features'])}\n"
+            text += f"{bullet}   ✨ {', '.join(tariff['features'])}\n"
         
+        # Добавляем подсказку о выгоде для длинных тарифов
+        if tariff.get('days', 0) >= 90:
+            text += f"{bullet}   🌟 **Самый выгодный!**\n"
+        
+        if i < len(regular_tariffs) - 1:
+            text += f"{bullet}  \n"  # Отступ между тарифами
+
+    text += "\n"
+
+    # Специальные тарифы (только для админа)
+    if special_tariffs and tg_id == 364224373:
+        text += "⚙️ **Служебные тарифы**\n"
+        for tariff in special_tariffs:
+            text += f"└─ 🔧 {tariff['name']}\n"
+            text += f"   💰 {tariff['price']} ₽ · {tariff['period']}\n"
         text += "\n"
-    
-    # Кнопки для покупки каждого тарифа
+
+    # Подсказка внизу
+    text += "_Выберите подходящий тариф ниже:_ ⬇️"
+
+    # Создаем красивые кнопки
     keyboard = []
-    for tariff_id, tariff in TARIFFS.items():
-        # Пропускаем тестовый тариф
-        if tariff.get('is_test') and (awg_test_already_activated or vless_test_already_activated):
-            continue
-        keyboard.append([
-            InlineKeyboardButton(
-                f"  💳 {'Попробовать' if tariff.get('is_test') and awg_test_already_activated and vless_test_already_activated else 'Купить'} {tariff['name']} - {tariff['price']} ₽  ",
-                callback_data=f'buy_tariff_{tariff_id}'
+
+    # Кнопки для тестового тарифа (если доступен)
+    if test_tariffs and not (awg_test_already_activated or vless_test_already_activated):
+        test_row = []
+        for tariff in test_tariffs:
+            test_row.append(
+                InlineKeyboardButton(
+                    f"🎁 {tariff['name']} (0 ₽)",
+                    callback_data=f'buy_tariff_{tariff["id"]}'
+                )
             )
-        ])
-    
-    # Кнопка "Назад"
-    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data='back_to_menu')])
-    
+        keyboard.append(test_row)
+
+    # Группируем основные тарифы по 2 в ряд для компактности
+    regular_row = []
+    for i, tariff in enumerate(regular_tariffs):
+        # Эмодзи в зависимости от длительности
+        if tariff.get('days', 0) <= 3:
+            emoji = "⚡️"
+        elif tariff.get('days', 0) <= 7:
+            emoji = "📱"
+        elif tariff.get('days', 0) <= 14:
+            emoji = "📊"
+        elif tariff.get('days', 0) <= 30:
+            emoji = "📦"
+        else:
+            emoji = "💎"
+        
+        button_text = f"{emoji} {tariff['days']}дн | {tariff['price']}₽"
+        
+        regular_row.append(
+            InlineKeyboardButton(
+                button_text,
+                callback_data=f'buy_tariff_{tariff["id"]}'
+            )
+        )
+        
+        # Если набрали 2 кнопки или это последний тариф
+        if len(regular_row) == 2 or i == len(regular_tariffs) - 1:
+            keyboard.append(regular_row)
+            regular_row = []
+
+    # Кнопки для специальных тарифов (только для админа)
+    if special_tariffs and tg_id == 364224373:
+        admin_row = []
+        for tariff in special_tariffs:
+            admin_row.append(
+                InlineKeyboardButton(
+                    f"🔧 {tariff['price']}₽",
+                    callback_data=f'buy_tariff_{tariff["id"]}'
+                )
+            )
+        keyboard.append(admin_row)
+
+    # Кнопка "Назад" во всю ширину
+    keyboard.append([InlineKeyboardButton("◀️ Вернуться в меню", callback_data='back_to_menu')])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await query.edit_message_text(
         text,
         reply_markup=reply_markup,
@@ -431,72 +645,282 @@ def convert_to_local(dt: datetime, offset_hours: int = 9) -> str:
     return (dt + timedelta(hours=offset_hours)).strftime("%d.%m.%Y %H:%M")
 
 async def show_configs(query):
-    """Показать конфиги пользователя (ТОЛЬКО через БД)"""
-
+    """Показать список конфигов пользователя"""
     tg_id = query.from_user.id
     keys = get_keys_by_tg_id(tg_id)
 
     if not keys:
-        await query.edit_message_text(
-            "❌ У вас нет активных VPN-конфигов",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏷 Тарифы", callback_data="tariffs")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
-            ])
-        )
+        await show_no_configs_message(query)
         return
 
-    active_keys = [
-        key for key in keys
-        if not key["expires_at"] or key["expires_at"] > datetime.utcnow()
-    ]
+    # Фильтруем активные и истекшие
+    active_keys = []
+    expired_keys = []
+    
+    for key in keys:
+        if not key["expires_at"] or key["expires_at"] > datetime.utcnow():
+            active_keys.append(key)
+        else:
+            expired_keys.append(key)
 
-    if not active_keys:
-        await query.edit_message_text(
-            "❌ У вас нет активных VPN-конфигов",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏷 Тарифы", callback_data="tariffs")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
-            ])
-        )
+    if not active_keys and not expired_keys:
+        await show_no_configs_message(query)
         return
 
-    for key in active_keys:
-        expires_at = key["expires_at"]
-        expires_text = convert_to_local(expires_at)  # Используем функцию из прошлого шага
-        vless_link = key["config"]
+    # Формируем красивое сообщение со списком конфигов
+    text = "🔐 **Ваши VPN конфиги**\n\n"
 
-        qr = qrcode.QRCode(version=1, box_size=8, border=4)
-        qr.add_data(vless_link)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
+    print(active_keys)
+    
+    if active_keys:
+        text += "✅ **Активные:**\n"
+        for i, key in enumerate(active_keys, 1):
+            expires_at = key["expires_at"]
+            expires_text = convert_to_local(expires_at)
+            
+            # Определяем эмодзи для типа конфига
+            config_emoji = "📱" if "vless" in key["vpn_type"] else "🖥"
+            
+            # Красивое отображение с псевдографикой
+            prefix = "├─" if i < len(active_keys) else "└─"
+            text += f"{prefix} {config_emoji} **{key['client_name']}**\n"
+            text += f"{prefix}    ⏱ до: `{expires_text}`\n"
+            
+            config = key["config"] or ""
+            if "vless" in config:
+                text += f"{prefix}    🔗 VLESS\n"
+            elif "trojan" in config:
+                text += f"{prefix}    🛡 Trojan\n"
+            elif "shadowsocks" in config:
+                text += f"{prefix}    🌐 Shadowsocks\n"
 
-        bio = BytesIO()
-        bio.name = "qr.png"
-        img.save(bio, "PNG")
-        bio.seek(0)
+            if i < len(active_keys):
+                text += f"{prefix}  \n"  # Отступ между конфигами
+    
+    # if expired_keys:
+    #     if active_keys:
+    #         text += "\n"
+    #     text += "❌ **Истекшие:**\n"
+    #     for i, key in enumerate(expired_keys, 1):
+    #         expires_at = key["expires_at"]
+    #         expires_text = convert_to_local(expires_at)
+            
+    #         prefix = "├─" if i < len(expired_keys) else "└─"
+    #         text += f"{prefix} 📱 {key['client_name']}\n"
+    #         text += f"{prefix}    ⏱ истек: `{expires_text}`\n"
+    
+    text += "\n_Нажмите на конфиг ниже, чтобы показать QR-код и ссылку_ ⬇️"
 
-        await query.message.reply_photo(
-            photo=bio,
-            caption=(
-                "🔐 <b>Ваш VPN конфиг</b>\n\n"
-                f"👤 Имя: <code>{key['client_name']}</code>\n"
-                f"⏱ Действителен до: <code>{expires_text}</code>\n\n"
-                f"📱 <b>Ссылка для подключения:</b>\n"
-                f"<code>{vless_link}</code>\n\n"
-                "Поддержка: @al_v1k"
-            ),
-            parse_mode="HTML"
+    # Создаем кнопки для каждого активного конфига
+    keyboard = []
+    
+    # Группируем активные конфиги по 2 в ряд
+    active_row = []
+    for i, key in enumerate(active_keys):
+        # Короткое имя для кнопки (макс 15 символов)
+        short_name = key['client_name'][:15] + "..." if len(key['client_name']) > 15 else key['client_name']
+        
+        
+
+        # Эмодзи в зависимости от протокола
+        config = key["config"] or ""
+        if "vless" in config:
+            emoji = "🔗"
+        elif "trojan" in config:
+            emoji = "🛡"
+        else:
+            emoji = "📱"
+        
+        button_text = f"{emoji} {short_name}"
+        
+        active_row.append(
+            InlineKeyboardButton(
+                button_text,
+                callback_data=f'show_key_{key["client_name"]}'
+            )
         )
+        
+        # Если набрали 2 кнопки или это последний конфиг
+        if len(active_row) == 2 or i == len(active_keys) - 1:
+            keyboard.append(active_row)
+            active_row = []
+    
+    # Добавляем кнопки для истекших конфигов (если есть)
+    # if expired_keys:
+    #     expired_row = []
+    #     for key in expired_keys[:2]:  # Максимум 2 истекших в ряд
+    #         short_name = key['client_name'][:10] + "..." if len(key['client_name']) > 10 else key['client_name']
+    #         expired_row.append(
+    #             InlineKeyboardButton(
+    #                 f"❌ {short_name}",
+    #                 callback_data=f'renew_key_{key["client_name"]}'
+    #             )
+    #         )
+    #     if expired_row:
+    #         keyboard.append(expired_row)
+        
+        # Если больше 2 истекших, добавляем кнопку "Все истекшие"
+        # if len(expired_keys) > 2:
+        #     keyboard.append([
+        #         InlineKeyboardButton(
+        #             "🔄 Продлить все истекшие",
+        #             callback_data="renew_all_expired"
+        #         )
+        #     ])
+    
+    # Кнопки управления
+    control_row = []
+    control_row.append(InlineKeyboardButton("🆕 Новый конфиг", callback_data="tariffs"))
+    # control_row.append(InlineKeyboardButton("🔄 Обновить", callback_data="refresh_configs"))
+    keyboard.append(control_row)
+    
+    # Кнопка "Назад"
+    keyboard.append([InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Кнопка назад после вывода всех конфигов
-    await query.message.reply_text(
-        "⬆️ Ваши активные конфиги выше",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
-        ])
+    try:
+        # Если сообщение текстовое
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception:
+        try:
+            # Если сообщение с фото/медиа — редактируем caption
+            # await query.edit_message_caption(caption=text, reply_markup=reply_markup)
+            # Если совсем не получается редактировать — удаляем и отправляем новое
+            await query.message.delete()
+            # await query.message.answer(text, reply_markup=reply_markup)
+        except Exception:
+            logger.error(f"Welcome message error")        
+            # Кнопка назад
+            await query.message.reply_text(
+                "❌ Ошибка возвращения в стартовое меню. Попробуйте написать команду '/start' или нажать кнопку ниже.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
+                ])
+            )
+
+
+async def show_single_config(query, client_name):
+    """Показать конкретный конфиг с QR-кодом"""
+    tg_id = query.from_user.id
+    keys = get_keys_by_tg_id(tg_id)
+    
+    # Ищем нужный ключ
+    key = next((k for k in keys if k["client_name"] == client_name), None)
+    
+    if not key:
+        await query.answer("❌ Конфиг не найден", show_alert=True)
+        return
+    
+    expires_at = key["expires_at"]
+    expires_text = convert_to_local(expires_at)
+    vless_link = key["config"]
+    
+    # Проверяем активность
+    is_active = not expires_at or expires_at > datetime.utcnow()
+    status_emoji = "✅" if is_active else "❌"
+    status_text = "Активен" if is_active else "Истек"
+    
+    # Генерируем QR-код
+    qr = qrcode.QRCode(version=1, box_size=8, border=4)
+    qr.add_data(vless_link)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    bio = BytesIO()
+    bio.name = "qr.png"
+    img.save(bio, "PNG")
+    bio.seek(0)
+    
+    # Определяем протокол
+    protocol = "VLESS"
+    if "trojan" in vless_link:
+        protocol = "Trojan"
+    elif "shadowsocks" in vless_link:
+        protocol = "Shadowsocks"
+    
+    # Красивое сообщение с информацией
+    caption = (
+        f"🔐 **{status_emoji} Конфиг {key['client_name']}**\n\n"
+        f"┌─ 📋 **Информация**\n"
+        f"│  ▸ Протокол: **{protocol}**\n"
+        f"│  ▸ Статус: **{status_text}**\n"
+        f"│  ▸ Действует до: `{expires_text}`\n"
+        f"└─ 🔧 **Ссылка для подключения:**\n"
+        f"`{vless_link}`\n\n"
+        "💡 _Скопируйте ссылку или сохраните QR-код_"
     )
 
+    # Получаем inbound
+    inbounds = xui.get_inbounds()
+    if not inbounds:
+        raise RuntimeError("Inbound не найден")
+    
+    inbound_id = inbounds[2]['id']
+
+    # Кнопки под фото
+    keyboard = [
+        [
+            # InlineKeyboardButton("🔄 Продлить", callback_data=f"renew_{client_name}_{inbound_id}")
+        ],
+        [
+            InlineKeyboardButton("🔙 К списку", callback_data="my_configs")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.message.reply_photo(
+        photo=bio,
+        caption=caption,
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+async def show_no_configs_message(query):
+    """Показать сообщение об отсутствии конфигов"""
+    text = (
+        "❄️ **У вас пока нет активных конфигов**\n\n"
+        "┌─────────────────────\n"
+        "│ Чтобы получить доступ к VPN:\n"
+        "│ 1️⃣ Выберите подходящий тариф\n"
+        "│ 2️⃣ Оплатите удобным способом\n"
+        "│ 3️⃣ Получите готовый конфиг\n"
+        "└─────────────────────\n\n"
+        "✨ **Преимущества:**\n"
+        "• ⚡️ Высокая скорость\n"
+        "• 🔒 Безопасное шифрование\n"
+        "• 📱 До 10 устройств\n"
+        "• 🌐 Доступ к любым сайтам\n\n"
+        "👇 **Нажмите на кнопку ниже, чтобы выбрать тариф**"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔥 Выбрать тариф", callback_data="tariffs")],
+        [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
+    ]
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+# Добавьте обработчики callback_data
+# @dp.callback_query(lambda c: c.data.startswith('show_key_'))
+async def handle_show_key(callback_query):
+    client_name = callback_query.data.replace('show_key_', '')
+    await show_single_config(callback_query, client_name)
+
+# @dp.callback_query(lambda c: c.data == 'refresh_configs')
+async def handle_refresh_configs(callback_query):
+    await callback_query.answer("🔄 Обновляю список...")
+    await show_configs(callback_query)
+
+# @dp.callback_query(lambda c: c.data.startswith('copy_'))
+async def handle_copy_key(callback_query):
+    # Здесь можно добавить логику копирования или просто показать ссылку
+    await callback_query.answer("📋 Ссылка скопирована!", show_alert=False)
 async def show_stats(query):
     tg_id = query.from_user.id
 
@@ -597,7 +1021,7 @@ async def create_test_config(query, tariff_id):
     text += "   • Маскируется под HTTPS\n"
     text += "   • Работает в сложных сетях"
     
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    # await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     await create_test_vless_config(query)
     
 
@@ -610,7 +1034,7 @@ async def create_test_awg_config(query):
     
     try:
         
-        client_name = f"user-{tg_id}-{uuid.uuid4().hex[:8]}"
+        client_name = f"test-{tg_id}-{uuid.uuid4().hex[:8]}"
         
         async with httpx.AsyncClient(timeout=15) as client:
             # Login
@@ -685,7 +1109,7 @@ async def create_test_awg_config(query):
             caption=f"🔵 **Тестовый AmneziaWG конфиг**\n\n"
                     f"👤 Клиент: `{client_name}`\n"
                     f"🌐 IP: `{client_ip}`\n"
-                    f"⏱ Действителен: 1 час\n"
+                    f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n"
                     f"📱 **Инструкция:**\n"
                     f"1. Установите [AmneziaVPN](https://amnezia.org)\n"
                     f"2. Импортируйте файл конфигурации\n"
@@ -724,18 +1148,18 @@ async def create_test_vless_config(query):
     try:
         
         # Генерируем данные клиента
-        client_email = f"user-{tg_id}-{uuid.uuid4().hex[:8]}"
+        client_email = f"test-{tg_id}-{uuid.uuid4().hex[:8]}"
         client_uuid = str(uuid.uuid4())
         
-        # Время истечения: 1 час
-        expiry_time = int((time.time() + 3600) * 1000)
+        # Время истечения: 24 часа
+        expiry_time = int((time.time() + 86400) * 1000)
         
         # Получаем inbound
         inbounds = xui.get_inbounds()
         if not inbounds:
             raise RuntimeError("Inbound не найден")
         
-        inbound_id = inbounds[0]['id']
+        inbound_id = inbounds[2]['id']
         
         # Создаем клиента
         success = xui.add_client(
@@ -755,11 +1179,16 @@ async def create_test_vless_config(query):
         
         # Генерируем ссылку
         vless_link = generate_vless_link(
-            client_uuid,
-            VLESS_DOMAIN,
-            VLESS_PORT,
-            VLESS_PATH,
-            client_email
+            client_id=client_uuid,
+            domain=VLESS_DOMAIN,
+            port=VLESS_PORT,
+            path=VLESS_PATH,
+            client_name=client_email,
+            pbk=VLESS_PBK,
+            sid=VLESS_SID,
+            sni=VLESS_SNI,
+            fp="chrome",
+            spx="/"
         )
         
         # Создаем QR код
@@ -779,7 +1208,7 @@ async def create_test_vless_config(query):
         payment_id = None
         client_ip = None
         client_public_key = None
-        expiry_time = datetime.now() + timedelta(hours=1)
+        expiry_time = datetime.now(timezone.utc) + timedelta(hours=TARIFFS['test_24h']['hours'])
 
         # ===== 6. Сохранение в БД =====
         create_vpn_key(
@@ -801,7 +1230,7 @@ async def create_test_vless_config(query):
             photo=bio,
             caption=f"🟢 **Тестовый VLESS конфиг**\n\n"
                     f"👤 ID: {client_email}\n"
-                    f"⏱ Действителен: 1 час\n"
+                    f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n"
                     f"**Инструкция:**\n"
                     f"1. Установите приложение из раздела 'Инструкция' \n"
                     f"2. Отсканируйте QR или скопируйте ссылку\n"
@@ -813,7 +1242,7 @@ async def create_test_vless_config(query):
         # Отправка текста в безопасном code-блоке
         await query.message.reply_text(
             text=(
-                f"🔑 Конфиг:\n\n"
+                f"🔑 Ключ-конфиг\n\n"
                 f"<code>{vless_link}</code>\n\n"
                 f"Скопируйте эту ссылку и вставьте в ваше приложение"
             ),

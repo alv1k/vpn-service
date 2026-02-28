@@ -47,6 +47,9 @@ VLESS_DOMAIN = os.getenv("VLESS_DOMAIN")
 VLESS_PORT = os.getenv("VLESS_PORT")
 VLESS_PATH = os.getenv("VLESS_PATH")
 VLESS_INBOUND_ID = os.getenv("VLESS_INBOUND_ID")
+VLESS_PBK = os.getenv("VLESS_PBK")
+VLESS_SID = os.getenv("VLESS_SID")
+VLESS_SNI = os.getenv("VLESS_SNI")
 
 # AmneziaWG
 AMNEZIA_CONTAINER = os.getenv("AMNEZIA_CONTAINER")

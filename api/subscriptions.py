@@ -1,6 +1,6 @@
 from datetime import timedelta
 from api.db import get_user_by_tg_id, upsert_user_subscription, get_payment_by_id
-from bot.tariffs import TARIFFS
+from bot_xui.tariffs import TARIFFS
 
 def activate_subscription(payment_id: str):
     payment = get_payment_by_id(payment_id)
