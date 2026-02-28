@@ -5,7 +5,7 @@ import httpx
 import logging
 import time
 from ipaddress import ip_address, ip_network
-from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI
 from datetime import datetime
 from bot_xui.bot import send_link_safely
 import qrcode
@@ -25,7 +25,7 @@ from api.db import (
     deactivate_key_by_payment
 )
 from api.wireguard import AmneziaWGClient
-from bot.tariffs import TARIFFS
+from bot_xui.tariffs import TARIFFS
 from config import (
     TELEGRAM_BOT_TOKEN, 
     AMNEZIA_WG_API_URL, 
@@ -169,15 +169,12 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
         # ===== 2. Получение / создание пользователя =====
         user_id = get_or_create_user(tg_id)
-        logger.info(f"👤 User ID: {user_id} (tg_id={tg_id})")
 
         # ===== 3. Дата окончания подписки =====
         subscription_until = get_subscription_until(tg_id)
-        logger.info(f"📅 Subscription until {subscription_until:%d.%m.%Y}")
 
         # ===== 4. Формирование имени VPN клиента =====
-        client_name = f"tg_{tg_id}_{payment_id[:8]}"
-        logger.info(f"🔑 VPN client name: {client_name}")
+        client_name = f"{tariff_key}_{tg_id}_{payment_id[:8]}"
 
         client_id = None
         client_ip = None
@@ -206,14 +203,21 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             if not inbounds:
                 raise RuntimeError("3x-ui inbound not found")
             
-            inbound_id = inbounds[0]['id']
+            inbound_id = inbounds[2]['id']
             
             # Время истечения (миллисекунды)
-            duration_days = TARIFFS[tariff_key].get('duration_days', 30)
+            duration_days = TARIFFS[tariff_key].get('days', 30)
             expiry_time = int((time.time() + (duration_days * 86400)) * 1000)
             
-            # Создаем клиента в 3x-ui
-            success = xui.add_client(
+            # ===== Создаем/продлеваем клиента в 3x-ui =====
+            existing = xui.get_client_by_tg_id(tg_id)
+
+            if existing:
+                # Клиент уже есть — берём его UUID
+                client_id = existing['client']['id']
+                logger.info(f"Existing client found, reusing uuid: {client_id}")
+
+            success = xui.add_or_extend_client(
                 inbound_id=inbound_id,
                 email=client_name,
                 tg_id=tg_id,
@@ -228,12 +232,17 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             
             # Генерируем VLESS ссылку
             client_config = generate_vless_link(
-                client_id,
-                VLESS_DOMAIN,
-                VLESS_PORT,
-                VLESS_PATH,
-                client_name
-            )            
+                client_id=client_id,
+                domain=VLESS_DOMAIN,
+                port=VLESS_PORT,
+                path=VLESS_PATH,
+                client_name=client_name,
+                pbk=VLESS_PBK,       # из .env
+                sid=VLESS_SID,       # из .env
+                sni=VLESS_SNI,       # из .env, например "www.yandex.ru"
+                fp="chrome",
+                spx="/"
+            )
             
             # Создаем QR код            
             qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -318,11 +327,11 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     tg_id=tg_id,
                     image_bytes=bio,
                     caption=f"🟢 **Ваш VLESS конфиг**\n\n"
-                            f"👤 ID: {client_name}\n"
-                            f"⏱ Действителен: 1 час\n"
+                            f"👤 ID: {client_id}\n"
+                            f"⏱ Действителен: {TARIFFS[tariff_key].get('period', 10)}\n"
                             f"👥 Устройств: {TARIFFS[tariff_key].get('device_limit', 10)}\n"
                             f"**Инструкция:**\n"
-                            f"1. Установите v2rayNG (Android) или Nekoray (Windows/macOS)\n"
+                            f"1. Установите v2rayNG (Android/iOS) или Nekoray (Windows/macOS)\n"
                             f"2. Отсканируйте QR или скопируйте ссылку\n"
                             f"3. Подключитесь\n\n"
                             f"💬 Поддержка: @al_v1k",
@@ -330,10 +339,15 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
                 # Отправка текста в безопасном code-блоке
                 message = (
-                    f"🔑 Конфиг:\n\n"
-                    f"```\n{client_config}\n```"
+                    f"🔑 Ключ-конфиг\n\n"
+                    f"\n<pre>{client_config}</pre>\n"
                     f"Скопируйте эту ссылку и вставьте в ваше приложение\n\n"
                 )
+                # Обычный моноширинный текст (inline code)
+                # message = f'Ваша ссылка:\n<code>https://example.com/some/long/link</code>'
+
+                # Или блок кода
+                # message = f'Ваша ссылка:\n<pre>https://example.com/some/long/link</pre>'
                 
                 await send_telegram_notification(tg_id, message)
 
@@ -399,7 +413,7 @@ async def send_telegram_notification(tg_id: int, message: str, buttons: list = N
     data = {
         "chat_id": tg_id,
         "text": message,
-        "parse_mode": "Markdown"
+        "parse_mode": "HTML"
     }
     
     # Добавляем кнопки если они есть
