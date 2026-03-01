@@ -242,6 +242,7 @@ def get_or_create_user(tg_id: int) -> int:
 
 
 def create_vpn_key(tg_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at, vpn_type='awg'): 
+    print(f"[DB] create_vpn_key called, tg_id={tg_id}")
     db = get_db()
     cursor = db.cursor()
 
@@ -279,8 +280,9 @@ def create_vpn_key(tg_id, payment_id, client_id, client_name, client_ip, client_
             vpn_type
         )
     )
-
+    print(f"[DB] rowcount: {cursor.rowcount}, lastrowid: {cursor.lastrowid}")
     db.commit()
+    print("[DB] after commit")
     cursor.close()
     db.close()
 
