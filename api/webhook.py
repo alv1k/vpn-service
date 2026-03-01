@@ -7,7 +7,7 @@ import time
 from ipaddress import ip_address, ip_network
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI
 from datetime import datetime
-from bot_xui.bot import send_link_safely
+from bot_xui.messaging import send_link_safely
 import qrcode
 from io import BytesIO
 
