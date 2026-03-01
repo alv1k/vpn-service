@@ -3,6 +3,7 @@ import os
 import json
 import logging
 import qrcode
+import html
 import uuid
 import sys
 import httpx
@@ -10,7 +11,7 @@ import time
 sys.path.insert(0, '/home/alvik/vpn-service')
 from datetime import datetime, timedelta, timezone
 from yookassa import Configuration, Payment
-from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, YOO_KASSA_SECRET_KEY, YOO_KASSA_SHOP_ID, AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD, VLESS_PBK, VLESS_SID, VLESS_SNI 
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, YOO_KASSA_SECRET_KEY, YOO_KASSA_SHOP_ID, AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD, VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from bot_xui.utils import XUIClient, generate_vless_link, format_bytes, send_telegram_notification
@@ -1145,8 +1146,7 @@ async def create_test_vless_config(query):
     
     await query.edit_message_text("⏳ Создаю тестовый VLESS конфиг...")
     
-    try:
-        
+    try:        
         # Генерируем данные клиента
         client_email = f"test-{tg_id}-{uuid.uuid4().hex[:8]}"
         client_uuid = str(uuid.uuid4())
@@ -1155,12 +1155,8 @@ async def create_test_vless_config(query):
         expiry_time = int((time.time() + 86400) * 1000)
         
         # Получаем inbound
-        inbounds = xui.get_inbounds()
-        if not inbounds:
-            raise RuntimeError("Inbound не найден")
-        
-        inbound_id = inbounds[2]['id']
-        
+        inbound_id = int(VLESS_INBOUND_ID)
+
         # Создаем клиента
         success = xui.add_client(
             inbound_id=inbound_id,
@@ -1243,7 +1239,7 @@ async def create_test_vless_config(query):
         await query.message.reply_text(
             text=(
                 f"🔑 Ключ-конфиг\n\n"
-                f"<code>{vless_link}</code>\n\n"
+                f"<pre>{vless_link}</pre>\n\n"
                 f"Скопируйте эту ссылку и вставьте в ваше приложение"
             ),
             parse_mode="HTML"
