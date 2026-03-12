@@ -11,6 +11,8 @@ from config import TELEGRAM_BOT_TOKEN
 
 logger = logging.getLogger(__name__)
 
+_bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
 
 async def send_message_by_tg_id(
     tg_id: int,
@@ -19,9 +21,8 @@ async def send_message_by_tg_id(
     reply_markup: Optional[InlineKeyboardMarkup] = None,
 ) -> bool:
     """Отправка сообщения пользователю по tg_id через python-telegram-bot."""
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
     try:
-        await bot.send_message(
+        await _bot.send_message(
             chat_id=tg_id,
             text=text,
             parse_mode=parse_mode,

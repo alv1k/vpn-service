@@ -5,44 +5,33 @@ import httpx
 import logging
 import time
 from ipaddress import ip_address, ip_network
-from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI
 from datetime import datetime
-from bot_xui.messaging import send_link_safely
-import qrcode
 from io import BytesIO
 
-# Импорты из вашего проекта
+import qrcode
+
+from config import (
+    XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
+    VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
+    TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI,
+    AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD,
+)
 from api.subscriptions import activate_subscription
 from api.db import (
-    update_payment_status, 
-    is_payment_processed, 
-    get_payment_status, 
-    get_payment_by_id, 
-    get_or_create_user, 
-    create_vpn_key, 
+    update_payment_status,
+    is_payment_processed,
+    get_payment_status,
+    get_payment_by_id,
+    get_or_create_user,
+    create_vpn_key,
     get_subscription_until,
     get_user_email,
-    deactivate_key_by_payment
+    deactivate_key_by_payment,
 )
 from api.wireguard import AmneziaWGClient
 from bot_xui.tariffs import TARIFFS
-from config import (
-    TELEGRAM_BOT_TOKEN, 
-    AMNEZIA_WG_API_URL, 
-    AMNEZIA_WG_API_PASSWORD, 
-    VLESS_DOMAIN, 
-    VLESS_PORT,
-    VLESS_PATH
-)
-from bot.bot import bot
+from bot_xui.utils import XUIClient
 
-from aiogram.types import BufferedInputFile
-
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
@@ -57,17 +46,26 @@ YOO_IPS = [
     ip_network("77.75.154.128/25"),
 ]
 
-logger.info("🔥 WEBHOOK APP STARTED")
+logger.info("WEBHOOK APP STARTED")
 
 
-def verify_yookassa_ip(request: Request):
-    """Проверка IP адреса YooKassa"""
+def verify_yookassa_ip(request: Request, is_test_payment: bool = False):
+    """Проверка IP адреса YooKassa. Для тестовых платежей проверка пропускается."""
+    if is_test_payment:
+        logger.info(f"[TEST PAYMENT] IP check skipped for {request.client.host if request.client else 'unknown'}")
+        return
+
     if not request.client:
         raise HTTPException(status_code=403, detail="No client IP")
 
-    ip = ip_address(request.client.host)
+    try:
+        ip = ip_address(request.client.host)
+    except ValueError:
+        logger.warning(f"Invalid client IP: {request.client.host}")
+        raise HTTPException(status_code=403, detail="Invalid IP")
+
     if not any(ip in net for net in YOO_IPS):
-        logger.warning(f"⚠️ Forbidden IP attempt: {request.client.host}")
+        logger.warning(f"Forbidden IP attempt: {request.client.host}")
         raise HTTPException(status_code=403, detail="Forbidden IP")
 
 
@@ -107,36 +105,49 @@ async def amnezia_get_config(client: httpx.AsyncClient, client_id: str) -> str:
     r.raise_for_status()
     return r.text
 
+def deactivate_xui_client(client_name: str) -> bool:
+    """Деактивирует клиента в 3x-ui по email (client_name)."""
+    try:
+        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        info = xui.get_client_by_email(client_name)
+        if not info:
+            logger.warning(f"XUI client not found: {client_name}")
+            return False
+        return xui.deactivate_client(info['inbound_id'], info['client'])
+    except Exception as e:
+        logger.error(f"Error deactivating XUI client {client_name}: {e}")
+        return False
+
+
 async def process_refund(payment_id: str) -> bool:
     """Деактивирует VPN конфиг при возврате платежа"""
     try:
-        # Получаем данные платежа
         payment_data = get_payment_by_id(payment_id)
         if not payment_data:
-            logger.error(f"❌ Payment not found for refund: {payment_id}")
+            logger.error(f"Payment not found for refund: {payment_id}")
             return False
-        
+
         tg_id = payment_data.get("tg_id")
         client_name = get_user_email(tg_id)
-        
+
         if not client_name:
-            logger.error(f"❌ No client_name for refund: {payment_id}")
+            logger.error(f"No client_name for refund: {payment_id}")
             return False
-        
+
         # Деактивируем в XUI
-        xui_success = await deactivate_xui_client(client_name)
+        xui_success = deactivate_xui_client(client_name)
         if not xui_success:
-            logger.error(f"❌ Failed to deactivate XUI client: {client_name}")
+            logger.error(f"Failed to deactivate XUI client: {client_name}")
             return False
-        
+
         # Деактивируем в БД
         deactivate_key_by_payment(payment_id)
-        
-        logger.info(f"✅ Refund processed: {payment_id}, client: {client_name}")
+
+        logger.info(f"Refund processed: {payment_id}, client: {client_name}")
         return True
-        
+
     except Exception as e:
-        logger.error(f"❌ Error processing refund {payment_id}: {e}")
+        logger.error(f"Error processing refund {payment_id}: {e}")
         return False
 
 async def process_successful_payment(payment_id: str, payment_data: dict, vpn_type: str) -> bool:
@@ -364,11 +375,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 # Отправляем AmneziaWG как файл
                 filename = f"amneziawg_{tg_id}_{payment_id[:8]}.conf"
 
-                file = BufferedInputFile(
-                    client_config.encode(),
-                    filename=filename,
-                )
-
                 caption = (
                     f"✅ Ваш AmneziaWG конфиг готов!\n\n"
                     f"🔑 Тариф: {tariff_name}\n"
@@ -381,11 +387,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     f"💬 Поддержка: @al_v1k"
                 )
 
-                await bot.send_document(
-                    chat_id=tg_id,
-                    document=file,
-                    caption=caption,
-                )
+                await send_telegram_document(tg_id, client_config.encode(), filename, caption)
 
             logger.info("📤 Config sent to Telegram")
 
@@ -434,6 +436,34 @@ async def send_telegram_notification(tg_id: int, message: str, buttons: list = N
                 
         except Exception as e:
             logger.error(f"❌ Failed to send Telegram notification: {e}")
+
+async def send_telegram_document(tg_id: int, file_bytes: bytes, filename: str, caption: str = ""):
+    """Отправка документа в Telegram через HTTP API"""
+    if not tg_id:
+        return False
+
+    telegram_doc_api = TELEGRAM_API.replace('sendMessage', 'sendDocument')
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            files = {'document': (filename, file_bytes, 'application/octet-stream')}
+            data = {'chat_id': tg_id}
+            if caption:
+                data['caption'] = caption
+                data['parse_mode'] = 'HTML'
+
+            response = await client.post(telegram_doc_api, data=data, files=files)
+
+            if response.status_code == 200:
+                logger.info(f"Document sent to user: {tg_id}")
+                return True
+            else:
+                logger.warning(f"Telegram API returned {response.status_code}: {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to send Telegram document: {e}")
+            return False
+
 
 async def send_telegram_photo_from_bytes(tg_id: int, image_bytes: BytesIO, caption: str = ""):
     """
@@ -485,30 +515,31 @@ async def yookassa_webhook(request: Request):
     Обработчик webhook от YooKassa
     Вызывается при изменении статуса платежа
     """
-    logger.info("🔔 YooKassa webhook received")
-    
-    # ===== 1. Проверка IP =====
-    verify_yookassa_ip(request)
-    
-    # ===== 2. Парсинг данных =====
+    logger.info("YooKassa webhook received")
+
+    # ===== 1. Парсинг данных =====
     try:
         body = await request.body()
         payload = json.loads(body)
     except json.JSONDecodeError:
-        logger.error("❌ Invalid JSON in webhook body")
+        logger.error("Invalid JSON in webhook body")
         return Response(status_code=400)
-    
-    # ===== 3. Извлечение данных =====
+
+    # ===== 2. Извлечение данных =====
     event = payload.get("event")
     obj = payload.get("object", {})
-    
+
     payment_id = obj.get("id")
     status_raw = obj.get("status")
     metadata = obj.get("metadata", {})
-    
+
     tg_id = metadata.get("tg_id")
     tariff = metadata.get("tariff", "default")
     vpn_type = metadata.get("vpn_type")
+    is_test_payment = metadata.get("test_mode") == "true"
+
+    # ===== 3. Проверка IP (пропускается для тестовых платежей) =====
+    verify_yookassa_ip(request, is_test_payment=is_test_payment)
     
     if not payment_id:
         logger.warning("⚠️ No payment_id in webhook")
@@ -670,8 +701,9 @@ async def test_payment_processing(payment_id: str):
     if not payment_data:
         return {"error": "Payment not found"}
     
-    success = await process_successful_payment(payment_id, payment_data)
-    
+    vpn_type = payment_data.get("vpn_type", "vless")
+    success = await process_successful_payment(payment_id, payment_data, vpn_type)
+
     return {
         "payment_id": payment_id,
         "success": success,

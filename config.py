@@ -1,19 +1,20 @@
 import sys
 import os
+import logging
 from dotenv import load_dotenv
 
-# Абсолютный путь к .env внутри docker/amneziawg
-DOTENV_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),  # папка vpn-service
-    "docker", 
-    "amneziawg", 
-    ".env"
-)
+# .env в корне проекта
+DOTENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(DOTENV_PATH)
 
 
+# YooKassa: боевые креды
 YOO_KASSA_SHOP_ID = os.getenv("YOO_KASSA_SHOP_ID")
 YOO_KASSA_SECRET_KEY = os.getenv("YOO_KASSA_SECRET_KEY")
+
+# YooKassa: тестовые креды (для админского тест-режима)
+YOO_KASSA_TEST_SHOP_ID = os.getenv("YOO_KASSA_TEST_SHOP_ID")
+YOO_KASSA_TEST_SECRET_KEY = os.getenv("YOO_KASSA_TEST_SECRET_KEY")
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
@@ -44,12 +45,62 @@ XUI_PASSWORD = os.getenv("XUI_PASSWORD")
 
 # VLESS настройки
 VLESS_DOMAIN = os.getenv("VLESS_DOMAIN")
-VLESS_PORT = os.getenv("VLESS_PORT")
+VLESS_PORT = int(os.getenv("VLESS_PORT", "443"))
 VLESS_PATH = os.getenv("VLESS_PATH")
-VLESS_INBOUND_ID = os.getenv("VLESS_INBOUND_ID")
+VLESS_INBOUND_ID = int(os.getenv("VLESS_INBOUND_ID", "1"))
 VLESS_PBK = os.getenv("VLESS_PBK")
 VLESS_SID = os.getenv("VLESS_SID")
 VLESS_SNI = os.getenv("VLESS_SNI")
 
 # AmneziaWG
 AMNEZIA_CONTAINER = os.getenv("AMNEZIA_CONTAINER")
+
+REFERRAL_REWARD_DAYS = int(os.getenv("REFERRAL_REWARD_DAYS", "3"))
+REFERRAL_NEWCOMER_DAYS = int(os.getenv("REFERRAL_NEWCOMER_DAYS", "3"))
+
+ADMIN_TG_ID = int(os.getenv("ADMIN_TG_ID", "364224373"))
+
+
+logger = logging.getLogger(__name__)
+
+_REQUIRED_VARS = {
+    "Core": {
+        "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
+    },
+    "YooKassa": {
+        "YOO_KASSA_SHOP_ID": YOO_KASSA_SHOP_ID,
+        "YOO_KASSA_SECRET_KEY": YOO_KASSA_SECRET_KEY,
+    },
+    "MySQL": {
+        "MYSQL_HOST": MYSQL_HOST,
+        "MYSQL_USER": MYSQL_USER,
+        "MYSQL_PASSWORD": MYSQL_PASSWORD,
+        "MYSQL_DATABASE": MYSQL_DATABASE,
+    },
+    "3x-ui": {
+        "XUI_HOST": XUI_HOST,
+        "XUI_USERNAME": XUI_USERNAME,
+        "XUI_PASSWORD": XUI_PASSWORD,
+    },
+    "VLESS": {
+        "VLESS_DOMAIN": VLESS_DOMAIN,
+        "VLESS_PBK": VLESS_PBK,
+        "VLESS_SID": VLESS_SID,
+        "VLESS_SNI": VLESS_SNI,
+    },
+}
+
+
+def validate_config():
+    """Проверяет наличие всех обязательных переменных окружения."""
+    missing = []
+    for group, vars_dict in _REQUIRED_VARS.items():
+        for name, value in vars_dict.items():
+            if not value:
+                missing.append(f"  [{group}] {name}")
+    if missing:
+        msg = "Missing required environment variables:\n" + "\n".join(missing)
+        logger.critical(msg)
+        sys.exit(1)
+
+    logger.info("Config validation passed")

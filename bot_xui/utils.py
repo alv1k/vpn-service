@@ -4,17 +4,8 @@ import subprocess
 from urllib.parse import quote
 import os
 import logging
-import httpx
-from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, VLESS_SID, VLESS_PBK, VLESS_SNI
 
-
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
 logger = logging.getLogger(__name__)
 
 class XUIClient:
@@ -39,9 +30,18 @@ class XUIClient:
         if not data.get('success'):
             raise Exception(f"Failed to login: {data.get('msg')}")
     
+    def _request(self, method, url, **kwargs):
+        """Выполняет запрос, при 401 делает re-login и повторяет."""
+        response = self.session.request(method, url, **kwargs)
+        if response.status_code == 401:
+            logger.info("XUI session expired, re-logging in")
+            self.login()
+            response = self.session.request(method, url, **kwargs)
+        return response
+
     def get_inbounds(self):
         """Получить список inbounds"""
-        response = self.session.get(f"{self.host}/panel/api/inbounds/list")
+        response = self._request("GET", f"{self.host}/panel/api/inbounds/list")
         data = response.json()
         if data.get('success'):
             return data.get('obj', [])
@@ -65,12 +65,12 @@ class XUIClient:
     def get_client_by_tg_id(self, tg_id):
         """Найти клиента по tg_id среди всех inbound'ов"""
         try:
-            response = self.session.get(f"{self.host}/panel/api/inbounds/list")
+            response = self._request("GET", f"{self.host}/panel/api/inbounds/list")
             result = response.json()
-            
+
             if not result.get('success'):
                 return None
-            
+
             for inbound in result.get('obj', []):
                 settings = json.loads(inbound.get('settings', '{}'))
                 for client in settings.get('clients', []):
@@ -86,8 +86,8 @@ class XUIClient:
             return None
 
 
-    def extend_client_expiry(self, inbound_id, client, extra_ms):
-        """Продлить срок действия клиента"""
+    def extend_client_expiry(self, inbound_id, client, duration_ms):
+        """Продлить срок действия клиента на duration_ms миллисекунд."""
         try:
             import time
             now_ms = int(time.time() * 1000)
@@ -100,10 +100,9 @@ class XUIClient:
                 current_expiry = now_ms
 
             base = current_expiry if current_expiry > now_ms else now_ms
-            duration = extra_ms - now_ms
-            new_expiry = base + duration
+            new_expiry = base + duration_ms
 
-            logger.info(f"duration: {duration}, new_expiry: {new_expiry}")
+            logger.info(f"duration_ms: {duration_ms}, new_expiry: {new_expiry}")
 
             updated_client = {**client, 'expiryTime': new_expiry}
 
@@ -112,7 +111,8 @@ class XUIClient:
                 "settings": json.dumps({"clients": [updated_client]})
             }
 
-            response = self.session.post(
+            response = self._request(
+                "POST",
                 f"{self.host}/panel/api/inbounds/updateClient/{client['id']}",
                 json=payload,
                 headers={"Content-Type": "application/json"}
@@ -130,18 +130,24 @@ class XUIClient:
     def add_or_extend_client(self, inbound_id, email, tg_id, uuid, expiry_time=0, total_gb=0, limit_ip=10, extend_ms=None):
         """
         Добавить клиента или продлить срок, если клиент с tg_id уже существует.
-        extend_ms — на сколько миллисекунд продлить (по умолчанию = expiry_time)
+        expiry_time — абсолютный timestamp (ms) для нового клиента.
+        extend_ms  — длительность продления (ms). По умолчанию вычисляется из expiry_time.
         """
+        import time
         existing = self.get_client_by_tg_id(tg_id)
-        
-        print('🔔🔔🔔 existing', existing)
+
+        logger.debug(f"existing client: {existing}")
         if existing and 'tg_' in existing['client'].get('email', ''):
             logger.info(f"Client with tg_id={tg_id} already exists, extending expiry")
-            duration = extend_ms if extend_ms is not None else expiry_time
+            if extend_ms is not None:
+                duration_ms = extend_ms
+            else:
+                now_ms = int(time.time() * 1000)
+                duration_ms = expiry_time - now_ms
             return self.extend_client_expiry(
                 existing['inbound_id'],
                 existing['client'],
-                duration
+                duration_ms
             )
         
         logger.info(f"Client with tg_id={tg_id} not found, creating new")
@@ -175,7 +181,8 @@ class XUIClient:
             # Логируем запрос
             logger.info(f"Sending addClient request to: {self.host}/panel/api/inbounds/addClient")
             
-            response = self.session.post(
+            response = self._request(
+                "POST",
                 f"{self.host}/panel/api/inbounds/addClient",
                 json=client_data,
                 headers={"Content-Type": "application/json"}
@@ -188,49 +195,38 @@ class XUIClient:
             return result.get('success', False)
             
         except Exception as e:
-            print(f"Error adding client: {e}")
-            return False
-
-    def delete_client(self, inbound_id, email):
-        """Удалить клиента"""
-        try:
-            response = self.session.post(
-                f"{self.host}/panel/api/inbounds/{inbound_id}/delClient/{email}",
-            )
-            result = response.json()
-            return result.get('success', False)
-        except Exception as e:
-            print(f"Error deleting client: {e}")
+            logger.error(f"Error adding client: {e}")
             return False
 
     def reset_client_traffic(self, inbound_id, email):
         """Сбросить трафик клиента"""
         try:
-            response = self.session.post(
+            response = self._request(
+                "POST",
                 f"{self.host}/panel/api/inbounds/{inbound_id}/resetClientTraffic/{email}",
             )
             result = response.json()
             return result.get('success', False)
         except Exception as e:
-            print(f"Error resetting traffic: {e}")
+            logger.error(f"Error resetting traffic: {e}")
             return False
 
     def get_client_subscription_url(self, tg_id):
         """Получить ссылку подписки клиента из панели"""
         try:
             # Сначала находим клиента чтобы получить subId
-            response = self.session.get(f"{self.host}/panel/api/inbounds/list")
+            response = self._request("GET", f"{self.host}/panel/api/inbounds/list")
             result = response.json()
-            
+
             if not result.get('success'):
                 return None
-                
+
             for inbound in result.get('obj', []):
                 settings = json.loads(inbound.get('settings', '{}'))
                 for client in settings.get('clients', []):
                     if client.get('tgId') == tg_id:
                         sub_id = client.get('subId')
-                        print('📤📤', client)
+                        logger.debug(f"client data: {client}")
                         # Ссылка подписки
                         sub_url = f"{self.host}/sub/{sub_id}"
                         return sub_url
@@ -239,6 +235,44 @@ class XUIClient:
         except Exception as e:
             logger.error(f"Error getting client subscription url: {e}")
             return None
+    
+    def delete_client(self, inbound_id, email):
+        """Удалить клиента"""
+        try:
+            response = self._request(
+                "POST",
+                f"{self.host}/panel/api/inbounds/{inbound_id}/delClient/{email}",
+            )
+            result = response.json()
+            return result.get('success', False)
+        except Exception as e:
+            logger.error(f"Error deleting client: {e}")
+            return False
+
+    def deactivate_client(self, inbound_id, client):
+        """Деактивировать клиента (disable без удаления)"""
+        try:
+            updated_client = {**client, 'enable': False}
+            
+            payload = {
+                "id": inbound_id,
+                "settings": json.dumps({"clients": [updated_client]})
+            }
+            
+            response = self._request(
+                "POST",
+                f"{self.host}/panel/api/inbounds/updateClient/{client['id']}",
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            )
+
+            result = response.json()
+            logger.info(f"Deactivate client response: {result}")
+            return result.get('success', False)
+            
+        except Exception as e:
+            logger.error(f"Error deactivating client: {e}", exc_info=True)
+            return False
 
 
 
@@ -285,7 +319,7 @@ def get_amneziawg_config(client_email):
             return result.stdout
         
     except Exception as e:
-        print(f"Error getting AWG config: {e}")
+        logger.error(f"Error getting AWG config: {e}")
     
     return None
 
@@ -298,39 +332,3 @@ def format_bytes(bytes_value):
     return f"{bytes_value:.2f} PB"
 
 
-async def send_telegram_notification(tg_id: int, message: str, buttons: list = None):
-    """
-    Отправка уведомления в Telegram через HTTP API
-    
-    Args:
-        tg_id: Telegram ID пользователя
-        message: Текст сообщения
-        buttons: Список кнопок (опционально)
-    """
-    if not tg_id:
-        return
-
-    data = {
-        "chat_id": tg_id,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-    
-    # Добавляем кнопки если они есть
-    if buttons:
-        keyboard = {
-            "inline_keyboard": buttons
-        }
-        data["reply_markup"] = json.dumps(keyboard)
-
-    async with httpx.AsyncClient(timeout=5) as client:
-        try:
-            response = await client.post(TELEGRAM_API, data=data)
-            
-            if response.status_code == 200:
-                logger.info(f"📨 Notification sent to user: {tg_id}")
-            else:
-                logger.warning(f"⚠️ Telegram API returned {response.status_code}")
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to send Telegram notification: {e}")
