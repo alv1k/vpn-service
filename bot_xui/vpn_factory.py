@@ -176,7 +176,7 @@ async def handle_test_awg(query, xui: XUIClient):
     except Exception as e:
         logger.error(f"AWG config error: {e}")
         await query.message.reply_text(
-            f"❌ Ошибка создания конфига\n\n{e}\n\nПопробуйте позже или выберите VLESS.",
+            "❌ Ошибка создания конфига\n\nПопробуйте позже или выберите VLESS.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
             ]),
@@ -235,7 +235,7 @@ async def handle_test_vless(query, xui: XUIClient):
     except Exception as e:
         logger.error(f"VLESS config error: {e}")
         await query.message.reply_text(
-            f"❌ Ошибка создания конфига\n\n{e}\n\nПопробуйте позже или выберите AmneziaWG.",
+            "❌ Ошибка создания конфига\n\nПопробуйте позже или выберите AmneziaWG.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
             ]),

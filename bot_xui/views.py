@@ -11,10 +11,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bot_xui.tariffs import TARIFFS
 from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated
 from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text
+from config import ADMIN_TG_ID
 
 logger = logging.getLogger(__name__)
-
-ADMIN_TG_ID = 364224373
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -187,14 +186,14 @@ async def show_configs(query):
         await _show_no_configs(query)
         return
 
-    text = "🔐 **Ваши VPN конфиги**\n\n"
+    text = "🔐 <b>Ваши VPN конфиги</b>\n\n"
     if active_keys:
-        text += "✅ **Активные:**\n"
+        text += "✅ <b>Активные:</b>\n"
         for i, key in enumerate(active_keys, 1):
             prefix = "├─" if i < len(active_keys) else "└─"
             emoji  = "📱" if "vless" in key["vpn_type"] else "🖥"
-            text += f"{prefix} {emoji} **{key['client_name']}**\n"
-            text += f"{prefix}    ⏱ до: `{convert_to_local(key['expires_at'])}`\n"
+            text += f"{prefix} {emoji} <b>{key['client_name']}</b>\n"
+            text += f"{prefix}    ⏱ до: <code>{convert_to_local(key['expires_at'])}</code>\n"
 
             cfg = key.get("config") or ""
             proto = "🔗 VLESS" if "vless" in cfg else ("🛡 Trojan" if "trojan" in cfg else "📱")
@@ -202,7 +201,7 @@ async def show_configs(query):
             if i < len(active_keys):
                 text += f"{prefix}  \n"
 
-    text += "\n_Нажмите на конфиг ниже, чтобы показать QR-код и ссылку_ ⬇️"
+    text += "\n<i>Нажмите на конфиг ниже, чтобы показать QR-код и ссылку</i> ⬇️"
 
     keyboard: list = []
     row: list = []
@@ -215,7 +214,6 @@ async def show_configs(query):
             keyboard.append(row)
             row = []
 
-    keyboard.append([InlineKeyboardButton("🆕 Новый конфиг", callback_data="tariffs")])
     keyboard.append([InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")])
 
     await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -223,19 +221,19 @@ async def show_configs(query):
 
 async def _show_no_configs(query):
     text = (
-        "❄️ **У вас пока нет активных конфигов**\n\n"
+        "❄️ <b>У вас пока нет активных конфигов</b>\n\n"
         "┌─────────────────────\n"
         "│ Чтобы получить доступ к VPN:\n"
         "│ 1️⃣ Выберите подходящий тариф\n"
         "│ 2️⃣ Оплатите удобным способом\n"
         "│ 3️⃣ Получите готовый конфиг\n"
         "└─────────────────────\n\n"
-        "✨ **Преимущества:**\n"
+        "✨ <b>Преимущества:</b>\n"
         "• ⚡️ Высокая скорость\n"
         "• 🔒 Безопасное шифрование\n"
         "• 📱 До 10 устройств\n"
         "• 🌐 Доступ к любым сайтам\n\n"
-        "👇 **Нажмите на кнопку ниже, чтобы выбрать тариф**"
+        "👇 <b>Нажмите на кнопку ниже, чтобы выбрать тариф</b>"
     )
     await query.edit_message_text(
         text,
@@ -243,7 +241,7 @@ async def _show_no_configs(query):
             [InlineKeyboardButton("🔥 Выбрать тариф", callback_data="tariffs")],
             [InlineKeyboardButton("◀️ В меню",        callback_data="back_to_menu")],
         ]),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 

@@ -1,8 +1,11 @@
 """
 Вспомогательные функции: форматирование, конвертация времени, общие утилиты.
 """
+import logging
 from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+logger = logging.getLogger(__name__)
 
 
 def convert_to_local(dt: datetime, offset_hours: int = 9) -> str:
@@ -22,11 +25,17 @@ def make_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Мои конфиги", callback_data="my_configs")],
         [InlineKeyboardButton("🏷 Тарифы",       callback_data="tariffs")],
+        # [InlineKeyboardButton("👥 Реферальная программа", callback_data="referral")], 
         [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data="instructions")],
     ])
 
 
-MAIN_MENU_TEXT = "👋 Добро пожаловать в tiin vpn manager!\n\nВыберите действие:"
+MAIN_MENU_TEXT = (
+    "⚡️ тииҥ VPN\n\n"
+    "🔒 Безопасный и быстрый\n"
+    "🌍 Доступ к любым сайтам\n"
+    "Выберите действие:"
+)
 
 
 def tariff_emoji(days: int) -> str:
@@ -42,21 +51,26 @@ def tariff_emoji(days: int) -> str:
     return "💎"
 
 
-async def safe_edit_text(query, text: str, reply_markup=None, parse_mode: str = "Markdown") -> bool:
+async def safe_edit_text(query, text: str, reply_markup=None, parse_mode: str = "HTML") -> bool:
     """
-    Пробует edit_message_text; при ошибке (например, сообщение с медиа)
-    удаляет старое и отвечает новым. Возвращает True при успехе.
+    Для обычных сообщений — edit_message_text.
+    Для сообщений с медиа — заменяем медиа на текстовое сообщение через edit_message_media.
     """
+    from telegram import InputMediaDocument
+
+    if query.message.photo or query.message.video or query.message.document:
+        try:
+            # Удаляем сообщение с медиа и отправляем чистый текст
+            await query.message.delete()
+            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            return True
+        except Exception as e:
+            logger.warning(f"safe_edit_text media fallback failed: {e}")
+            return False
+
     try:
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
         return True
-    except Exception:
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        try:
-            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-            return True
-        except Exception:
-            return False
+    except Exception as e:
+        logger.warning(f"safe_edit_text edit failed: {e}")
+        return False
