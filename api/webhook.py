@@ -250,7 +250,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 client_name=client_name,
                 pbk=VLESS_PBK,       # из .env
                 sid=VLESS_SID,       # из .env
-                sni=VLESS_SNI,       # из .env, например "www.yandex.ru"
+                sni=VLESS_SNI,       # из .env
                 fp="chrome",
                 spx="/"
             )
@@ -312,6 +312,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
 
         # ===== 6. Сохранение в БД =====
+        sub_url = xui.get_client_subscription_url(tg_id) if vpn_type == "vless" else None
         create_vpn_key(
             tg_id=tg_id,
             payment_id=payment_id,
@@ -321,7 +322,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             client_public_key=client_public_key,
             config=client_config,
             expires_at=subscription_until,
-            vpn_type=vpn_type
+            vpn_type=vpn_type,
+            subscription_link=sub_url,
         )
 
         logger.info("💾 VPN config saved to DB")
@@ -345,7 +347,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                             f"1. Установите v2rayNG (Android/iOS) или Nekoray (Windows/macOS)\n"
                             f"2. Отсканируйте QR или скопируйте ссылку\n"
                             f"3. Подключитесь\n\n"
-                            f"💬 Поддержка: @al_v1k",
+                            f"💬 Поддержка: кнопка «Написать нам» в меню",
                 )
 
                 # Отправка текста в безопасном code-блоке
@@ -384,7 +386,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     f"1. Установите AmneziaVPN\n"
                     f"2. Импортируйте файл конфигурации\n"
                     f"3. Подключитесь\n\n"
-                    f"💬 Поддержка: @al_v1k"
+                    f"💬 Поддержка: кнопка «Написать нам» в меню"
                 )
 
                 await send_telegram_document(tg_id, client_config.encode(), filename, caption)
@@ -570,7 +572,7 @@ async def yookassa_webhook(request: Request):
                 f"💳 ID платежа: {payment_id}\n"
                 f"💰 Сумма возврата: {amount_value} {amount_currency}\n\n"
                 f"Ваш VPN конфиг был деактивирован.\n"
-                f"Если это ошибка — обратитесь в поддержку: @al_v1k"
+                f"Если это ошибка — нажмите «Написать нам» в меню бота"
             )
         
         return Response(status_code=200)

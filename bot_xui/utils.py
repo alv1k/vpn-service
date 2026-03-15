@@ -15,8 +15,8 @@ class XUIClient:
         self.password = password
         self.session = requests.Session()
         self.cookie_file = '/tmp/xui-cookie.txt'
-        self.login()
-    
+        self._logged_in = False
+
     def login(self):
         """Авторизация в 3x-ui"""
         response = self.session.post(
@@ -29,9 +29,12 @@ class XUIClient:
         data = response.json()
         if not data.get('success'):
             raise Exception(f"Failed to login: {data.get('msg')}")
-    
+        self._logged_in = True
+
     def _request(self, method, url, **kwargs):
-        """Выполняет запрос, при 401 делает re-login и повторяет."""
+        """Выполняет запрос, при необходимости делает login/re-login."""
+        if not self._logged_in:
+            self.login()
         response = self.session.request(method, url, **kwargs)
         if response.status_code == 401:
             logger.info("XUI session expired, re-logging in")
@@ -74,7 +77,7 @@ class XUIClient:
             for inbound in result.get('obj', []):
                 settings = json.loads(inbound.get('settings', '{}'))
                 for client in settings.get('clients', []):
-                    if str(client.get('tgId')) == str(tg_id) and 'tg_' in client.get('email', ''):
+                    if str(client.get('tgId')) == str(tg_id) and not client.get('email', '').startswith('test-'):
                         return {
                             'client': client,
                             'inbound_id': inbound['id']
@@ -105,6 +108,9 @@ class XUIClient:
             logger.info(f"duration_ms: {duration_ms}, new_expiry: {new_expiry}")
 
             updated_client = {**client, 'expiryTime': new_expiry}
+            # Ensure flow is always set for VLESS-Reality
+            if not updated_client.get('flow'):
+                updated_client['flow'] = 'xtls-rprx-vision'
 
             payload = {
                 "id": inbound_id,
@@ -137,7 +143,7 @@ class XUIClient:
         existing = self.get_client_by_tg_id(tg_id)
 
         logger.debug(f"existing client: {existing}")
-        if existing and 'tg_' in existing['client'].get('email', ''):
+        if existing and not existing['client'].get('email', '').startswith('test-'):
             logger.info(f"Client with tg_id={tg_id} already exists, extending expiry")
             if extend_ms is not None:
                 duration_ms = extend_ms
@@ -164,6 +170,7 @@ class XUIClient:
             "settings": json.dumps({
                 "clients": [{
                     "id": uuid,
+                    "flow": "xtls-rprx-vision",
                     "email": email,
                     "limitIp": limit_ip,
                     "totalGB": total_gb,
@@ -212,9 +219,14 @@ class XUIClient:
             return False
 
     def get_client_subscription_url(self, tg_id):
-        """Получить ссылку подписки клиента из панели"""
+        """Получить ссылку подписки клиента из панели.
+        Формат: {XUI_SUB_HOST}/sub/{XUI_SUB_PATH}/{subId}
+        """
+        from config import XUI_SUB_HOST, XUI_SUB_PATH
+        if not XUI_SUB_HOST or not XUI_SUB_PATH:
+            logger.warning("XUI_SUB_HOST or XUI_SUB_PATH not configured")
+            return None
         try:
-            # Сначала находим клиента чтобы получить subId
             response = self._request("GET", f"{self.host}/panel/api/inbounds/list")
             result = response.json()
 
@@ -224,14 +236,12 @@ class XUIClient:
             for inbound in result.get('obj', []):
                 settings = json.loads(inbound.get('settings', '{}'))
                 for client in settings.get('clients', []):
-                    if client.get('tgId') == tg_id:
+                    if str(client.get('tgId')) == str(tg_id):
                         sub_id = client.get('subId')
-                        logger.debug(f"client data: {client}")
-                        # Ссылка подписки
-                        sub_url = f"{self.host}/sub/{sub_id}"
-                        return sub_url
+                        if sub_id:
+                            return f"{XUI_SUB_HOST}/sub/{XUI_SUB_PATH}/{sub_id}"
             return None
-            
+
         except Exception as e:
             logger.error(f"Error getting client subscription url: {e}")
             return None
@@ -253,7 +263,10 @@ class XUIClient:
         """Деактивировать клиента (disable без удаления)"""
         try:
             updated_client = {**client, 'enable': False}
-            
+            # Ensure flow is always set for VLESS-Reality
+            if not updated_client.get('flow'):
+                updated_client['flow'] = 'xtls-rprx-vision'
+
             payload = {
                 "id": inbound_id,
                 "settings": json.dumps({"clients": [updated_client]})
@@ -284,14 +297,16 @@ def generate_vless_link(
     client_name: str,
     pbk: str,      # public key от xray x25519
     sid: str,      # short id
-    sni: str,      # например www.yandex.ru
+    sni: str,      # например www.samsung.com
     fp: str = "chrome",
     spx: str = "/"
 ) -> str:
     from urllib.parse import quote
     
     params = (
-        f"type=tcp"
+        f"encryption=none"
+        f"&flow=xtls-rprx-vision"
+        f"&type=tcp"
         f"&security=reality"
         f"&pbk={pbk}"
         f"&fp={fp}"
