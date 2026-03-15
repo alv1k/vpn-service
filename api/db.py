@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 import mysql.connector
 from mysql.connector import pooling
 from config import MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS
@@ -70,10 +71,23 @@ def get_all_users_tg_ids() -> list[int]:
     rows = execute_query("SELECT tg_id FROM users", fetch='all')
     return [r['tg_id'] for r in rows]
 
+
+def get_active_subscribers_tg_ids() -> list[int]:
+    """Возвращает tg_id пользователей с активной подпиской (subscription_until > NOW())."""
+    rows = execute_query(
+        "SELECT tg_id FROM users WHERE subscription_until > NOW()",
+        fetch='all'
+    )
+    return [r['tg_id'] for r in rows]
+
 def get_or_create_user(tg_id: int, first_name: str | None = None, last_name: str | None = None) -> int:
-    """Returns internal user id. Creates user if not exists."""
+    """Returns internal user id. Creates user if not exists, updates name if exists."""
     user = get_user_by_tg_id(tg_id)
     if user:
+        execute_query(
+            "UPDATE users SET first_name = %s, last_name = %s WHERE tg_id = %s",
+            (first_name, last_name, tg_id)
+        )
         return user['id']
     return execute_query(
         "INSERT INTO users (tg_id, first_name, last_name) VALUES (%s, %s, %s)",
@@ -152,7 +166,14 @@ def register_user_with_referral(
     if get_user_by_tg_id(new_tg_id):
         return False  # already registered
 
-    get_or_create_user(new_tg_id, first_name, last_name)
+    # INSERT IGNORE prevents race condition: if two requests arrive simultaneously,
+    # only the first one inserts; the second gets 0 affected rows.
+    affected = execute_query(
+        "INSERT IGNORE INTO users (tg_id, first_name, last_name) VALUES (%s, %s, %s)",
+        (new_tg_id, first_name, last_name)
+    )
+    if not affected:
+        return False  # another request already created this user
 
     if referrer_tg_id and referrer_tg_id != new_tg_id:
         if get_user_by_tg_id(referrer_tg_id):
@@ -282,15 +303,16 @@ def create_vpn_key(
     client_public_key: str,
     config: str,
     expires_at,
-    vpn_type: str = 'awg'
+    vpn_type: str = 'awg',
+    subscription_link: str = None
 ):
     logger.debug(f"create_vpn_key called, tg_id={tg_id}")
     execute_query(
         """
         INSERT INTO vpn_keys
-            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at, vpn_type)
+            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at, vpn_type, subscription_link)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             payment_id        = VALUES(payment_id),
             client_id         = VALUES(client_id),
@@ -299,9 +321,10 @@ def create_vpn_key(
             client_public_key = VALUES(client_public_key),
             config            = VALUES(config),
             expires_at        = VALUES(expires_at),
-            vpn_type          = VALUES(vpn_type)
+            vpn_type          = VALUES(vpn_type),
+            subscription_link = VALUES(subscription_link)
         """,
-        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at, vpn_type)
+        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at, vpn_type, subscription_link)
     )
     logger.debug("create_vpn_key done")
 
@@ -345,4 +368,78 @@ def get_users_expiring_in_days(days: int) -> list[dict]:
         WHERE DATE(subscription_until) = DATE(NOW() + INTERVAL %s DAY)
         """,
         (days,), fetch='all'
+    )
+
+
+# ─────────────────────────────────────────────
+#  Promocodes
+# ─────────────────────────────────────────────
+
+def create_promocode(code: str, promo_type: str, value: int,
+                     max_uses: int | None = None, per_user_limit: int = 1,
+                     expires_at=None) -> int:
+    return execute_query(
+        """
+        INSERT INTO promocodes (code, type, value, max_uses, per_user_limit, expires_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (code.upper(), promo_type, value, max_uses, per_user_limit, expires_at)
+    )
+
+
+def get_promocode(code: str) -> dict | None:
+    return execute_query(
+        "SELECT * FROM promocodes WHERE code = %s",
+        (code.upper(),), fetch='one'
+    )
+
+
+def validate_promocode(code: str, tg_id: int) -> tuple[dict | None, str | None]:
+    """Returns (promo, error_message). If valid, error is None."""
+    promo = get_promocode(code)
+    if not promo:
+        return None, "Промокод не найден"
+    if not promo['is_active']:
+        return None, "Промокод неактивен"
+    if promo['expires_at'] and promo['expires_at'] < datetime.now():
+        return None, "Промокод истёк"
+    if promo['max_uses'] and promo['used_count'] >= promo['max_uses']:
+        return None, "Промокод исчерпан"
+    usage_count = get_user_promo_usage_count(promo['id'], tg_id)
+    if usage_count >= promo['per_user_limit']:
+        return None, "Вы уже использовали этот промокод"
+    return promo, None
+
+
+def use_promocode(promo_id: int, tg_id: int):
+    execute_query(
+        "INSERT INTO promocode_usages (promocode_id, tg_id) VALUES (%s, %s)",
+        (promo_id, tg_id)
+    )
+    execute_query(
+        "UPDATE promocodes SET used_count = used_count + 1 WHERE id = %s",
+        (promo_id,)
+    )
+
+
+def get_user_promo_usage_count(promo_id: int, tg_id: int) -> int:
+    row = execute_query(
+        "SELECT COUNT(*) as cnt FROM promocode_usages WHERE promocode_id = %s AND tg_id = %s",
+        (promo_id, tg_id), fetch='one'
+    )
+    return row['cnt'] if row else 0
+
+
+def deactivate_promocode(code: str) -> bool:
+    execute_query(
+        "UPDATE promocodes SET is_active = 0 WHERE code = %s",
+        (code.upper(),)
+    )
+    return True
+
+
+def list_active_promocodes() -> list[dict]:
+    return execute_query(
+        "SELECT * FROM promocodes WHERE is_active = 1 ORDER BY created_at DESC",
+        fetch='all'
     )

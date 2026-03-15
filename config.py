@@ -55,6 +55,9 @@ VLESS_SNI = os.getenv("VLESS_SNI")
 # AmneziaWG
 AMNEZIA_CONTAINER = os.getenv("AMNEZIA_CONTAINER")
 
+XUI_SUB_HOST = os.getenv("XUI_SUB_HOST")  # e.g. https://344988.snk.wtf:2096
+XUI_SUB_PATH = os.getenv("XUI_SUB_PATH")  # e.g. m5t2vx84r
+
 REFERRAL_REWARD_DAYS = int(os.getenv("REFERRAL_REWARD_DAYS", "3"))
 REFERRAL_NEWCOMER_DAYS = int(os.getenv("REFERRAL_NEWCOMER_DAYS", "3"))
 

@@ -18,7 +18,7 @@ from config import (
 )
 from bot_xui.utils import XUIClient, generate_vless_link
 from bot_xui.tariffs import TARIFFS
-from api.db import create_vpn_key, set_awg_test_activated, set_vless_test_activated
+from api.db import create_vpn_key, set_awg_test_activated, set_vless_test_activated, is_awg_test_activated, is_vless_test_activated, get_keys_by_tg_id
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +126,97 @@ async def create_vless_config(tg_id: int, xui: XUIClient) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Referral VPN reward
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | None:
+    """
+    Выдаёт или продлевает VPN за реферальную награду.
+    Если у пользователя есть активный VLESS конфиг — продлевает его.
+    Если нет — создаёт новый.
+    Возвращает dict с информацией о конфиге или None при ошибке.
+    """
+    try:
+        duration_ms = days * 86400 * 1000
+        inbound_id = int(VLESS_INBOUND_ID)
+
+        # Check for existing active config
+        existing = xui.get_client_by_tg_id(tg_id)
+
+        if existing:
+            # Extend existing client
+            success = xui.extend_client_expiry(
+                existing['inbound_id'],
+                existing['client'],
+                duration_ms,
+            )
+            if not success:
+                logger.error(f"Failed to extend referral VPN for {tg_id}")
+                return None
+
+            logger.info(f"Referral: extended VPN for {tg_id} by {days} days")
+            return {"action": "extended", "days": days}
+
+        # No existing config — create new VLESS
+        client_email = f"ref_{tg_id}_{uuid.uuid4().hex[:8]}"
+        client_uuid = str(uuid.uuid4())
+        expiry_ms = int((time.time() + days * 86400) * 1000)
+
+        success = xui.add_client(
+            inbound_id=inbound_id,
+            email=client_email,
+            tg_id=tg_id,
+            uuid=client_uuid,
+            expiry_time=expiry_ms,
+            total_gb=0,
+            limit_ip=10,
+        )
+        if not success:
+            logger.error(f"Failed to create referral VPN for {tg_id}")
+            return None
+
+        vless_link = generate_vless_link(
+            client_id=client_uuid,
+            domain=VLESS_DOMAIN,
+            port=VLESS_PORT,
+            path=VLESS_PATH,
+            client_name=client_email,
+            pbk=VLESS_PBK,
+            sid=VLESS_SID,
+            sni=VLESS_SNI,
+            fp="chrome",
+            spx="/",
+        )
+
+        sub_url = xui.get_client_subscription_url(tg_id)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=days)
+
+        create_vpn_key(
+            tg_id=tg_id, payment_id=None,
+            client_id=client_uuid, client_name=client_email,
+            client_ip=None, client_public_key=None,
+            config=vless_link, expires_at=expires_at, vpn_type="vless",
+            subscription_link=sub_url,
+        )
+
+        logger.info(f"Referral: created new VPN for {tg_id}, {days} days")
+        return {"action": "created", "days": days, "vless_link": vless_link, "sub_url": sub_url}
+
+    except Exception as e:
+        logger.error(f"Referral VPN grant error for {tg_id}: {e}", exc_info=True)
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Handlers — вызываются из button_handler
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def handle_test_awg(query, xui: XUIClient):
     """Создаёт тестовый AWG конфиг и отправляет пользователю."""
     tg_id = query.from_user.id
+    if is_awg_test_activated(tg_id):
+        await query.edit_message_text("❌ Тестовый AWG конфиг уже был создан.")
+        return
     await query.edit_message_text("⏳ Создаю тестовый AmneziaWG конфиг...")
 
     try:
@@ -159,7 +244,7 @@ async def handle_test_awg(query, xui: XUIClient):
                 f"1. Установите <a href='https://amnezia.org'>AmneziaVPN</a>\n"
                 f"2. Импортируйте файл конфигурации\n"
                 f"3. Подключитесь\n\n"
-                f"💬 Поддержка: @al_v1k"
+                f"💬 Поддержка: кнопка «Написать нам» в меню"
             ),
             parse_mode="HTML",
         )
@@ -186,16 +271,21 @@ async def handle_test_awg(query, xui: XUIClient):
 async def handle_test_vless(query, xui: XUIClient):
     """Создаёт тестовый VLESS конфиг и отправляет пользователю."""
     tg_id = query.from_user.id
+    if is_vless_test_activated(tg_id):
+        await query.edit_message_text("❌ Тестовый VLESS конфиг уже был создан.")
+        return
     await query.edit_message_text("⏳ Создаю тестовый VLESS конфиг...")
 
     try:
         data = await create_vless_config(tg_id, xui)
+        sub_url = xui.get_client_subscription_url(tg_id)
 
         create_vpn_key(
             tg_id=tg_id, payment_id=None,
             client_id=data["client_uuid"], client_name=data["client_email"],
             client_ip=None, client_public_key=None,
             config=data["vless_link"], expires_at=data["expires_at"], vpn_type="vless",
+            subscription_link=sub_url,
         )
 
         bio = make_qr_bytes(data["vless_link"])
@@ -210,7 +300,7 @@ async def handle_test_vless(query, xui: XUIClient):
                 f"1. Установите приложение из раздела «Инструкция»\n"
                 f"2. Отсканируйте QR или скопируйте ссылку\n"
                 f"3. Подключитесь\n\n"
-                f"💬 Поддержка: @al_v1k"
+                f"💬 Поддержка: кнопка «Написать нам» в меню"
             ),
             parse_mode="HTML",
         )
