@@ -19,10 +19,11 @@ async def send_message_by_tg_id(
     text: str,
     parse_mode: Optional[str] = None,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
+    bot: Optional[Bot] = None,
 ) -> bool:
     """Отправка сообщения пользователю по tg_id через python-telegram-bot."""
     try:
-        await _bot.send_message(
+        await (bot or _bot).send_message(
             chat_id=tg_id,
             text=text,
             parse_mode=parse_mode,

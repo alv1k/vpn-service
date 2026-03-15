@@ -29,15 +29,11 @@ async def show_main_menu(query):
 # ──────────────────────────────────────────────────────────────────────────────
 
 _INSTRUCTION_APPS = [
-    ("🤖 Amnezia VPN - Android",  "https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru"),
-    ("🤖 v2rayTun - Android",      "https://play.google.com/store/apps/details?id=com.v2raytun.android"),
-    ("🍎 v2RayTun app - iOS",      "https://apps.apple.com/ru/app/v2raytun/id6476628951"),
-    ("🍎 V2Box app - iOS",         "https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690"),
-    ("💻 NekoRay - macOS",         "https://en.nekoray.org/"),
-    ("💻 Fox VPN - macOS",         "https://bestfoxapp.com/en/products/mac"),
-    ("🖥 Hiddify - Windows",       "https://hiddify.com/"),
-    ("💻 NekoRay - Windows",       "https://en.nekoray.org/"),
-    ("📺 VPN4TV: VPN для ТВ - TV", "https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify"),
+    ("🤖 Hiddify - Android",       "https://play.google.com/store/apps/details?id=app.hiddify.com"),
+    ("🤖 Happ - Android",          "https://play.google.com/store/apps/details?id=com.happproxy&hl=ru"),
+    ("🍏 Happ - iOS",              "https://apps.apple.com/app/happ-proxy-utility/id6504287215"),
+    ("💻 Hiddify - Windows/macOS", "https://github.com/hiddify/hiddify-app/releases"),
+    ("📺 VPN4TV - Android TV",     "https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify"),
 ]
 
 async def show_instructions(query):
@@ -46,11 +42,13 @@ async def show_instructions(query):
         "<b>1️⃣</b> Выберите приложение для вашей ОС (кнопки ниже)\n"
         "<b>2️⃣</b> Отсканируйте QR-код или скопируйте ссылку\n"
         "<b>3️⃣</b> Подключитесь к VPN\n\n"
-        "💬 <b>Поддержка:</b> @al_v1k"
+        "💬 <b>Поддержка:</b> кнопка «Написать нам» в меню"
     )
     keyboard = [
         [InlineKeyboardButton(label, url=url)] for label, url in _INSTRUCTION_APPS
-    ] + [[InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]]
+    ] + [
+        [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
+    ]
 
     await query.edit_message_text(caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
@@ -84,41 +82,41 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
     regular_tariffs.sort(key=lambda x: x.get("days", 0))
 
     # ── Текст ──
-    title = "💎 **Выберите длительность продления**" if mode == "renew" else "💎 **Доступные тарифы VPN**"
+    title = "💎 <b>Выберите длительность продления</b>" if mode == "renew" else "💎 <b>Доступные тарифы VPN</b>"
     text = title + "\n\n"
 
     if test_tariffs and not (awg_used or vless_used) and mode == "buy":
-        text += "🎁 **Попробуйте бесплатно**\n┌─────────────────────\n"
+        text += "🎁 <b>Попробуйте бесплатно</b>\n┌─────────────────────\n"
         for t in test_tariffs:
             text += (
-                f"│ ✨ **{t['name']}**\n"
-                f"│    ▸ Цена: **{t['price']} ₽**\n"
+                f"│ ✨ <b>{t['name']}</b>\n"
+                f"│    ▸ Цена: <b>{t['price']} ₽</b>\n"
                 f"│    ▸ Период: {t['period']}\n"
                 f"│    ▸ Устройств: {t['device_limit']}\n"
             )
         text += "└─────────────────────\n\n"
 
-    text += "📦 **Основные тарифы**\n"
+    text += "📦 <b>Основные тарифы</b>\n"
     for i, t in enumerate(regular_tariffs):
         bullet = "├" if i < len(regular_tariffs) - 1 else "└"
         ppd = t["price"] / t["days"] if t.get("days") else 0
-        text += f"{bullet}─ **{t['name']}**\n"
+        text += f"{bullet}─ <b>{t['name']}</b>\n"
         text += f"{bullet}   💰 {t['price']} ₽  ·  ⏱ {t['period']}  ·  👥 {t['device_limit']} устройств\n"
         if t.get("days", 0) > 3:
             text += f"{bullet}   💫 всего {ppd:.1f} ₽/день\n"
         if t.get("features"):
             text += f"{bullet}   ✨ {', '.join(t['features'])}\n"
         if t.get("days", 0) >= 90:
-            text += f"{bullet}   🌟 **Самый выгодный!**\n"
+            text += f"{bullet}   🌟 <b>Самый выгодный!</b>\n"
         if i < len(regular_tariffs) - 1:
             text += f"{bullet}  \n"
 
     if special_tariffs and tg_id == ADMIN_TG_ID and mode == "buy":
-        text += "\n⚙️ **Служебные тарифы**\n"
+        text += "\n⚙️ <b>Служебные тарифы</b>\n"
         for t in special_tariffs:
             text += f"└─ 🔧 {t['name']}  💰 {t['price']} ₽ · {t['period']}\n"
 
-    text += "\n_Выберите подходящий тариф ниже:_ ⬇️"
+    text += "\n<i>Выберите подходящий тариф ниже:</i> ⬇️"
 
     # ── Клавиатура ──
     keyboard = []
@@ -156,14 +154,14 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
 
 async def show_tariffs(query):
     text, markup = _build_tariff_text_and_keyboard(query.from_user.id, mode="buy")
-    await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+    await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
 
 
 async def show_renew_tariffs(query, context, inbound_id: int, client_name: str):
     """Клавиатура продления — сохраняет контекст и показывает тарифы."""
     context.user_data["renew_info"] = {"inbound_id": inbound_id, "client_name": client_name}
     text, markup = _build_tariff_text_and_keyboard(query.from_user.id, mode="renew")
-    await query.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+    await query.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -258,33 +256,37 @@ async def show_single_config(query, client_name: str, xui):
         await query.answer("❌ Конфиг не найден", show_alert=True)
         return
 
-    vless_link = key["config"]
     expires_at = key["expires_at"]
     is_active  = not expires_at or expires_at > datetime.utcnow()
     status     = ("✅", "Активен") if is_active else ("❌", "Истек")
 
+    sub_url = key.get("subscription_link") or ""
+
     bio = BytesIO()
     bio.name = "qr.png"
     qr = qrcode.QRCode(version=1, box_size=8, border=4)
-    qr.add_data(vless_link)
+    qr.add_data(sub_url)
     qr.make(fit=True)
     qr.make_image(fill_color="black", back_color="white").save(bio, "PNG")
     bio.seek(0)
 
-    protocol = "Trojan" if "trojan" in vless_link else ("Shadowsocks" if "shadowsocks" in vless_link else "VLESS")
-
     caption = (
         f"🔐 <b>{status[0]} Конфиг {key['client_name']}</b>\n\n"
         f"┌─ 📋 <b>Информация</b>\n"
-        f"│  ▸ Протокол: <b>{protocol}</b>\n"
         f"│  ▸ Статус: <b>{status[1]}</b>\n"
         f"│  ▸ Действует до: <code>{convert_to_local(expires_at)}</code>\n"
-        f"└─ 🔧 <b>Ссылка для подключения:</b>\n"
-        f"<pre>{vless_link}</pre>\n\n"
-        "💡 <i>Скопируйте ссылку или сохраните QR-код</i>"
+        f"└─ 🔗 <b>Ссылка подписки:</b>\n\n"
+        f"👇 <i>Нажмите чтобы скопировать:</i>\n"
+        f"┌────────────────────\n"
+        f"  <code>{sub_url}</code>\n"
+        f"└────────────────────\n\n"
+        f"<i>Добавьте в приложение — конфиг будет обновляться автоматически</i>\n"
     )
 
-    await query.message.reply_photo(
+    caption += "\n💡 <i>Скопируйте ссылку или сохраните QR-код</i>"
+
+    await query.message.delete()
+    await query.message.chat.send_photo(
         photo=bio,
         caption=caption,
         parse_mode="HTML",

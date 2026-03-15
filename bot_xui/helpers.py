@@ -25,8 +25,10 @@ def make_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Мои конфиги", callback_data="my_configs")],
         [InlineKeyboardButton("🏷 Тарифы",       callback_data="tariffs")],
-        # [InlineKeyboardButton("👥 Реферальная программа", callback_data="referral")], 
+        [InlineKeyboardButton("👥 Реферальная программа", callback_data="referral")],
         [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data="instructions")],
+        [InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service")],
+        [InlineKeyboardButton("✉️ Написать нам", callback_data="feedback")],
     ])
 
 
@@ -62,7 +64,7 @@ async def safe_edit_text(query, text: str, reply_markup=None, parse_mode: str = 
         try:
             # Удаляем сообщение с медиа и отправляем чистый текст
             await query.message.delete()
-            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            await query.message.chat.send_message(text, reply_markup=reply_markup, parse_mode=parse_mode)
             return True
         except Exception as e:
             logger.warning(f"safe_edit_text media fallback failed: {e}")
