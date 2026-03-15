@@ -5,7 +5,7 @@
 
 # Настройки
 OVPN_INTERFACE="tun0"
-OVPN_PORT=1194
+OVPN_PORT=993
 OVPN_SERVICE="openvpn@server"
 EXT_IF="ens3"
 STATUS_LOG="/etc/openvpn/openvpn-status.log"
@@ -32,10 +32,10 @@ else
     CRITICAL_FAIL=1
 fi
 
-# --- Проверка 2: Порт 1194/UDP ---
+# --- Проверка 2: Порт 993/TCP ---
 echo
-echo "🔹 Проверка, слушает ли OpenVPN UDP порт $OVPN_PORT"
-if ss -ulpn | grep ":$OVPN_PORT " &>/dev/null; then
+echo "🔹 Проверка, слушает ли OpenVPN TCP порт $OVPN_PORT"
+if ss -tlpn | grep ":$OVPN_PORT " &>/dev/null; then
     echo "✔ Порт $OVPN_PORT слушает OpenVPN"
 else
     echo "❌ Порт $OVPN_PORT не слушает (OpenVPN не поднят или порт заблокирован)"
@@ -49,7 +49,7 @@ if sudo ufw status | grep "$OVPN_PORT" &>/dev/null; then
     echo "✔ Порт $OVPN_PORT разрешён в UFW"
 else
     echo "❌ Порт $OVPN_PORT не найден в правилах UFW, открываем..."
-    sudo ufw allow "$OVPN_PORT/udp"
+    sudo ufw allow "$OVPN_PORT/tcp"
     echo "✔ Порт $OVPN_PORT теперь открыт в UFW"
 fi
 
@@ -86,7 +86,7 @@ if [ "$CRITICAL_FAIL" -eq 1 ]; then
     if ! ip a show "$OVPN_INTERFACE" &>/dev/null; then
         RESTART_OK=0
     fi
-    if ! ss -ulpn | grep ":$OVPN_PORT " &>/dev/null; then
+    if ! ss -tlpn | grep ":$OVPN_PORT " &>/dev/null; then
         RESTART_OK=0
     fi
     if ! systemctl is-active --quiet "$OVPN_SERVICE"; then
