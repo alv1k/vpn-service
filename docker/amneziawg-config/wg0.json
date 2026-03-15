@@ -1,0 +1,17 @@
+{
+  "server": {
+    "privateKey": "UNcQ6E/giOwYLjGAe5o3rV9jPm6+rQQ/ivng5gSQLW4=",
+    "publicKey": "iwiTuWLaLo2YhCjmNmc73FRCNjVefL2rBM1ZpzZCQkA=",
+    "address": "10.10.0.1",
+    "jc": 9,
+    "jmin": 50,
+    "jmax": 1000,
+    "s1": 145,
+    "s2": 147,
+    "h1": 1861708496,
+    "h2": 388969482,
+    "h3": 945525635,
+    "h4": 1716107921
+  },
+  "clients": {}
+}
