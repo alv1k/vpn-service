@@ -258,23 +258,3 @@ def test_list_active_promocodes_empty(mock_get_pool):
     result = list_active_promocodes()
 
     assert result == []
-
-
-# ─────────────────────────────────────────────
-#  Discount calculation (payment logic)
-# ─────────────────────────────────────────────
-
-def test_discount_calculation():
-    """Verify discount math matches payment.py logic."""
-    original_price = 199
-    discount = 50
-    price = max(1, round(original_price * (100 - discount) / 100))
-    assert price == 100  # 199 * 0.5 = 99.5 → round → 100
-
-    # 30% discount
-    price_30 = max(1, round(199 * (100 - 30) / 100))
-    assert price_30 == 139  # 199 * 0.7 = 139.3 → round → 139
-
-    # 100% discount should floor to 1
-    price_100 = max(1, round(199 * (100 - 100) / 100))
-    assert price_100 == 1

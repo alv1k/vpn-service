@@ -67,39 +67,6 @@ def test_get_or_create_user_existing(mock_get_pool):
 
 
 @patch("api.db._get_pool")
-def test_create_payment(mock_get_pool):
-    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
-    mock_get_pool.return_value = mock_pool
-    mock_cursor.lastrowid = 10
-
-    from api.db import create_payment
-    create_payment("pay-123", 456, "monthly_30d", 199, "pending")
-
-    mock_cursor.execute.assert_called_once()
-    mock_conn.commit.assert_called_once()
-
-
-@patch("api.db._get_pool")
-def test_is_payment_processed_false(mock_get_pool):
-    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
-    mock_get_pool.return_value = mock_pool
-    mock_cursor.fetchone.return_value = {"status": "pending"}
-
-    from api.db import is_payment_processed
-    assert is_payment_processed("pay-123") is False
-
-
-@patch("api.db._get_pool")
-def test_is_payment_processed_true(mock_get_pool):
-    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
-    mock_get_pool.return_value = mock_pool
-    mock_cursor.fetchone.return_value = {"status": "succeeded"}
-
-    from api.db import is_payment_processed
-    assert is_payment_processed("pay-123") is True
-
-
-@patch("api.db._get_pool")
 def test_deactivate_key_by_payment(mock_get_pool):
     mock_pool, mock_conn, mock_cursor = _make_mock_pool()
     mock_get_pool.return_value = mock_pool

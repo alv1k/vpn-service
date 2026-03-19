@@ -1,6 +1,17 @@
 """Тесты для api/subscriptions.py — логика активации подписки."""
 from unittest.mock import patch
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+TZ_TOKYO = timezone(timedelta(hours=9))
+
+
+def _expected_eod_tokyo(dt):
+    """Округление до 23:59:59 Tokyo → naive UTC (как в продакшене)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_tokyo = dt.astimezone(TZ_TOKYO)
+    eod = dt_tokyo.replace(hour=23, minute=59, second=59, microsecond=0)
+    return eod.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 @patch("api.subscriptions.upsert_user_subscription")
@@ -17,7 +28,7 @@ def test_activate_new_user(mock_get_payment, mock_get_user, mock_upsert):
     from api.subscriptions import activate_subscription
     result = activate_subscription("pay-123")
 
-    expected = datetime(2026, 3, 1, 10, 0) + timedelta(days=30)
+    expected = _expected_eod_tokyo(datetime(2026, 3, 1, 10, 0) + timedelta(days=30))
     mock_upsert.assert_called_once_with(tg_id=123, subscription_until=expected)
     assert result == expected
 
@@ -41,7 +52,7 @@ def test_activate_extends_active_subscription(mock_get_payment, mock_get_user, m
     from api.subscriptions import activate_subscription
     result = activate_subscription("pay-123")
 
-    expected = current_until + timedelta(days=7)
+    expected = _expected_eod_tokyo(current_until + timedelta(days=7))
     mock_upsert.assert_called_once_with(tg_id=123, subscription_until=expected)
     assert result == expected
 
@@ -65,7 +76,7 @@ def test_activate_expired_subscription_starts_from_payment(mock_get_payment, moc
     from api.subscriptions import activate_subscription
     result = activate_subscription("pay-123")
 
-    expected = paid_at + timedelta(days=1)
+    expected = _expected_eod_tokyo(paid_at + timedelta(days=1))
     mock_upsert.assert_called_once_with(tg_id=123, subscription_until=expected)
     assert result == expected
 

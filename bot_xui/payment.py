@@ -15,7 +15,7 @@ from config import (
 )
 from bot_xui.tariffs import TARIFFS
 from bot_xui.test_mode import is_test_mode
-from api.db import create_payment, use_promocode
+from api.db import create_payment, use_promocode, get_permanent_discount
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +39,19 @@ async def process_payment(
         await query.edit_message_text("❌ Тариф не найден")
         return
 
-    # Apply promo discount
+    # Apply discount (permanent or one-time promo, whichever is higher)
     price = tariff["price"]
     promo_label = ""
-    if promo and promo.get("value"):
-        discount = promo["value"]
-        price = max(1, round(price * (100 - discount) / 100))
-        promo_label = f"\n🏷 Промокод <b>{promo['code']}</b>: скидка {discount}%"
+    perm_discount = get_permanent_discount(user_id)
+    onetime_discount = promo["value"] if promo and promo.get("value") else 0
+    effective_discount = max(perm_discount, onetime_discount)
+
+    if effective_discount > 0:
+        price = max(1, round(price * (100 - effective_discount) / 100))
+        if onetime_discount >= perm_discount and promo:
+            promo_label = f"\n🏷 Промокод <b>{promo['code']}</b>: скидка {effective_discount}%"
+        else:
+            promo_label = f"\n🏷 Постоянная скидка: <b>{perm_discount}%</b>"
 
     # Тестовый режим — только для админа
     use_test = (user_id == ADMIN_TG_ID and is_test_mode())
@@ -100,7 +106,7 @@ async def process_payment(
         )
 
         test_badge = "🧪 <b>ТЕСТОВЫЙ ПЛАТЁЖ</b> (деньги не списываются)\n\n" if use_test else ""
-        price_line = f"💰 Сумма: <s>{tariff['price']} ₽</s> → <b>{price} ₽</b>" if promo else f"💰 Сумма: {price} ₽"
+        price_line = f"💰 Сумма: <s>{tariff['price']} ₽</s> → <b>{price} ₽</b>" if effective_discount > 0 else f"💰 Сумма: {price} ₽"
         text = (
             f"{test_badge}"
             f"💳 <b>Оплата тарифа {tariff['name']}</b>\n\n"

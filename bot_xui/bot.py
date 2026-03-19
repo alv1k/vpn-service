@@ -34,15 +34,17 @@ from api.db import (
     create_promocode,
     deactivate_promocode,
     list_active_promocodes,
+    set_permanent_discount,
 )
 
-from bot_xui.helpers  import make_main_keyboard, MAIN_MENU_TEXT
+from bot_xui.helpers  import make_main_keyboard, MAIN_MENU_TEXT, safe_edit_text
 from bot_xui.views    import (
     show_main_menu, show_tariffs, show_configs,
     show_single_config, show_instructions, show_renew_tariffs,
+    # show_vless_link,
 )
 from bot_xui.payment     import process_payment
-from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, grant_referral_vpn
+from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_test_softether, grant_referral_vpn
 from bot_xui.messaging   import send_message_by_tg_id
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -85,8 +87,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=(
                     f"🎁 Вы перешли по реферальной ссылке!\n"
                     f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дня</b> VPN подписки!\n\n"
-                    f"🔗 Ваша ссылка подписки:\n"
-                    f"<code>{newcomer_result['sub_url']}</code>\n\n"
+                    f"🔗 Ваша ссылка на подписку:\n"
+                    f"👇 <i>Нажмите чтобы скопировать:</i>\n"
+                    f"┌────────────────────\n"
+                    f"  <code>{newcomer_result['sub_url']}</code>\n"
+                    f"└────────────────────\n\n"
                     f"📱 Установите приложение из раздела «Инструкция» и вставьте ссылку."
                 ),
                 parse_mode="HTML",
@@ -113,13 +118,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bot=context.bot,
         )
     else:
-        # User already existed — just a normal /start
         get_or_create_user(tg_id, first_name, last_name)
-        text = MAIN_MENU_TEXT
-        if tg_id == ADMIN_TG_ID:
-            mode = "🧪 ВКЛ" if is_test_mode() else "✅ ВЫКЛ"
-            text += f"\n\n⚙️ Тестовый режим: <b>{mode}</b> (/testmode)"
-        await update.message.reply_text(text, reply_markup=make_main_keyboard(), parse_mode="HTML")
+        if referrer_tg_id:
+            # User already registered but clicked a referral link
+            await update.message.reply_text(
+                "Вы уже зарегистрированы в боте, к сожалению реферальная ссылка не сработает 😔\n\n"
+                "Выберите тариф или порекомендуйте наш сервис друзьям "
+                f"и получите <b>{REFERRAL_REWARD_DAYS} дней бесплатно</b>! 🎁",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
+                    [InlineKeyboardButton("👥 Реферальная программа", callback_data="referral")],
+                    [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
+                ])
+            )
+        else:
+            text = MAIN_MENU_TEXT
+            if tg_id == ADMIN_TG_ID:
+                mode = "🧪 ВКЛ" if is_test_mode() else "✅ ВЫКЛ"
+                text += f"\n\n⚙️ Тестовый режим: <b>{mode}</b> (/testmode)"
+            await update.message.reply_text(text, reply_markup=make_main_keyboard(), parse_mode="HTML")
 
 
 async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,7 +157,7 @@ async def _refer_text(context, tg_id: int) -> str:
     return (
         f"👥 <b>Реферальная программа</b>\n\n"
         f"Приглашайте друзей и получайте <b>+{REFERRAL_REWARD_DAYS} дней</b> подписки за каждого!\n\n"
-        f"🔗 Ваша ссылка:\n"
+        f"🔗 Ваша ссылка на подписку:\n"
         f"👇 <i>Нажмите чтобы скопировать:</i>\n"
         f"┌────────────────────\n"
         f"  <code>{link}</code>\n"
@@ -316,8 +334,11 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=(
                     f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
                     f"Вам подарено <b>+{promo_data['value']} дней</b> VPN подписки!\n\n"
-                    f"🔗 Ваша ссылка подписки:\n"
-                    f"<code>{result['sub_url']}</code>\n\n"
+                    f"🔗 Ваша ссылка на подписку:\n"
+                    f"👇 <i>Нажмите чтобы скопировать:</i>\n"
+                    f"┌────────────────────\n"
+                    f"  <code>{result['sub_url']}</code>\n"
+                    f"└────────────────────\n\n"
                     f"📱 Установите приложение из раздела «Инструкция» и вставьте ссылку."
                 ),
                 parse_mode="HTML",
@@ -345,9 +366,19 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=make_main_keyboard()
         )
 
+    elif promo_data['type'] == 'permanent_discount':
+        set_permanent_discount(tg_id, promo_data['value'])
+        use_promocode(promo_data['id'], tg_id)
+        await update.message.reply_text(
+            f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
+            f"Вам установлена постоянная скидка <b>{promo_data['value']}%</b> на все будущие оплаты.",
+            parse_mode="HTML",
+            reply_markup=make_main_keyboard()
+        )
+
 
 async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/addpromo CODE days|discount VALUE [MAX_USES] [EXPIRES YYYY-MM-DD]"""
+    """/addpromo CODE days|discount|permanent_discount VALUE [MAX_USES] [EXPIRES YYYY-MM-DD]"""
     if update.effective_user.id != ADMIN_TG_ID:
         await update.message.reply_text("❌ Нет доступа")
         return
@@ -365,8 +396,8 @@ async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     code = args[0]
     promo_type = args[1]
-    if promo_type not in ('days', 'discount'):
-        await update.message.reply_text("❌ Тип должен быть <code>days</code> или <code>discount</code>", parse_mode="HTML")
+    if promo_type not in ('days', 'discount', 'permanent_discount'):
+        await update.message.reply_text("❌ Тип должен быть <code>days</code>, <code>discount</code> или <code>permanent_discount</code>", parse_mode="HTML")
         return
 
     try:
@@ -507,7 +538,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data  = query.data
 
     if data == "my_configs":
-        await show_configs(query)
+        await show_configs(query, xui)
 
     elif data == "tariffs":
         await show_tariffs(query)
@@ -518,15 +549,58 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "instructions":
         await show_instructions(query)
 
+    elif data == "web_portal":
+        from api.db import get_web_token
+        token = get_web_token(query.from_user.id)
+        if token:
+            url = f"https://344988.snk.wtf/my/{token}"
+            await safe_edit_text(
+                query,
+                f"🌐 <b>Ваш личный кабинет</b>\n\n"
+                f"Эта ссылка работает даже если Telegram заблокирован.\n"
+                f"<b>Сохраните в закладки браузера:</b>\n\n"
+                f"<code>{url}</code>\n\n"
+                f"Там вы найдёте статус подписки, QR-код и инструкцию по подключению.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🌐 Открыть", url=url)],
+                    [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
+                ]),
+            )
+        else:
+            await safe_edit_text(query, "❌ Ошибка. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]]))
+
+    elif data == "test_protocol":
+        await query.edit_message_text(
+            "🎁 <b>Выберите протокол для теста:</b>\n\n"
+            "┌─────────────────────\n"
+            "│ 🟢 <b>VLESS</b> — мобильные и ПК\n"
+            "│ 🖥 <b>SoftEther</b> — Windows XP/7/10/11\n"
+            "└─────────────────────",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🟢 VLESS", callback_data="test_vless")],
+                [InlineKeyboardButton("🖥 SoftEther", callback_data="test_softether")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
+            ])
+        )
+
     elif data == "test_awg":
         await handle_test_awg(query, xui)
 
     elif data == "test_vless":
         await handle_test_vless(query, xui)
 
+    elif data == "test_softether":
+        await handle_test_softether(query)
+
     elif data.startswith("show_key_"):
         client_name = data.removeprefix("show_key_")
         await show_single_config(query, client_name, xui)
+
+    # elif data.startswith("show_vless_"):
+    #     client_name = data.removeprefix("show_vless_")
+    #     await show_vless_link(query, client_name)
 
     elif data.startswith("buy_tariff_"):
         parts     = data.removeprefix("buy_tariff_")
@@ -539,7 +613,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if tariff.get("is_test"):
-            await handle_test_vless(query, xui)
+            await query.edit_message_text(
+                "🎁 <b>Выберите протокол для теста:</b>\n\n"
+                "┌─────────────────────\n"
+                "│ 🟢 <b>VLESS</b> — мобильные и ПК\n"
+                "│ 🖥 <b>SoftEther</b> — Windows XP/7/10/11\n"
+                "└─────────────────────",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🟢 VLESS", callback_data="test_vless")],
+                    [InlineKeyboardButton("🖥 SoftEther", callback_data="test_softether")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="tariffs")],
+                ])
+            )
         else:
             renew_info = context.user_data.get("renew_info", {})
             await process_payment(
@@ -570,7 +656,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "✉️ <b>Написать нам</b>\n\n"
             "Напишите ваше сообщение — предложение, вопрос или замечание.\n"
-            "Мы обязательно ответим!",
+            "Мы обязательно ответим!\n"
+            "👇 Начните писать прямо в поле здесь, как обычно вы отправляете сообщения в телеграм ",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ Отмена", callback_data="back_to_menu")]

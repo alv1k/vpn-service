@@ -1,11 +1,12 @@
 from fastapi import FastAPI, Request, HTTPException, Response
+from fastapi.responses import HTMLResponse
 import json
 import sys
 import httpx
 import logging
 import time
 from ipaddress import ip_address, ip_network
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from io import BytesIO
 
 import qrcode
@@ -27,6 +28,7 @@ from api.db import (
     get_subscription_until,
     get_user_email,
     deactivate_key_by_payment,
+    get_user_by_web_token,
 )
 from api.wireguard import AmneziaWGClient
 from bot_xui.tariffs import TARIFFS
@@ -35,6 +37,19 @@ from bot_xui.utils import XUIClient
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://alekscko.beget.tech", "http://alekscko.beget.tech"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+from api.web_portal import web_router
+from api.web_api import web_api_router
+app.include_router(web_router)
+app.include_router(web_api_router)
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
@@ -78,8 +93,6 @@ async def amnezia_login(client: httpx.AsyncClient):
     r.raise_for_status()
 
 async def amnezia_create_client(client: httpx.AsyncClient, name: str):
-    client_data = await wg_client.create_client(name="user_123456789")
-
     r = await client.post(
         f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
         json={"name": name},
@@ -216,9 +229,12 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             
             inbound_id = inbounds[2]['id']
             
-            # Время истечения (миллисекунды)
+            # Время истечения — 23:59:59 Tokyo последнего дня
             duration_days = TARIFFS[tariff_key].get('days', 30)
-            expiry_time = int((time.time() + (duration_days * 86400)) * 1000)
+            tz_tokyo = timezone(timedelta(hours=9))
+            raw_end = datetime.now(timezone.utc) + timedelta(days=duration_days)
+            end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
+            expiry_time = int(end_tokyo.timestamp() * 1000)
             
             # ===== Создаем/продлеваем клиента в 3x-ui =====
             existing = xui.get_client_by_tg_id(tg_id)
@@ -255,9 +271,12 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 spx="/"
             )
             
-            # Создаем QR код            
+            # Получаем subscription URL
+            sub_url = xui.get_client_subscription_url(tg_id)
+
+            # Создаем QR код
             qr = qrcode.QRCode(version=1, box_size=10, border=5)
-            qr.add_data(client_config)
+            qr.add_data(sub_url)
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white")
             
@@ -265,6 +284,17 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             img.save(bio, 'PNG')
             bio.seek(0)            
             
+        elif vpn_type == "softether":
+            # ========== SoftEther ==========
+            logger.info("🖥 Creating SoftEther config")
+            from bot_xui.vpn_factory import create_softether_config
+            se_data = create_softether_config(tg_id, days=TARIFFS[tariff_key].get('days', 30))
+            client_id = se_data["username"]
+            client_name = se_data["username"]
+            client_config = se_data["config"]
+            sub_url = None
+            bio = None
+
         else:
             # ========== AmneziaWG ==========
             logger.info("🔵 Creating AmneziaWG config")
@@ -312,7 +342,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
 
         # ===== 6. Сохранение в БД =====
-        sub_url = xui.get_client_subscription_url(tg_id) if vpn_type == "vless" else None
+        if vpn_type != "vless":
+            sub_url = None
         create_vpn_key(
             tg_id=tg_id,
             payment_id=payment_id,
@@ -320,17 +351,22 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             client_name=client_name,
             client_ip=client_ip,
             client_public_key=client_public_key,
-            config=client_config,
+            vless_link=client_config,
             expires_at=subscription_until,
             vpn_type=vpn_type,
             subscription_link=sub_url,
+            vpn_file=se_data.get("vpn_file") if vpn_type == "softether" else None,
         )
 
         logger.info("💾 VPN config saved to DB")
 
-        # ===== 7. Отправка в Telegram =====
+        # ===== 7. Отправка в Telegram (пропускаем для веб-заказов без tg_id) =====
         tariff_info = TARIFFS.get(tariff_key, {})
         tariff_name = tariff_info.get("name", tariff_key)
+
+        if not tg_id or tg_id == 0:
+            logger.info("📤 Web order — Telegram notification skipped (no tg_id)")
+            return True
 
         try:
             if vpn_type == "vless":
@@ -339,40 +375,57 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 await send_telegram_photo_from_bytes(
                     tg_id=tg_id,
                     image_bytes=bio,
-                    caption=f"🟢 **Ваш VLESS конфиг**\n\n"
-                            f"👤 ID: {client_id}\n"
-                            f"⏱ Действителен: {TARIFFS[tariff_key].get('period', 10)}\n"
-                            f"👥 Устройств: {TARIFFS[tariff_key].get('device_limit', 10)}\n"
-                            f"**Инструкция:**\n"
-                            f"1. Установите v2rayNG (Android/iOS) или Nekoray (Windows/macOS)\n"
-                            f"2. Отсканируйте QR или скопируйте ссылку\n"
+                    caption=f"✅ <b>Оплата прошла успешно!</b>\n\n"
+                            f"⏱ Тариф: <b>{TARIFFS[tariff_key].get('name', tariff_key)}</b>\n"
+                            f"📅 Период: {TARIFFS[tariff_key].get('period', '30 дней')}\n"
+                            f"👥 Устройств: {TARIFFS[tariff_key].get('device_limit', 10)}\n\n"
+                            f"<b>📱 Инструкция:</b>\n"
+                            f"1. Установите приложение из раздела «Инструкция»\n"
+                            f"2. Отсканируйте QR или скопируйте ссылку ниже\n"
                             f"3. Подключитесь\n\n"
                             f"💬 Поддержка: кнопка «Написать нам» в меню",
                 )
 
-                # Отправка текста в безопасном code-блоке
+                # Отправка subscription ссылки
                 message = (
-                    f"🔑 Ключ-конфиг\n\n"
-                    f"\n<pre>{client_config}</pre>\n"
-                    f"Скопируйте эту ссылку и вставьте в ваше приложение\n\n"
+                    f"🔗 Ваша ссылка на подписку:\n"
+                    f"👇 <i>Нажмите чтобы скопировать:</i>\n"
+                    f"┌────────────────────\n"
+                    f"  <code>{sub_url}</code>\n"
+                    f"└────────────────────\n\n"
+                    f"📱 Скопируйте ссылку и вставьте в приложение"
                 )
-                # Обычный моноширинный текст (inline code)
-                # message = f'Ваша ссылка:\n<code>https://example.com/some/long/link</code>'
-
-                # Или блок кода
-                # message = f'Ваша ссылка:\n<pre>https://example.com/some/long/link</pre>'
-                
                 await send_telegram_notification(tg_id, message)
 
-                message = ("Выберите действие:")
-                # С одной кнопкой
                 buttons = [
                     [{"text": "📑 Инструкция и ссылки", "callback_data": "instructions"}],
                     [{"text": "◀️ В меню", "callback_data": "back_to_menu"}]
                 ]
-                await send_telegram_notification(tg_id, message, buttons)
+                await send_telegram_notification(tg_id, "Выберите действие:", buttons)
                 
                 
+            elif vpn_type == "softether":
+                # Отправляем SoftEther как текст с данными подключения
+                from bot_xui.vpn_factory import _softether_credentials_text
+                message = (
+                    f"✅ <b>Оплата прошла успешно!</b>\n\n"
+                    f"⏱ Тариф: <b>{tariff_name}</b>\n"
+                    f"📅 Период: {TARIFFS[tariff_key].get('period', '30 дней')}\n\n"
+                    + _softether_credentials_text(se_data["username"], se_data["password"])
+                    + f"\n<b>📱 Инструкция:</b>\n"
+                    f"1. Установите <b>SoftEther VPN Client</b>\n"
+                    f"2. Создайте новое подключение\n"
+                    f"3. Введите данные выше\n"
+                    f"4. Подключитесь\n\n"
+                    f"💬 Поддержка: кнопка «Написать нам» в меню"
+                )
+                await send_telegram_notification(tg_id, message)
+
+                buttons = [
+                    [{"text": "◀️ В меню", "callback_data": "back_to_menu"}]
+                ]
+                await send_telegram_notification(tg_id, "Выберите действие:", buttons)
+
             else:
                 # Отправляем AmneziaWG как файл
                 filename = f"amneziawg_{tg_id}_{payment_id[:8]}.conf"
@@ -539,6 +592,9 @@ async def yookassa_webhook(request: Request):
     tariff = metadata.get("tariff", "default")
     vpn_type = metadata.get("vpn_type")
     is_test_payment = metadata.get("test_mode") == "true"
+    is_web_order = metadata.get("source") == "web"
+    web_email = metadata.get("email", "")
+    web_token = metadata.get("web_token", "")
 
     # ===== 3. Проверка IP (пропускается для тестовых платежей) =====
     verify_yookassa_ip(request, is_test_payment=is_test_payment)
@@ -609,20 +665,27 @@ async def yookassa_webhook(request: Request):
     
     # ===== 9. ⭐ ОБРАБОТКА УСПЕШНОГО ПЛАТЕЖА ⭐ =====
     if current_status == "pending" and new_status == "paid":
+        # Для веб-заказов: привязать tg_id из users если есть
+        if is_web_order and web_token:
+            web_user = get_user_by_web_token(web_token) if web_token else None
+            if web_user:
+                tg_id = str(web_user.get('tg_id') or 0)
+                # Обновить tg_id в payment_data для process_successful_payment
+                payment_data = {**payment_data, 'tg_id': int(tg_id)}
+
         success = await process_successful_payment(payment_id, payment_data, vpn_type)
         
         if not success:
             logger.error(f"❌ Failed to process payment {payment_id}")
-            # Не обновляем статус в БД, чтобы можно было обработать вручную
-            # Отправляем уведомление об ошибке
+            # Не обновляем статус — YooKassa повторит webhook
             if tg_id:
                 await send_telegram_notification(
                     tg_id,
                     f"⚠️ Возникла ошибка при создании VPN конфига.\n"
                     f"Платёж ID: {payment_id}\n\n"
-                    f"Обратитесь в поддержку: @your_support"
+                    f"Мы уже знаем о проблеме, конфиг будет создан автоматически."
                 )
-            return Response(status_code=200)  # Все равно возвращаем 200
+            return Response(status_code=500)  # YooKassa повторит запрос
     
     # ===== 10. Проверка идемпотентности =====
     if is_payment_processed(payment_id):
@@ -675,18 +738,12 @@ async def health_check():
     }
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Информация о сервисе"""
-    return {
-        "service": "VPN Service Webhook",
-        "version": "2.0",
-        "endpoints": {
-            "webhook": "POST /webhook - YooKassa webhook handler",
-            "health": "GET /health - Health check",
-            "root": "GET / - Service info"
-        }
-    }
+    """Лендинг сайта"""
+    from pathlib import Path
+    html = Path("/home/alvik/vpn-service/website/index.html").read_text()
+    return HTMLResponse(html)
 
 
 @app.post("/test/payment/{payment_id}")

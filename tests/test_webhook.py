@@ -1,7 +1,12 @@
 """Тесты для api/webhook.py — обработка вебхуков."""
+import sys
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
+
+# Мокаем yookassa до импорта api.web_api (он импортируется из api.webhook)
+_yookassa_mock = MagicMock()
+sys.modules.setdefault("yookassa", _yookassa_mock)
 
 
 @pytest.fixture
@@ -21,8 +26,7 @@ def test_health_check(client):
 def test_root_endpoint(client):
     response = client.get("/")
     assert response.status_code == 200
-    data = response.json()
-    assert "service" in data
+    assert "text/html" in response.headers.get("content-type", "")
 
 
 def test_webhook_rejects_invalid_ip(client):

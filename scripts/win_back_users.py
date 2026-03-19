@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+"""
+Анализ пользователей для возврата в сервис.
+Проверяет все сценарии неактивности и формирует отчёт.
+
+Запуск: python3 scripts/win_back_users.py [--send]
+  без флагов — только отчёт
+  --send     — отправить сообщения пользователям
+"""
+import sys
+import os
+import json
+import asyncio
+import logging
+from datetime import datetime, timedelta
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from api.db import execute_query
+from bot_xui.utils import XUIClient
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, ADMIN_TG_ID
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
+
+MB = 1024 * 1024
+NOW = datetime.utcnow()
+COOLDOWN_DAYS = 5  # Не отправлять одному пользователю чаще чем раз в 5 дней
+
+
+# ─────────────────────────────────────────────
+#  Дедупликация
+# ─────────────────────────────────────────────
+
+def get_recent_sends():
+    """Получить tg_id, которым отправляли за последние COOLDOWN_DAYS дней. Возвращает {tg_id: last_sent_at}."""
+    rows = execute_query(
+        "SELECT tg_id, MAX(sent_at) as last_sent "
+        "FROM winback_log "
+        "WHERE sent_at > %s "
+        "GROUP BY tg_id",
+        (NOW - timedelta(days=COOLDOWN_DAYS),),
+        fetch='all',
+    ) or []
+    return {r['tg_id']: r['last_sent'] for r in rows}
+
+
+def log_send(tg_id, scenario):
+    """Записать отправку в лог."""
+    execute_query(
+        "INSERT INTO winback_log (tg_id, scenario) VALUES (%s, %s)",
+        (tg_id, scenario),
+    )
+
+
+# ─────────────────────────────────────────────
+#  Сбор данных
+# ─────────────────────────────────────────────
+
+def get_all_users():
+    """Все пользователи из БД."""
+    return execute_query(
+        "SELECT tg_id, first_name, subscription_until, test_vless_activated, "
+        "test_awg_activated, test_softether_activated, created_at "
+        "FROM users",
+        fetch='all',
+    ) or []
+
+
+def get_all_keys():
+    """Все VPN ключи, сгруппированные по tg_id."""
+    rows = execute_query(
+        "SELECT tg_id, client_name, vpn_type, expires_at, created_at FROM vpn_keys",
+        fetch='all',
+    ) or []
+    keys_by_tg = {}
+    for r in rows:
+        keys_by_tg.setdefault(r['tg_id'], []).append(r)
+    return keys_by_tg
+
+
+def get_all_payments():
+    """Все оплаченные платежи, сгруппированные по tg_id."""
+    rows = execute_query(
+        "SELECT tg_id, tariff, amount, status, created_at FROM payments WHERE status = 'paid'",
+        fetch='all',
+    ) or []
+    payments_by_tg = {}
+    for r in rows:
+        payments_by_tg.setdefault(r['tg_id'], []).append(r)
+    return payments_by_tg
+
+
+def get_traffic_from_panel(xui):
+    """Получить трафик всех клиентов из панели 3x-ui. Возвращает {tg_id: {upload, download, enabled}}."""
+    traffic = {}
+    inbounds = xui.get_inbounds()
+    for ib in inbounds:
+        for cs in ib.get('clientStats', []):
+            tg_id = None
+            # Найти tg_id из settings
+            settings = json.loads(ib.get('settings', '{}'))
+            for client in settings.get('clients', []):
+                if client.get('email') == cs.get('email'):
+                    tg_id = client.get('tgId')
+                    break
+            if tg_id:
+                tg_id = int(tg_id)
+                existing = traffic.get(tg_id, {'upload': 0, 'download': 0, 'enabled': True})
+                existing['upload'] += cs.get('up', 0)
+                existing['download'] += cs.get('down', 0)
+                if not cs.get('enable', True):
+                    existing['enabled'] = False
+                traffic[tg_id] = existing
+    return traffic
+
+
+# ─────────────────────────────────────────────
+#  Классификация
+# ─────────────────────────────────────────────
+
+def _key_age_days(user_keys):
+    """Возраст самого старого ключа в днях."""
+    oldest = min(user_keys, key=lambda k: k['created_at'] or NOW)
+    if oldest['created_at']:
+        return (NOW - oldest['created_at']).days
+    return 0
+
+
+def _test_expired_days(user_keys):
+    """Дней с момента окончания последнего тестового ключа."""
+    test_keys = [k for k in user_keys if k['expires_at'] and k['expires_at'] < NOW]
+    if not test_keys:
+        return 0
+    latest = max(test_keys, key=lambda k: k['expires_at'])
+    return (NOW - latest['expires_at']).days
+
+
+# Тайминги: через сколько дней после события отправлять сообщение
+DELAY = {
+    'zero_traffic': 1,        # 1 день после создания конфига
+    'low_traffic': 1,         # 1 день после создания конфига
+    'expired_fresh': 1,       # 1 день после истечения подписки
+    'expired_old': 30,        # 30 дней после истечения
+    'test_no_purchase': 1,    # 1 день после окончания теста
+    'payment_no_config': 0,   # сразу
+    'panel_db_mismatch': 0,   # сразу
+    'multi_config_partial': 7,# 7 дней без трафика
+}
+
+
+def classify_users(users, keys_by_tg, payments_by_tg, traffic):
+    """Классифицировать пользователей по сценариям возврата."""
+    results = {
+        'zero_traffic': [],        # 0 MB — не подключался
+        'low_traffic': [],         # < 5 MB — попробовал, не заработало
+        'expired_fresh': [],       # подписка истекла 1-7 дней
+        'expired_old': [],         # подписка истекла 30+ дней
+        'test_no_purchase': [],    # тест использован, не купил
+        'multi_config_partial': [],# несколько конфигов, один тип не используется
+        'payment_no_config': [],   # оплатил, но конфиг не выдан
+        'panel_db_mismatch': [],   # активен в БД, деактивирован в панели
+    }
+
+    for user in users:
+        tg_id = user['tg_id']
+        if tg_id == ADMIN_TG_ID:
+            continue
+
+        user_keys = keys_by_tg.get(tg_id, [])
+        user_payments = payments_by_tg.get(tg_id, [])
+        user_traffic = traffic.get(tg_id, {'upload': 0, 'download': 0, 'enabled': True})
+        total_bytes = user_traffic['upload'] + user_traffic['download']
+        sub_until = user.get('subscription_until')
+
+        has_active_key = any(
+            k['expires_at'] and k['expires_at'] > NOW for k in user_keys
+        )
+        has_vless = any(k['vpn_type'] == 'vless' for k in user_keys)
+
+        key_age = _key_age_days(user_keys) if user_keys else 0
+
+        info = {
+            'tg_id': tg_id,
+            'name': user.get('first_name', ''),
+            'sub_until': sub_until,
+            'total_mb': round(total_bytes / MB, 2),
+            'keys': len(user_keys),
+            'vpn_types': list(set(k['vpn_type'] for k in user_keys)),
+            'paid_count': len(user_payments),
+        }
+
+        # Сценарий: Оплатил, конфиг не выдан — СРАЗУ
+        if user_payments and not user_keys:
+            results['payment_no_config'].append(info)
+            continue
+
+        # Нет ключей — пропускаем
+        if not user_keys:
+            continue
+
+        # Сценарий: Активен в БД, деактивирован в панели — СРАЗУ
+        if has_active_key and has_vless and not user_traffic.get('enabled', True):
+            results['panel_db_mismatch'].append(info)
+
+        # Сценарий: 0 MB трафика — через 1 день после создания конфига
+        if total_bytes == 0 and has_active_key and key_age >= DELAY['zero_traffic']:
+            results['zero_traffic'].append(info)
+            continue
+
+        # Сценарий: < 5 MB — через 1 день после создания конфига
+        if 0 < total_bytes < 5 * MB and has_active_key and key_age >= DELAY['low_traffic']:
+            results['low_traffic'].append(info)
+            continue
+
+        # Сценарий: Подписка истекла
+        if sub_until and sub_until < NOW:
+            days_expired = (NOW - sub_until).days
+            if DELAY['expired_fresh'] <= days_expired <= 7:
+                results['expired_fresh'].append({**info, 'days_expired': days_expired})
+            elif days_expired >= DELAY['expired_old']:
+                results['expired_old'].append({**info, 'days_expired': days_expired})
+            continue
+
+        # Сценарий: Тест использован, не купил — через 1 день после окончания теста
+        test_used = (
+            user.get('test_vless_activated') or
+            user.get('test_awg_activated') or
+            user.get('test_softether_activated')
+        )
+        if test_used and not user_payments and not has_active_key:
+            days_since_test = _test_expired_days(user_keys)
+            if days_since_test >= DELAY['test_no_purchase']:
+                results['test_no_purchase'].append({**info, 'days_since_test': days_since_test})
+            continue
+
+        # Сценарий: Несколько типов конфигов, один не используется — 7 дней
+        if has_active_key and len(info['vpn_types']) > 1 and key_age >= DELAY['multi_config_partial']:
+            vless_keys = [k for k in user_keys if k['vpn_type'] == 'vless']
+            other_keys = [k for k in user_keys if k['vpn_type'] != 'vless']
+            if vless_keys and other_keys and total_bytes > 0:
+                results['multi_config_partial'].append(info)
+
+    return results
+
+
+# ─────────────────────────────────────────────
+#  Сообщения
+# ─────────────────────────────────────────────
+
+MESSAGES = {
+    'zero_traffic': (
+        "👋 Привет!\n\n"
+        "Мы заметили, что вы ещё не подключились к VPN. "
+        "Нужна помощь с настройкой?\n\n"
+        "📱 <b>Быстрый старт:</b>\n"
+        "1️⃣ Нажмите <b>Мои конфиги</b>\n"
+        "2️⃣ Скопируйте ссылку подписки\n"
+        "3️⃣ Вставьте в приложение (Happ, Hiddify, Streisand)\n\n"
+        "Если что-то не получается — напишите нам 💬"
+    ),
+    'low_traffic': (
+        "👋 Привет!\n\n"
+        "Похоже, VPN подключение не заработало как нужно. "
+        "Мы можем помочь!\n\n"
+        "Попробуйте:\n"
+        "• Обновите ссылку подписки (Мои конфиги → скопируйте заново)\n"
+        "• Используйте приложение <b>Happ</b> или <b>Hiddify</b>\n"
+        "• Включите/выключите VPN заново\n\n"
+        "Если не помогло — напишите в поддержку, разберёмся 💬"
+    ),
+    'expired_fresh': (
+        "⏰ Ваша подписка недавно истекла.\n\n"
+        "Продлите сейчас и получите бесперебойный доступ к VPN!\n\n"
+        "💡 Чем длиннее период — тем выгоднее цена за день."
+    ),
+    'expired_old': (
+        "👋 Давно не виделись!\n\n"
+        "Мы обновили сервис — стало быстрее и стабильнее.\n"
+        "Возвращайтесь — будем рады! 🎁"
+    ),
+    'test_no_purchase': (
+        "👋 Вы пробовали наш тестовый период.\n\n"
+        "Готовы к полному доступу? Выберите тариф — "
+        "подписка от {price} ₽/мес с доступом ко всем сайтам 🌐"
+    ),
+    'payment_no_config': (
+        "⚠️ Мы обнаружили, что ваш платёж был успешным, "
+        "но VPN конфиг не был создан.\n\n"
+        "Мы уже разбираемся с этим. Если вопрос не решится в ближайшее время — "
+        "напишите в поддержку 💬"
+    ),
+    'panel_db_mismatch': (
+        "⚠️ Обнаружена проблема с вашим конфигом. "
+        "Мы уже работаем над исправлением.\n\n"
+        "Если VPN не подключается — напишите в поддержку 💬"
+    ),
+}
+
+
+def get_buttons_for_scenario(scenario):
+    if scenario in ('zero_traffic', 'low_traffic', 'panel_db_mismatch'):
+        return [
+            [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
+            [{"text": "📋 Инструкция", "callback_data": "instructions"}],
+        ]
+    elif scenario in ('expired_fresh', 'expired_old', 'test_no_purchase'):
+        return [
+            [{"text": "💎 Тарифы", "callback_data": "tariffs"}],
+        ]
+    elif scenario == 'payment_no_config':
+        return [
+            [{"text": "💬 Написать нам", "url": "https://t.me/tiin_service_bot"}],
+        ]
+    return []
+
+
+# ─────────────────────────────────────────────
+#  Отчёт и отправка
+# ─────────────────────────────────────────────
+
+def print_report(results):
+    print(f"\n{'='*60}")
+    print(f"  ТАЙМИНГИ (дней после события) | cooldown: {COOLDOWN_DAYS}д")
+    print(f"{'='*60}")
+    for k, v in DELAY.items():
+        print(f"  {k:<25} {v}д")
+
+    total = 0
+    for scenario, users in results.items():
+        if not users:
+            continue
+        print(f"\n{'='*60}")
+        print(f"  {scenario.upper()} ({len(users)} пользователей) [задержка: {DELAY.get(scenario, '?')}д]")
+        print(f"{'='*60}")
+        for u in users:
+            extra = ""
+            if 'days_expired' in u:
+                extra = f" | истёк {u['days_expired']}д назад"
+            if 'days_since_test' in u:
+                extra += f" | тест {u['days_since_test']}д назад"
+            print(
+                f"  tg_id={u['tg_id']:<12} "
+                f"name={u['name']:<15} "
+                f"traffic={u['total_mb']:.1f}MB "
+                f"keys={u['keys']} "
+                f"types={u['vpn_types']} "
+                f"paid={u['paid_count']}"
+                f"{extra}"
+            )
+        total += len(users)
+    print(f"\n{'='*60}")
+    print(f"  ИТОГО: {total} пользователей для возврата")
+    print(f"{'='*60}\n")
+
+
+async def send_messages(results):
+    from bot_xui.messaging import send_link_safely
+
+    recent = get_recent_sends()
+    sent = 0
+    skipped = 0
+    failed = 0
+
+    for scenario, users in results.items():
+        if not users or scenario == 'multi_config_partial':
+            continue
+
+        msg_template = MESSAGES.get(scenario)
+        if not msg_template:
+            continue
+
+        buttons = get_buttons_for_scenario(scenario)
+
+        for u in users:
+            tg_id = u['tg_id']
+
+            # Cooldown: не отправлять чаще чем раз в COOLDOWN_DAYS
+            if tg_id in recent:
+                days_ago = (NOW - recent[tg_id]).days
+                log.info(f"⏭ Skip {tg_id} [{scenario}] — последняя отправка {days_ago}д назад (cooldown {COOLDOWN_DAYS}д)")
+                skipped += 1
+                continue
+
+            msg = msg_template
+            if '{price}' in msg:
+                msg = msg.replace('{price}', '149')
+
+            ok = await send_link_safely(
+                tg_id=tg_id,
+                text=msg,
+                parse_mode="HTML",
+                buttons=buttons if buttons else None,
+            )
+            if ok:
+                sent += 1
+                log_send(tg_id, scenario)
+                recent[tg_id] = NOW  # обновить кэш чтобы не слать дважды за запуск
+                log.info(f"✅ Sent [{scenario}] to {tg_id}")
+            else:
+                failed += 1
+                log.warning(f"❌ Failed [{scenario}] to {tg_id}")
+
+    print(f"\nОтправлено: {sent}, пропущено (cooldown): {skipped}, ошибок: {failed}")
+
+
+# ─────────────────────────────────────────────
+#  Main
+# ─────────────────────────────────────────────
+
+def main():
+    send_mode = '--send' in sys.argv
+
+    log.info("Сбор данных...")
+    xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+    users = get_all_users()
+    keys_by_tg = get_all_keys()
+    payments_by_tg = get_all_payments()
+    traffic = get_traffic_from_panel(xui)
+
+    log.info(f"Пользователей: {len(users)}, с ключами: {len(keys_by_tg)}, с трафиком: {len(traffic)}")
+
+    results = classify_users(users, keys_by_tg, payments_by_tg, traffic)
+    print_report(results)
+
+    if send_mode:
+        print("⚠️  Режим отправки. Отправляю сообщения...")
+        asyncio.run(send_messages(results))
+    else:
+        print("ℹ️  Режим просмотра. Для отправки: python3 scripts/win_back_users.py --send")
+
+
+if __name__ == "__main__":
+    main()

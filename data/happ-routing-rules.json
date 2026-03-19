@@ -1,0 +1,63 @@
+{
+  "dns": {
+    "servers": [
+      {
+        "tag": "dns-remote",
+        "address": "8.8.8.8",
+        "detour": "proxy"
+      },
+      {
+        "tag": "dns-direct",
+        "address": "1.1.1.1",
+        "detour": "direct"
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": "geosite-ru",
+        "server": "dns-direct"
+      }
+    ],
+    "final": "dns-remote"
+  },
+  "route": {
+    "rule_set": [
+      {
+        "tag": "geosite-ru",
+        "type": "remote",
+        "format": "source",
+        "url": "https://344988.snk.wtf:2096/ruleset/ruleset-geosite-ru.json",
+        "download_detour": "direct",
+        "update_interval": "24h"
+      },
+      {
+        "tag": "geoip-ru",
+        "type": "remote",
+        "format": "source",
+        "url": "https://344988.snk.wtf:2096/ruleset/ruleset-geoip-ru.json",
+        "download_detour": "direct",
+        "update_interval": "24h"
+      }
+    ],
+    "rules": [
+      {
+        "protocol": "dns",
+        "outbound": "dns-out"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "rule_set": "geosite-ru",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": "geoip-ru",
+        "outbound": "direct"
+      }
+    ],
+    "final": "proxy",
+    "auto_detect_interface": true
+  }
+}

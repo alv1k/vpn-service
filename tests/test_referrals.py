@@ -1,5 +1,6 @@
 """Тесты для реферальной системы — регистрация, награды, подсчёт."""
 from unittest.mock import patch, MagicMock
+from datetime import datetime
 
 
 def _make_mock_pool():
@@ -24,8 +25,14 @@ def test_register_new_user_with_valid_referrer(mock_get_pool):
     # 1st fetchone: get_user_by_tg_id(new) → None
     # INSERT IGNORE → uses lastrowid, no fetchone
     # 2nd fetchone: get_user_by_tg_id(referrer) → exists
-    # reward_referrer + reward_newcomer → UPDATEs, no fetchone
-    mock_cursor.fetchone.side_effect = [None, {"id": 10, "tg_id": 111}]
+    # 3rd fetchone: _round_subscription_eod SELECT for referrer
+    # 4th fetchone: _round_subscription_eod SELECT for newcomer
+    mock_cursor.fetchone.side_effect = [
+        None,
+        {"id": 10, "tg_id": 111},
+        {"subscription_until": datetime(2026, 4, 1, 10, 0)},
+        {"subscription_until": datetime(2026, 4, 1, 10, 0)},
+    ]
     mock_cursor.lastrowid = 1
 
     from api.db import register_user_with_referral
@@ -116,14 +123,16 @@ def test_register_race_condition_insert_ignore(mock_get_pool):
 def test_reward_referrer_updates_subscription(mock_get_pool):
     mock_pool, mock_conn, mock_cursor = _make_mock_pool()
     mock_get_pool.return_value = mock_pool
+    mock_cursor.fetchone.return_value = {"subscription_until": datetime(2026, 4, 1, 10, 0)}
 
     from api.db import reward_referrer
     reward_referrer(111)
 
-    sql = mock_cursor.execute.call_args[0][0]
-    assert "referral_count = referral_count + 1" in sql
-    assert "subscription_until = DATE_ADD" in sql
-    mock_conn.commit.assert_called_once()
+    # First execute call is the reward SQL, subsequent calls are from _round_subscription_eod
+    reward_sql = mock_cursor.execute.call_args_list[0][0][0]
+    assert "referral_count = referral_count + 1" in reward_sql
+    assert "subscription_until = DATE_ADD" in reward_sql
+    assert mock_conn.commit.call_count >= 1
 
 
 # ─────────────────────────────────────────────
@@ -134,13 +143,15 @@ def test_reward_referrer_updates_subscription(mock_get_pool):
 def test_reward_newcomer_sets_subscription(mock_get_pool):
     mock_pool, mock_conn, mock_cursor = _make_mock_pool()
     mock_get_pool.return_value = mock_pool
+    mock_cursor.fetchone.return_value = {"subscription_until": datetime(2026, 4, 1, 10, 0)}
 
     from api.db import reward_newcomer
     reward_newcomer(222)
 
-    sql = mock_cursor.execute.call_args[0][0]
-    assert "subscription_until = DATE_ADD(NOW()" in sql
-    mock_conn.commit.assert_called_once()
+    # First execute call is the reward SQL, subsequent calls are from _round_subscription_eod
+    reward_sql = mock_cursor.execute.call_args_list[0][0][0]
+    assert "subscription_until = DATE_ADD(NOW()" in reward_sql
+    assert mock_conn.commit.call_count >= 1
 
 
 # ─────────────────────────────────────────────
