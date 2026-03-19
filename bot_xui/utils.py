@@ -24,7 +24,8 @@ class XUIClient:
             data={
                 "username": self.username,
                 "password": self.password
-            }
+            },
+            timeout=10,
         )
         data = response.json()
         if not data.get('success'):
@@ -33,6 +34,7 @@ class XUIClient:
 
     def _request(self, method, url, **kwargs):
         """Выполняет запрос, при необходимости делает login/re-login."""
+        kwargs.setdefault('timeout', 10)
         if not self._logged_in:
             self.login()
         response = self.session.request(method, url, **kwargs)

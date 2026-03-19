@@ -13,5 +13,17 @@
     "h3": 945525635,
     "h4": 1716107921
   },
-  "clients": {}
+  "clients": {
+    "66dbea31-5b6f-4e3b-8b45-6c25243f74b3": {
+      "id": "66dbea31-5b6f-4e3b-8b45-6c25243f74b3",
+      "name": "Root4",
+      "address": "10.10.0.2",
+      "privateKey": "UAqt5ZzR0pnlAMhJfaSK4R6uH42ilUNnE60//xS9tkk=",
+      "publicKey": "JiNB7f2eodTK8P0ym0SggQmiNHUYGQlb8NDmjQzwbxU=",
+      "preSharedKey": "HFkRp3hOa0s+2FY4YqGqKJh3M0hvAIhJS2H4gVDEWlg=",
+      "createdAt": "2026-03-16T21:09:10.963Z",
+      "updatedAt": "2026-03-16T21:09:10.963Z",
+      "enabled": true
+    }
+  }
 }

@@ -12,7 +12,7 @@ def convert_to_local(dt: datetime, offset_hours: int = 9) -> str:
     """Конвертирует UTC datetime в локальное время."""
     if dt is None:
         return "∞"
-    return (dt + timedelta(hours=offset_hours)).strftime("%d.%m.%Y %H:%M")
+    return (dt + timedelta(hours=offset_hours)).strftime("%d.%m.%Y")
 
 
 def make_back_keyboard(label: str = "◀️ В меню", data: str = "back_to_menu") -> InlineKeyboardMarkup:
@@ -23,10 +23,12 @@ def make_back_keyboard(label: str = "◀️ В меню", data: str = "back_to_m
 def make_main_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура главного меню."""
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎁 Попробовать бесплатно", callback_data="test_protocol")],
         [InlineKeyboardButton("📊 Мои конфиги", callback_data="my_configs")],
         [InlineKeyboardButton("🏷 Тарифы",       callback_data="tariffs")],
         [InlineKeyboardButton("👥 Реферальная программа", callback_data="referral")],
         [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data="instructions")],
+        [InlineKeyboardButton("🌐 Личный кабинет (веб)", callback_data="web_portal")],
         [InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service")],
         [InlineKeyboardButton("✉️ Написать нам", callback_data="feedback")],
     ])

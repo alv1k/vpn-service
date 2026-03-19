@@ -63,7 +63,7 @@ services:
     depends_on:
       - mysql
     env_file:
-      - .env
+      - ../../.env
     networks:
       - vpn_net
 

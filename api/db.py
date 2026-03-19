@@ -1,8 +1,10 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import mysql.connector
 from mysql.connector import pooling
 from config import MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS
+
+TZ_TOKYO = timezone(timedelta(hours=9))
 
 logger = logging.getLogger(__name__)
 
@@ -82,17 +84,38 @@ def get_active_subscribers_tg_ids() -> list[int]:
 
 def get_or_create_user(tg_id: int, first_name: str | None = None, last_name: str | None = None) -> int:
     """Returns internal user id. Creates user if not exists, updates name if exists."""
+    import secrets
     user = get_user_by_tg_id(tg_id)
     if user:
         execute_query(
             "UPDATE users SET first_name = %s, last_name = %s WHERE tg_id = %s",
             (first_name, last_name, tg_id)
         )
+        if not user.get('web_token'):
+            execute_query(
+                "UPDATE users SET web_token = %s WHERE tg_id = %s",
+                (secrets.token_urlsafe(16), tg_id)
+            )
         return user['id']
     return execute_query(
-        "INSERT INTO users (tg_id, first_name, last_name) VALUES (%s, %s, %s)",
-        (tg_id, first_name, last_name)
+        "INSERT INTO users (tg_id, first_name, last_name, web_token) VALUES (%s, %s, %s, %s)",
+        (tg_id, first_name, last_name, secrets.token_urlsafe(16))
     )
+
+
+def get_user_by_web_token(token: str) -> dict | None:
+    return execute_query(
+        "SELECT * FROM users WHERE web_token = %s",
+        (token,), fetch='one'
+    )
+
+
+def get_web_token(tg_id: int) -> str | None:
+    row = execute_query(
+        "SELECT web_token FROM users WHERE tg_id = %s",
+        (tg_id,), fetch='one'
+    )
+    return row['web_token'] if row else None
 
 
 def get_subscription_until(tg_id: int):
@@ -101,6 +124,21 @@ def get_subscription_until(tg_id: int):
         (tg_id,), fetch='one'
     )
     return row['subscription_until'] if row else None
+
+
+def get_permanent_discount(tg_id: int) -> int:
+    row = execute_query(
+        "SELECT permanent_discount FROM users WHERE tg_id = %s",
+        (tg_id,), fetch='one'
+    )
+    return row['permanent_discount'] if row else 0
+
+
+def set_permanent_discount(tg_id: int, discount: int):
+    execute_query(
+        "UPDATE users SET permanent_discount = GREATEST(permanent_discount, %s) WHERE tg_id = %s",
+        (discount, tg_id)
+    )
 
 
 def upsert_user_subscription(tg_id: int, subscription_until):
@@ -152,6 +190,21 @@ def is_vless_test_activated(tg_id: int) -> bool:
     return bool(row['test_vless_activated']) if row else False
 
 
+def set_softether_test_activated(tg_id: int, activated: bool = True):
+    execute_query(
+        "UPDATE users SET test_softether_activated = %s WHERE tg_id = %s",
+        (1 if activated else 0, tg_id)
+    )
+
+
+def is_softether_test_activated(tg_id: int) -> bool:
+    row = execute_query(
+        "SELECT test_softether_activated FROM users WHERE tg_id = %s",
+        (tg_id,), fetch='one'
+    )
+    return bool(row['test_softether_activated']) if row else False
+
+
 # ─────────────────────────────────────────────
 #  Referrals
 # ─────────────────────────────────────────────
@@ -184,6 +237,26 @@ def register_user_with_referral(
     return False
 
 
+def _round_subscription_eod(tg_id: int):
+    """Округляет subscription_until до 23:59:59 по Tokyo (+9)."""
+    row = execute_query(
+        "SELECT subscription_until FROM users WHERE tg_id = %s",
+        (tg_id,), fetch='one'
+    )
+    if not row or not row['subscription_until']:
+        return
+    dt = row['subscription_until']
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_tokyo = dt.astimezone(TZ_TOKYO)
+    eod = dt_tokyo.replace(hour=23, minute=59, second=59, microsecond=0)
+    new_until = eod.astimezone(timezone.utc).replace(tzinfo=None)
+    execute_query(
+        "UPDATE users SET subscription_until = %s WHERE tg_id = %s",
+        (new_until, tg_id)
+    )
+
+
 def reward_referrer(referrer_tg_id: int):
     """
     Adds REFERRAL_REWARD_DAYS to referrer's subscription.
@@ -207,6 +280,8 @@ def reward_referrer(referrer_tg_id: int):
         """,
         (REFERRAL_REWARD_DAYS, referrer_tg_id)
     )
+    # Округляем до 23:59:59 Tokyo
+    _round_subscription_eod(referrer_tg_id)
 
 def reward_newcomer(tg_id: int):
     """Дарит REFERRAL_NEWCOMER_DAYS дней новому пользователю, пришедшему по рефералке."""
@@ -219,6 +294,8 @@ def reward_newcomer(tg_id: int):
         """,
         (REFERRAL_NEWCOMER_DAYS, tg_id)
     )
+    # Округляем до 23:59:59 Tokyo
+    _round_subscription_eod(tg_id)
 
 def get_referral_count(tg_id: int) -> int:
     row = execute_query(
@@ -266,7 +343,7 @@ def is_payment_processed(payment_id: str) -> bool:
         "SELECT status FROM payments WHERE payment_id = %s",
         (payment_id,), fetch='one'
     )
-    return row['status'] == 'succeeded' if row else False
+    return row['status'] == 'paid' if row else False
 
 
 def get_last_paid_payment(tg_id: int) -> dict | None:
@@ -274,7 +351,7 @@ def get_last_paid_payment(tg_id: int) -> dict | None:
     return execute_query(
         """
         SELECT * FROM payments
-        WHERE tg_id = %s AND status = 'succeeded'
+        WHERE tg_id = %s AND status = 'paid'
         ORDER BY created_at DESC
         LIMIT 1
         """,
@@ -301,30 +378,32 @@ def create_vpn_key(
     client_name: str,
     client_ip: str,
     client_public_key: str,
-    config: str,
-    expires_at,
+    vless_link: str = None,
+    expires_at=None,
     vpn_type: str = 'awg',
-    subscription_link: str = None
+    subscription_link: str = None,
+    vpn_file: str = None
 ):
     logger.debug(f"create_vpn_key called, tg_id={tg_id}")
     execute_query(
         """
         INSERT INTO vpn_keys
-            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at, vpn_type, subscription_link)
+            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             payment_id        = VALUES(payment_id),
             client_id         = VALUES(client_id),
             client_name       = VALUES(client_name),
             client_ip         = VALUES(client_ip),
             client_public_key = VALUES(client_public_key),
-            config            = VALUES(config),
+            vless_link        = VALUES(vless_link),
             expires_at        = VALUES(expires_at),
             vpn_type          = VALUES(vpn_type),
-            subscription_link = VALUES(subscription_link)
+            subscription_link = VALUES(subscription_link),
+            vpn_file          = VALUES(vpn_file)
         """,
-        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, config, expires_at, vpn_type, subscription_link)
+        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file)
     )
     logger.debug("create_vpn_key done")
 
@@ -359,6 +438,14 @@ def deactivate_key_by_payment(payment_id: str):
         "UPDATE vpn_keys SET expires_at = NOW() WHERE payment_id = %s",
         (payment_id,)
     )
+
+def update_vless_link(tg_id: int, vless_link: str):
+    """Обновить vless_link для всех VLESS-ключей пользователя."""
+    execute_query(
+        "UPDATE vpn_keys SET vless_link = %s WHERE tg_id = %s AND vpn_type = 'vless'",
+        (vless_link, tg_id)
+    )
+
 
 def get_users_expiring_in_days(days: int) -> list[dict]:
     """Возвращает пользователей, у которых подписка истекает ровно через `days` дней."""

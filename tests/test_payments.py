@@ -126,7 +126,7 @@ def test_update_payment_status(mock_get_pool):
 def test_is_payment_processed_true(mock_get_pool):
     mock_pool, mock_conn, mock_cursor = _make_mock_pool()
     mock_get_pool.return_value = mock_pool
-    mock_cursor.fetchone.return_value = {"status": "succeeded"}
+    mock_cursor.fetchone.return_value = {"status": "paid"}
 
     from api.db import is_payment_processed
     assert is_payment_processed("pay-abc-123") is True
@@ -160,13 +160,13 @@ def test_is_payment_processed_not_found(mock_get_pool):
 def test_get_last_paid_payment_found(mock_get_pool):
     mock_pool, mock_conn, mock_cursor = _make_mock_pool()
     mock_get_pool.return_value = mock_pool
-    paid = {**SAMPLE_PAYMENT, "status": "succeeded"}
+    paid = {**SAMPLE_PAYMENT, "status": "paid"}
     mock_cursor.fetchone.return_value = paid
 
     from api.db import get_last_paid_payment
     result = get_last_paid_payment(123456)
 
-    assert result["status"] == "succeeded"
+    assert result["status"] == "paid"
     sql = mock_cursor.execute.call_args[0][0]
     assert "ORDER BY created_at DESC" in sql
 
