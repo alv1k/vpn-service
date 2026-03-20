@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6c5ce7"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <!-- Tail (big fluffy curve) -->
+  <path d="M18 18 C10 10, 6 22, 12 30 C6 26, 4 38, 14 40 C8 38, 10 48, 18 44"
+        fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Body -->
+  <ellipse cx="30" cy="42" rx="12" ry="14" fill="#fff"/>
+  <!-- Head -->
+  <circle cx="38" cy="24" r="10" fill="#fff"/>
+  <!-- Ear -->
+  <path d="M33 16 L36 10 L40 17" fill="#fff" stroke="#fff" stroke-width="1"/>
+  <path d="M35 16 L36.5 12 L39 17" fill="#d9b3ff" stroke="none"/>
+  <!-- Eye -->
+  <circle cx="41" cy="23" r="2.5" fill="#2d1b69"/>
+  <circle cx="42" cy="22" r="0.8" fill="#fff"/>
+  <!-- Nose -->
+  <ellipse cx="47" cy="26" rx="1.5" ry="1" fill="#d9a0c7"/>
+  <!-- Cheek -->
+  <circle cx="44" cy="28" r="2" fill="#e8b4f8" opacity="0.5"/>
+  <!-- Front paw holding acorn/shield -->
+  <path d="M36 38 C38 36, 42 36, 44 38 L43 44 C42 46, 38 46, 37 44 Z" fill="#e2d4f5" stroke="#c4a6e8" stroke-width="0.8"/>
+  <!-- Shield/VPN lock icon on acorn -->
+  <path d="M40 39 L37.5 40.5 L37.5 42.5 C37.5 44, 40 45, 40 45 C40 45, 42.5 44, 42.5 42.5 L42.5 40.5 Z"
+        fill="#6c5ce7" stroke="none"/>
+  <circle cx="40" cy="42" r="1" fill="#fff"/>
+  <rect x="39.6" y="42" width="0.8" height="1.5" rx="0.3" fill="#fff"/>
+  <!-- Back paw -->
+  <ellipse cx="22" cy="54" rx="5" ry="2.5" fill="#fff" transform="rotate(-10 22 54)"/>
+  <!-- Front foot -->
+  <ellipse cx="36" cy="54" rx="4" ry="2" fill="#fff" transform="rotate(5 36 54)"/>
+</svg>

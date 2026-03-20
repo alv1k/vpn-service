@@ -4,6 +4,7 @@ AWG 2.0 API — drop-in replacement for wg-easy REST API.
 Implements the same endpoints so existing bot code works without changes.
 """
 import logging
+import random
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -13,10 +14,10 @@ import os
 
 import qrcode
 from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import PlainTextResponse, JSONResponse, HTMLResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 
 from . import db, awg_manager
-from .admin_api import router as admin_router
+from admin.routes import router as admin_router, get_admin_page_route
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("awg_api")
@@ -32,6 +33,10 @@ def _check_session_from_request(request: Request):
     token = request.cookies.get("connect.sid")
     if not token or token not in _sessions:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    created = _sessions[token]
+    if datetime.now(timezone.utc).timestamp() - created > SESSION_MAX_AGE:
+        del _sessions[token]
+        raise HTTPException(status_code=401, detail="Session expired")
 
 
 def _client_to_json(c: dict) -> dict:
@@ -66,10 +71,14 @@ async def lifespan(app: FastAPI):
         logger.info("No server config found — generating new AWG 2.0 keys")
         priv, pub = awg_manager.generate_keypair()
         from .config import AWG_PARAMS_DEFAULTS, LISTEN_PORT
+        # Resolve H1-H4 range tuples to random integers
+        resolved = {}
+        for k, v in AWG_PARAMS_DEFAULTS.items():
+            resolved[k] = random.randint(v[0], v[1]) if isinstance(v, tuple) else v
         cfg = {
             "private_key": priv, "public_key": pub,
             "listen_port": LISTEN_PORT,
-            **AWG_PARAMS_DEFAULTS,
+            **resolved,
             "i1": None, "i2": None, "i3": None, "i4": None, "i5": None,
         }
         db.save_server_config(cfg)
@@ -84,15 +93,7 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(admin_router)
 
 
-@app.get("/")
-async def admin_page():
-    """Serve the admin panel HTML."""
-    html_path = os.path.join(os.path.dirname(__file__), "static", "admin.html")
-    with open(html_path) as f:
-        html = f.read()
-    from .config import API_PASSWORD
-    html = html.replace("{{AWG_PASSWORD}}", API_PASSWORD)
-    return HTMLResponse(html)
+app.get("/")(get_admin_page_route())
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────

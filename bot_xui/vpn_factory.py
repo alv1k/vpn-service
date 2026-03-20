@@ -425,7 +425,7 @@ declare root
 def create_softether_config(tg_id: int, days: int = None, hours: int = None) -> dict:
     """Создаёт пользователя SoftEther и возвращает данные подключения."""
     username = f"se_{tg_id}_{uuid.uuid4().hex[:8]}"
-    password = secrets.token_urlsafe(9)
+    password = secrets.token_hex(8)
 
     success = softether.create_user(username, password)
     if not success:

@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TIIN VPN Admin</title>
+  <link rel="icon" type="image/png" href="api/admin/favicon.png">
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --card: #161616;
+      --border: #2a2a2a;
+      --text: #e0e0e0;
+      --muted: #888;
+      --accent: #7c3aed;
+      --green: #22c55e;
+      --red: #ef4444;
+      --orange: #f59e0b;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 12px; }
+
+    /* Nav */
+    nav { border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 16px; }
+    .nav-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+
+    nav button {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    nav button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    nav button:hover { border-color: var(--accent); }
+
+    .title { font-size: 18px; font-weight: 700; padding: 8px 0; color: var(--text); }
+
+    /* Cards */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .card h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; margin-bottom: 8px; }
+    .card .val { font-size: 24px; font-weight: 700; }
+    .card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+    .dot.on { background: var(--green); }
+    .dot.off { background: var(--red); }
+
+    /* Pulsing dot */
+    .pulse-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #008771;
+      position: relative;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .pulse-dot::before {
+      content: '';
+      position: absolute;
+      top: -3px;
+      left: -3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: rgba(0, 135, 113, .4);
+      animation: pulse-ring 1.5s ease-out infinite;
+    }
+    @keyframes pulse-ring {
+      0%   { transform: scale(.8); opacity: 1; }
+      100% { transform: scale(1.6); opacity: 0; }
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    th {
+      background: #1a1a1a;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    tr:hover { background: #1e1e1e; }
+
+    /* Buttons */
+    .btn {
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: none;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .btn:hover { border-color: var(--accent); color: var(--accent); }
+    .btn.sm { padding: 2px 6px; font-size: 11px; }
+    .btn.green { border-color: var(--green); color: var(--green); }
+    .btn.red { border-color: var(--red); color: var(--red); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    /* Toggle */
+    .toggle { cursor: pointer; font-size: 18px; }
+
+    /* Input */
+    input[type=text],
+    input[type=search] {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      width: 100%;
+      max-width: 300px;
+    }
+    input:focus { outline: none; border-color: var(--accent); }
+
+    /* Modal */
+    .modal-bg {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, .7);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal-bg.show { display: flex; }
+    .modal {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      min-width: 300px;
+      max-width: 90vw;
+      max-height: 80vh;
+      overflow: auto;
+    }
+    .modal h2 { margin-bottom: 12px; font-size: 16px; }
+    .modal pre {
+      background: var(--bg);
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 12px;
+      max-height: 400px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* Section */
+    .section { display: none; }
+    .section.active { display: block; }
+
+    .toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge.on { background: #22c55e22; color: var(--green); }
+    .badge.off { background: #ef444422; color: var(--red); }
+    .badge.paid { background: #22c55e22; color: var(--green); }
+    .badge.pending { background: #f59e0b22; color: var(--orange); }
+
+    .mono { font-family: monospace; font-size: 12px; }
+    .trunc {
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      display: inline-block;
+      vertical-align: middle;
+    }
+
+    .mt { margin-top: 12px; }
+    .mb { margin-bottom: 12px; }
+
+    .sub-table { margin-top: 8px; font-size: 12px; }
+    .sub-table td { padding: 4px 8px; border: none; border-bottom: 1px solid #222; }
+
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; }
+    .table-wrap table { min-width: 500px; }
+
+    /* Mobile */
+    @media (max-width: 600px) {
+      .container { padding: 8px; }
+
+      /* Nav */
+      .title { font-size: 16px; margin-bottom: 4px; }
+      .nav-tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        gap: 6px;
+        padding-bottom: 4px;
+        scrollbar-width: none;
+        margin-top: 10px;
+      }
+      .nav-tabs::-webkit-scrollbar { display: none; }
+      nav button, nav a {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 8px 14px;
+        font-size: 13px;
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .nav-link-text { display: none; }
+
+      /* Cards */
+      .cards { grid-template-columns: 1fr 1fr; gap: 8px; }
+      .card { padding: 12px; }
+      .card .val { font-size: 20px; }
+
+      /* Tables */
+      th, td { padding: 8px 8px; font-size: 12px; min-height: 44px; }
+
+      /* Toolbar */
+      .toolbar { flex-direction: column; align-items: stretch; gap: 8px; }
+      .toolbar input[type=search] { max-width: 100%; }
+      .toolbar span[style*="flex:1"] { display: none; }
+
+      /* Buttons */
+      .btn {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 8px 12px;
+        font-size: 13px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .btn.sm { min-height: 40px; min-width: 40px; padding: 6px 10px; font-size: 12px; }
+      td .btn.sm { margin: 2px; }
+
+      /* Modal */
+      .modal-bg { align-items: stretch; }
+      .modal {
+        border-radius: 0;
+        max-width: 100vw;
+        max-height: 100vh;
+        width: 100vw;
+        height: 100vh;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+      }
+      .modal h2 { position: sticky; top: 0; background: var(--card); padding: 8px 0; z-index: 1; }
+      .modal pre { font-size: 11px; }
+      .modal .sub-table { font-size: 11px; }
+
+      /* Search input */
+      input[type=text],
+      input[type=search] { max-width: 100%; min-height: 44px; }
+
+      /* Hide less important columns */
+      .col-ip, .col-uuid, .col-last-online, .col-limit,
+      .col-expires-promo, .col-auth, .col-logins, .col-created { display: none; }
+    }
+
+    @media (max-width: 380px) {
+      .cards { grid-template-columns: 1fr; }
+      .card .val { font-size: 18px; }
+      nav button, nav a { padding: 8px 10px; font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <nav>
+      <span class="title">TIIN VPN</span>
+      <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('91.132.161.112');this.textContent='copied!';setTimeout(()=>this.textContent='91.132.161.112',1000)" title="Click to copy">91.132.161.112</span>
+      <div class="nav-tabs">
+        <button onclick="showTab('dashboard')" id="tab-dashboard" class="active">Dashboard</button>
+        <button onclick="showTab('awg')" id="tab-awg">AWG</button>
+        <button onclick="showTab('vless')" id="tab-vless">VLESS</button>
+        <button onclick="showTab('softether')" id="tab-softether">SoftEther</button>
+        <button onclick="showTab('users')" id="tab-users">Users</button>
+        <a href="https://344988.snk.wtf:51999/panel-3x-ui/" target="_blank"
+           style="padding:8px 16px; border:1px solid var(--border); border-radius:6px; font-size:13px; color:var(--muted); display:inline-flex; align-items:center">
+          <span class="nav-link-text">3X-UI Panel </span>↗
+        </a>
+        <a href="https://344988.snk.wtf/phpmyadmin/" target="_blank"
+           style="padding:8px 16px; border:1px solid var(--border); border-radius:6px; font-size:13px; color:var(--muted); display:inline-flex; align-items:center">
+          <span class="nav-link-text">phpMyAdmin </span>↗
+        </a>
+      </div>
+    </nav>
+
+    <!-- Dashboard -->
+    <div id="s-dashboard" class="section active">
+      <div class="cards" id="dash-cards"></div>
+
+      <h3 class="mb" style="color:var(--muted)">
+        ONLINE NOW <span id="online-count" style="color:var(--green)"></span>
+      </h3>
+      <div class="table-wrap mb">
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>First Name</th>
+              <th>Name</th>
+              <th>IPs</th>
+              <th>Expires</th>
+            </tr>
+          </thead>
+          <tbody id="dash-online"></tbody>
+        </table>
+      </div>
+
+      <h3 class="mb" style="color:var(--muted)">
+        NEW USERS TODAY <span id="new-users-count" style="color:var(--green)"></span>
+      </h3>
+      <div class="table-wrap mb">
+        <table>
+          <thead>
+            <tr>
+              <th>TG ID</th>
+              <th>Name</th>
+              <th>Joined</th>
+            </tr>
+          </thead>
+          <tbody id="dash-new-users"></tbody>
+        </table>
+      </div>
+
+      <h3 class="mb" style="color:var(--muted)">PROMOCODES</h3>
+      <div class="table-wrap mb">
+        <table>
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Type</th>
+              <th>Value</th>
+              <th>Used</th>
+              <th class="col-limit">Limit</th>
+              <th class="col-expires-promo">Expires</th>
+              <th>Active</th>
+            </tr>
+          </thead>
+          <tbody id="dash-promos"></tbody>
+        </table>
+      </div>
+
+      <h3 class="mb" style="color:var(--muted)">WINBACK LOG</h3>
+      <div class="table-wrap mb">
+        <table>
+          <thead>
+            <tr>
+              <th>TG ID</th>
+              <th>Name</th>
+              <th>Scenario</th>
+              <th>Sent</th>
+            </tr>
+          </thead>
+          <tbody id="dash-winback"></tbody>
+        </table>
+      </div>
+
+      <h3 class="mb" style="color:var(--muted)">FINANCIALS</h3>
+      <div class="cards" id="dash-finance"></div>
+      <div id="dash-monthly" class="mb"></div>
+    </div>
+
+    <!-- AWG -->
+    <div id="s-awg" class="section">
+      <div class="cards" id="awg-params"></div>
+      <div class="toolbar">
+        <b>Clients</b>
+        <span style="flex:1"></span>
+        <button class="btn" onclick="loadAWG()">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Address</th>
+              <th>Enabled</th>
+              <th class="col-created">Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="awg-clients"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- VLESS -->
+    <div id="s-vless" class="section">
+      <div class="toolbar">
+        <b>Inbounds</b>
+        <select id="vless-ib-select" onchange="loadVlessClients()"
+                style="background:var(--card); color:var(--text); border:1px solid var(--border); padding:6px; border-radius:4px">
+        </select>
+        <span style="flex:1"></span>
+        <button class="btn" onclick="loadVLESS()">Refresh</button>
+      </div>
+      <div class="cards mb" id="vless-ib-info"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th class="col-uuid">UUID</th>
+              <th>Upload</th>
+              <th>Download</th>
+              <th>Expiry</th>
+              <th class="col-last-online">Last Online</th>
+              <th>On</th>
+            </tr>
+          </thead>
+          <tbody id="vless-clients"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- SoftEther -->
+    <div id="s-softether" class="section">
+      <div class="toolbar">
+        <b>SoftEther Users</b>
+        <span style="flex:1"></span>
+        <button class="btn" onclick="loadSoftEther()">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th class="col-auth">Auth</th>
+              <th class="col-logins">Logins</th>
+              <th>Last Login</th>
+              <th>Expires</th>
+              <th>Transfer</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="se-users"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Users -->
+    <div id="s-users" class="section">
+      <div class="toolbar">
+        <input type="search" id="user-search" placeholder="Search by tg_id or name..."
+               onkeyup="debounce(loadUsers, 400)()">
+        <button class="btn" onclick="loadUsers()">Search</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>TG ID</th>
+              <th>Name</th>
+              <th>Subscription</th>
+              <th>Status</th>
+              <th>Discount</th>
+              <th>Referrals</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="users-list"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal-bg" id="modal" onclick="if (event.target === this) closeModal()">
+    <div class="modal" id="modal-content"></div>
+  </div>
+
+  <script>
+    const B = '/tiin_admin_panel';
+    let _cookie = false;
+    let _vlessInbounds = [];
+    let _onlineUsers = [];
+    let _debounceTimers = {};
+
+    function debounce(fn, ms) {
+      return function (...args) {
+        clearTimeout(_debounceTimers[fn.name]);
+        _debounceTimers[fn.name] = setTimeout(() => fn(...args), ms);
+      };
+    }
+
+    async function api(path, opts = {}) {
+      if (!_cookie) {
+        await fetch(`${B}/api/session`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: AWG_PASS }),
+          credentials: 'same-origin',
+        });
+        _cookie = true;
+      }
+      opts.credentials = 'same-origin';
+      const r = await fetch(`${B}${path}`, opts);
+      if (path.includes('configuration')) return r.text();
+      if (r.status === 204) return null;
+      return r.json();
+    }
+
+    function showTab(id) {
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+      document.getElementById('s-' + id).classList.add('active');
+      document.getElementById('tab-' + id).classList.add('active');
+      if (id === 'dashboard') loadDashboard();
+      if (id === 'awg') loadAWG();
+      if (id === 'vless') loadVLESS();
+      if (id === 'softether') loadSoftEther();
+      if (id === 'users') loadUsers();
+    }
+
+    function openModal(html) {
+      document.getElementById('modal-content').innerHTML = html;
+      document.getElementById('modal').classList.add('show');
+    }
+
+    function closeModal() {
+      document.getElementById('modal').classList.remove('show');
+    }
+
+    function fmtDate(s) {
+      if (!s) return '—';
+      const d = new Date(s);
+      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' +
+             d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    // ── Online (SSE) ──────────────────────────────────────────────────────────
+
+    let _onlineSSE = null;
+
+    function fmtUTC9(timeStr) {
+      if (!timeStr || timeStr === 'connected') return timeStr || '—';
+      const parts = timeStr.split(':');
+      if (parts.length !== 3) return timeStr;
+      let h = parseInt(parts[0]) + 9;
+      if (h >= 24) h -= 24;
+      return String(h).padStart(2, '0') + ':' + parts[1] + ':' + parts[2] + ' MSK+6';
+    }
+
+    function isOnline(name, type) {
+      return _onlineUsers.some(u => u.name === name && u.type === type);
+    }
+
+    function onlineDot(name, type) {
+      return isOnline(name, type) ? '<span class="pulse-dot"></span>' : '';
+    }
+
+    function _renderOnline() {
+      const online = _onlineUsers;
+      const countEl = document.getElementById('online-count');
+      const tableEl = document.getElementById('dash-online');
+
+      if (countEl) countEl.textContent = `(${online.length})`;
+      if (tableEl) {
+        tableEl.innerHTML = online.length
+          ? online.map(u => `
+              <tr>
+                <td>
+                  <span class="pulse-dot"></span>
+                  <span class="badge ${u.type === 'vless' ? 'on' : u.type === 'awg' ? 'paid' : 'pending'}">
+                    ${u.type.toUpperCase()}
+                  </span>
+                </td>
+                <td>${u.first_name || '—'}</td>
+                <td>${u.name}</td>
+                <td>${u.ip_count > 1
+                    ? '<span style="color:var(--orange)">' + u.ip_count + '</span>'
+                    : u.ip_count}</td>
+                <td>${u.expires
+                    ? new Date(u.expires).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+                    : '—'}</td>
+              </tr>`).join('')
+          : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No active connections</td></tr>';
+      }
+    }
+
+    async function refreshOnline() {
+      try {
+        const online = await api('/api/admin/online');
+        _onlineUsers = online;
+        _renderOnline();
+      } catch (e) {
+        console.warn('online refresh error', e);
+      }
+    }
+
+    function startOnlineSSE() {
+      if (_onlineSSE) return;
+      _onlineSSE = new EventSource(`${B}/api/admin/online/stream`);
+      _onlineSSE.addEventListener('online', (e) => {
+        _onlineUsers = JSON.parse(e.data);
+        _renderOnline();
+      });
+      _onlineSSE.onerror = () => {
+        console.warn('SSE reconnecting...');
+      };
+    }
+
+    // ── Dashboard ─────────────────────────────────────────────────────────────
+
+    async function loadDashboard() {
+      const d = await api('/api/admin/dashboard');
+
+      document.getElementById('dash-cards').innerHTML = `
+        <div class="card">
+          <h3>AWG Clients</h3>
+          <div class="val">${d.awg.clients_enabled}/${d.awg.clients_total}</div>
+          <div class="sub">
+            <span class="dot ${d.awg.interface_up ? 'on' : 'off'}"></span>
+            awg0 ${d.awg.interface_up ? 'UP' : 'DOWN'}
+          </div>
+        </div>
+        <div class="card">
+          <h3>VLESS Clients</h3>
+          <div class="val">${d.xui.clients}</div>
+          <div class="sub">
+            <span class="dot ${d.xui.xray_running ? 'on' : 'off'}"></span>
+            xray ${d.xui.xray_running ? 'UP' : 'DOWN'}
+          </div>
+          <div class="sub">↑${d.xui.traffic_up_fmt} ↓${d.xui.traffic_down_fmt}</div>
+        </div>
+        <div class="card">
+          <h3>SoftEther</h3>
+          <div class="val">${d.softether.users_total}</div>
+          <div class="sub">
+            <span class="dot ${d.softether.running ? 'on' : 'off'}"></span>
+            vpnserver ${d.softether.running ? 'UP' : 'DOWN'}
+          </div>
+        </div>
+        <div class="card">
+          <h3>Users</h3>
+          <div class="val">${d.users.total}</div>
+          <div class="sub">${d.users.active_subscribers} active subs</div>
+        </div>
+        <div class="card">
+          <h3>Revenue</h3>
+          <div class="val">${d.payments.revenue.toLocaleString()} ₽</div>
+          <div class="sub">${d.payments.paid} paid / ${d.payments.total} total</div>
+        </div>`;
+
+      // Online users
+      await refreshOnline();
+
+      // New users today
+      const newUsers = await api('/api/admin/users/today');
+      document.getElementById('new-users-count').textContent = `(${newUsers.length})`;
+      document.getElementById('dash-new-users').innerHTML = newUsers.length
+        ? newUsers.map(u => `
+            <tr>
+              <td class="mono">${u.tg_id}</td>
+              <td>${u.first_name || ''} ${u.last_name || ''}</td>
+              <td>${fmtDate(u.created_at)}</td>
+            </tr>`).join('')
+        : '<tr><td colspan="3" style="color:var(--muted);text-align:center">No new users today</td></tr>';
+
+      // Promocodes
+      const promos = await api('/api/admin/promocodes');
+      document.getElementById('dash-promos').innerHTML = promos.map(p => {
+        const used = `${p.used_count}/${p.max_uses ?? '∞'}`;
+        const typeLabel = p.type === 'days'
+          ? `${p.value} дней`
+          : p.type === 'permanent_discount'
+            ? `${p.value}% навсегда`
+            : `${p.value}%`;
+        return `
+          <tr>
+            <td><b>${p.code}</b></td>
+            <td>${p.type}</td>
+            <td>${typeLabel}</td>
+            <td>${used}</td>
+            <td class="col-limit">${p.per_user_limit ?? '∞'}/user</td>
+            <td class="col-expires-promo">${p.expires_at ? fmtDate(p.expires_at) : '∞'}</td>
+            <td>${p.is_active ? '🟢' : '🔴'}</td>
+          </tr>`;
+      }).join('');
+
+      // Winback
+      const wb = await api('/api/admin/winback');
+      document.getElementById('dash-winback').innerHTML = wb.length
+        ? wb.map(w => `
+            <tr>
+              <td class="mono">${w.tg_id}</td>
+              <td>${w.first_name || ''} ${w.last_name || ''}</td>
+              <td><span class="badge pending">${w.scenario}</span></td>
+              <td>${fmtDate(w.sent_at)}</td>
+            </tr>`).join('')
+        : '<tr><td colspan="4" style="color:var(--muted);text-align:center">No winback messages sent</td></tr>';
+
+      // Finance
+      const fin = await api('/api/admin/finance');
+      const profitColor = fin.profit >= 0 ? 'var(--green)' : 'var(--red)';
+      const monthlyProfitColor = fin.monthly_profit >= 0 ? 'var(--green)' : 'var(--red)';
+
+      document.getElementById('dash-finance').innerHTML = `
+        <div class="card">
+          <h3>Total Revenue</h3>
+          <div class="val">${fin.total_revenue.toLocaleString()} ₽</div>
+          <div class="sub">${fin.days_running} дней работы</div>
+        </div>
+        <div class="card">
+          <h3>Server Cost</h3>
+          <div class="val">${fin.server_monthly_cost.toLocaleString()} ₽/мес</div>
+          <div class="sub">Итого: ${fin.total_cost.toLocaleString()} ₽</div>
+        </div>
+        <div class="card">
+          <h3>Profit</h3>
+          <div class="val" style="color:${profitColor}">
+            ${fin.profit >= 0 ? '+' : ''}${fin.profit.toLocaleString()} ₽
+          </div>
+          <div class="sub">ROI: ${fin.roi_percent}%</div>
+        </div>
+        <div class="card">
+          <h3>Monthly Avg</h3>
+          <div class="val">${fin.avg_monthly_revenue.toLocaleString()} ₽</div>
+          <div class="sub" style="color:${monthlyProfitColor}">
+            Прибыль: ${fin.monthly_profit >= 0 ? '+' : ''}${fin.monthly_profit.toLocaleString()} ₽/мес
+          </div>
+        </div>`;
+
+      // Monthly breakdown
+      if (fin.monthly.length) {
+        let mhtml = `
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Month</th>
+                  <th>Payments</th>
+                  <th>Revenue</th>
+                </tr>
+              </thead>
+              <tbody>`;
+        fin.monthly.forEach(m => {
+          mhtml += `
+                <tr>
+                  <td>${m.month}</td>
+                  <td>${m.payments}</td>
+                  <td>${m.revenue.toLocaleString()} ₽</td>
+                </tr>`;
+        });
+        mhtml += `
+              </tbody>
+            </table>
+          </div>`;
+        document.getElementById('dash-monthly').innerHTML = mhtml;
+      }
+    }
+
+    // ── AWG ────────────────────────────────────────────────────────────────────
+
+    async function loadAWG() {
+      const [srv, clients, _] = await Promise.all([
+        api('/api/admin/awg/server'),
+        api('/api/wireguard/client'),
+        refreshOnline(),
+      ]);
+
+      document.getElementById('awg-params').innerHTML = `
+        <div class="card">
+          <h3>Port</h3>
+          <div class="val">${srv.listen_port}</div>
+        </div>
+        <div class="card">
+          <h3>Jc / Jmin-Jmax</h3>
+          <div class="val">${srv.jc} / ${srv.jmin}-${srv.jmax}</div>
+        </div>
+        <div class="card">
+          <h3>S1-S2</h3>
+          <div class="val mono">${srv.s1} ${srv.s2}</div>
+        </div>
+        <div class="card">
+          <h3>I1 (CPS)</h3>
+          <div class="val mono" style="font-size:14px">${srv.i1 || 'none'}</div>
+        </div>`;
+
+      document.getElementById('awg-clients').innerHTML = clients.map(c => `
+        <tr>
+          <td>${onlineDot(c.name, 'awg')}${c.name}</td>
+          <td class="mono">${c.address}</td>
+          <td>
+            <span class="toggle" onclick="awgToggle('${c.id}', ${!c.enabled})">
+              ${c.enabled ? '🟢' : '🔴'}
+            </span>
+          </td>
+          <td class="col-created">${fmtDate(c.createdAt)}</td>
+          <td>
+            <button class="btn sm" onclick="awgConfig('${c.id}', '${c.name}')">Conf</button>
+            <button class="btn sm" onclick="awgQR('${c.id}')">QR</button>
+            <button class="btn sm red" onclick="awgDelete('${c.id}', '${c.name}')">Del</button>
+          </td>
+        </tr>`).join('');
+    }
+
+    async function awgToggle(id, enable) {
+      await api(`/api/wireguard/client/${id}/${enable ? 'enable' : 'disable'}`, { method: 'POST' });
+      loadAWG();
+    }
+
+    async function awgDelete(id, name) {
+      if (!confirm(`Delete ${name}?`)) return;
+      await api(`/api/wireguard/client/${id}`, { method: 'DELETE' });
+      loadAWG();
+    }
+
+    async function awgConfig(id, name) {
+      const conf = await api(`/api/wireguard/client/${id}/configuration`);
+      openModal(`
+        <h2>Client Config</h2>
+        <pre>${conf}</pre>
+        <button class="btn mt" onclick="navigator.clipboard.writeText(document.querySelector('.modal pre').textContent); this.textContent='Copied!'">Copy</button>
+        <button class="btn mt" onclick="awgDownloadConf()">Download</button>
+        <button class="btn mt" onclick="closeModal()">Close</button>`);
+      window._awgConfName = name || 'awg';
+    }
+
+    function awgDownloadConf() {
+      const text = document.querySelector('.modal pre').textContent;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+      a.download = window._awgConfName + '.conf';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    async function awgQR(id) {
+      openModal(`
+        <h2>QR Code</h2>
+        <img src="${B}/api/wireguard/client/${id}/qrcode.svg"
+             style="width:300px; background:#fff; border-radius:8px">
+        <br>
+        <button class="btn mt" onclick="closeModal()">Close</button>`);
+    }
+
+    // ── VLESS ──────────────────────────────────────────────────────────────────
+
+    async function loadVLESS() {
+      _vlessInbounds = await api('/api/admin/xui/inbounds');
+      const sel = document.getElementById('vless-ib-select');
+      const defaultIb = _vlessInbounds.find(ib => ib.enable) || _vlessInbounds[0];
+
+      sel.innerHTML = _vlessInbounds.map(ib =>
+        `<option value="${ib.id}" ${defaultIb && ib.id === defaultIb.id ? 'selected' : ''}>
+          ${ib.remark} (:${ib.port}) [${ib.protocol}] ${ib.enable ? '' : '⛔'}
+        </option>`
+      ).join('');
+
+      loadVlessClients();
+    }
+
+    async function loadVlessClients() {
+      const ibId = document.getElementById('vless-ib-select').value;
+      if (!ibId) return;
+
+      await refreshOnline();
+      const ib = _vlessInbounds.find(i => i.id == ibId);
+
+      document.getElementById('vless-ib-info').innerHTML = ib
+        ? `<div class="card">
+             <h3>${ib.remark}</h3>
+             <div class="sub">${ib.protocol} / ${ib.network} / ${ib.security}</div>
+             <div class="sub">↑${ib.traffic_up_fmt} ↓${ib.traffic_down_fmt}</div>
+             <div class="sub">
+               <span class="badge ${ib.enable ? 'on' : 'off'}">${ib.enable ? 'active' : 'disabled'}</span>
+               ${ib.client_count} clients
+             </div>
+           </div>`
+        : '';
+
+      const clients = await api(`/api/admin/xui/inbounds/${ibId}/clients`);
+      document.getElementById('vless-clients').innerHTML = clients.map(c => `
+        <tr>
+          <td>${onlineDot(c.email, 'vless')}${c.email}</td>
+          <td class="mono col-uuid">
+            <span class="trunc" title="${c.uuid}">${c.uuid.slice(0, 8)}…</span>
+          </td>
+          <td>${c.up_fmt}</td>
+          <td>${c.down_fmt}</td>
+          <td>${c.expiry || '∞'}</td>
+          <td class="col-last-online">${c.last_online || '—'}</td>
+          <td>${c.enable ? '🟢' : '🔴'}</td>
+        </tr>`).join('');
+    }
+
+    // ── SoftEther ──────────────────────────────────────────────────────────────
+
+    function fmtBytes(b) {
+      if (!b) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      while (b >= 1024 && i < units.length - 1) { b /= 1024; i++; }
+      return b.toFixed(1) + ' ' + units[i];
+    }
+
+    async function loadSoftEther() {
+      const [users, _] = await Promise.all([
+        api('/api/admin/softether/users'),
+        refreshOnline(),
+      ]);
+
+      document.getElementById('se-users').innerHTML = users.map(u => `
+        <tr>
+          <td class="mono">${onlineDot(u.username, 'softether')}${u.username}</td>
+          <td class="col-auth">${u.auth || '—'}</td>
+          <td class="col-logins">${u.num_logins || 0}</td>
+          <td>${u.last_login || '—'}</td>
+          <td>${u.expires || '∞'}</td>
+          <td>${fmtBytes(u.transfer_bytes)}</td>
+          <td>
+            <button class="btn sm" onclick="seShowConfig('${u.username}')">Config</button>
+            <button class="btn sm" onclick="seSetPassword('${u.username}')">Pass</button>
+            <button class="btn sm" onclick="seSetExpiry('${u.username}')">Expiry</button>
+            <button class="btn sm red" onclick="seDisable('${u.username}')">Disable</button>
+            <button class="btn sm red" onclick="seDelete('${u.username}')">Del</button>
+          </td>
+        </tr>`).join('');
+    }
+
+    async function seShowConfig(username) {
+      try {
+        const r = await api(`/api/admin/softether/users/${username}/config`);
+        const c = r.config || {};
+        let html = `<h2>SoftEther Config: ${username}</h2>`;
+        if (c.host) {
+          html += `<pre>Server: ${c.host}\nPort:   ${c.port}\nHub:    ${c.hub}\nUser:   ${c.username}\nPass:   ${c.password}</pre>`;
+        } else if (c.raw) {
+          html += `<pre>${c.raw}</pre>`;
+        } else {
+          html += `<p style="color:var(--muted)">No stored credentials</p>`;
+        }
+        html += `<div style="display:flex; gap:8px; margin-top:12px">`;
+        if (c.host) {
+          html += `<button class="btn" onclick="navigator.clipboard.writeText(document.querySelector('.modal pre').textContent); this.textContent='Copied!'">Copy</button>`;
+        }
+        if (r.vpn_file) {
+          html += `<button class="btn" onclick="seDownloadVpn('${username}')">Download .vpn</button>`;
+        }
+        html += `<button class="btn" onclick="closeModal()">Close</button></div>`;
+        openModal(html);
+        window._seVpnFile = r.vpn_file;
+      } catch (e) {
+        openModal(`<h2>SoftEther Config: ${username}</h2>
+          <p style="color:var(--muted)">No stored config found for this user</p>
+          <button class="btn mt" onclick="closeModal()">Close</button>`);
+      }
+    }
+
+    function seDownloadVpn(username) {
+      if (!window._seVpnFile) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([window._seVpnFile], { type: 'text/plain' }));
+      a.download = username + '.vpn';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    async function seSetPassword(username) {
+      const password = prompt(`New password for ${username}:`);
+      if (!password) return;
+      await api(`/api/admin/softether/users/${username}/password`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      loadSoftEther();
+    }
+
+    async function seSetExpiry(username) {
+      const expiry = prompt(`Set expiry for ${username} (YYYY/MM/DD or "none"):`);
+      if (!expiry) return;
+      await api(`/api/admin/softether/users/${username}/expiry`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiry }),
+      });
+      loadSoftEther();
+    }
+
+    async function seDisable(username) {
+      if (!confirm(`Disable ${username}?`)) return;
+      await api(`/api/admin/softether/users/${username}/disable`, { method: 'POST' });
+      loadSoftEther();
+    }
+
+    async function seDelete(username) {
+      if (!confirm(`Delete ${username}?`)) return;
+      await api(`/api/admin/softether/users/${username}`, { method: 'DELETE' });
+      loadSoftEther();
+    }
+
+    // ── Users ──────────────────────────────────────────────────────────────────
+
+    async function loadUsers() {
+      const q = document.getElementById('user-search')?.value || '';
+      const users = await api(`/api/admin/users?search=${encodeURIComponent(q)}`);
+
+      document.getElementById('users-list').innerHTML = users.map(u => {
+        const sub = u.subscription_until;
+        const active = sub && new Date(sub) > new Date();
+        return `
+          <tr>
+            <td class="mono">${u.tg_id}</td>
+            <td>${u.first_name || ''} ${u.last_name || ''}</td>
+            <td>${sub ? fmtDate(sub) : '—'}</td>
+            <td><span class="badge ${active ? 'on' : 'off'}">${active ? 'active' : 'expired'}</span></td>
+            <td>${u.permanent_discount ? u.permanent_discount + '%' : '—'}</td>
+            <td>${u.referral_count || 0}</td>
+            <td><button class="btn sm" onclick="showUserDetail(${u.tg_id})">Details</button></td>
+          </tr>`;
+      }).join('');
+    }
+
+    async function showUserDetail(tgId) {
+      const [keys, payments] = await Promise.all([
+        api(`/api/admin/users/${tgId}/keys`),
+        api(`/api/admin/users/${tgId}/payments`),
+      ]);
+
+      let html = `<h2>User ${tgId}</h2>`;
+      html += `<h3 class="mt mb" style="color:var(--muted)">VPN KEYS (${keys.length})</h3>`;
+
+      if (keys.length) {
+        html += `<table class="sub-table"><tr><th>Type</th><th>Name</th><th>Expires</th></tr>`;
+        keys.forEach(k => {
+          html += `
+            <tr>
+              <td><span class="badge ${k.vpn_type === 'vless' ? 'on' : 'paid'}">${k.vpn_type}</span></td>
+              <td class="mono">${k.client_name || ''}</td>
+              <td>${fmtDate(k.expires_at)}</td>
+            </tr>`;
+        });
+        html += `</table>`;
+      }
+
+      html += `<h3 class="mt mb" style="color:var(--muted)">PAYMENTS (${payments.length})</h3>`;
+
+      if (payments.length) {
+        html += `<table class="sub-table"><tr><th>Date</th><th>Tariff</th><th>Amount</th><th>Status</th></tr>`;
+        payments.forEach(p => {
+          html += `
+            <tr>
+              <td>${fmtDate(p.created_at)}</td>
+              <td>${p.tariff || ''}</td>
+              <td>${p.amount} ₽</td>
+              <td><span class="badge ${p.status === 'paid' ? 'paid' : 'pending'}">${p.status}</span></td>
+            </tr>`;
+        });
+        html += `</table>`;
+      }
+
+      html += `<button class="btn mt" onclick="closeModal()">Close</button>`;
+      openModal(html);
+    }
+
+    // ── Init ───────────────────────────────────────────────────────────────────
+
+    const AWG_PASS = '{{AWG_PASSWORD}}';
+    loadDashboard();
+    startOnlineSSE();
+  </script>
+</body>
+</html>

@@ -222,3 +222,105 @@ def test_credentials_text_contains_data():
     assert "Сервер" in text
     assert "Порт" in text
     assert "Hub" in text
+
+
+# ─────────────────────────────────────────────
+#  softether.list_sessions
+# ─────────────────────────────────────────────
+
+@patch("bot_xui.softether._run")
+def test_list_sessions_parses_output(mock_run):
+    mock_run.return_value = """SessionList command - List sessions
+---
+Session Name                     |SES-LAPTOP-PC
+User Name                        |john
+Source Host Name                  |192.168.1.50
+Transfer Bytes                   |12,345,678
+---
+Session Name                     |SES-PHONE
+User Name                        |jane
+Source Host Name                  |10.0.0.5
+Transfer Bytes                   |500,000
+---
+Session Name                     |SES-NAT
+User Name                        |SecureNAT
+Source Host Name                  |localhost
+Transfer Bytes                   |0
+"""
+
+    from bot_xui.softether import list_sessions
+    sessions = list_sessions()
+
+    assert len(sessions) == 2  # SecureNAT filtered out
+    assert sessions[0]["username"] == "john"
+    assert sessions[0]["source"] == "192.168.1.50"
+    assert sessions[0]["transfer_bytes"] == 12345678
+    assert sessions[1]["username"] == "jane"
+
+
+@patch("bot_xui.softether._run")
+def test_list_sessions_empty(mock_run):
+    mock_run.return_value = "SessionList command - List sessions\n"
+
+    from bot_xui.softether import list_sessions
+    sessions = list_sessions()
+
+    assert sessions == []
+
+
+@patch("bot_xui.softether._run", side_effect=RuntimeError("fail"))
+def test_list_sessions_error_returns_empty(mock_run):
+    from bot_xui.softether import list_sessions
+    assert list_sessions() == []
+
+
+# ─────────────────────────────────────────────
+#  softether.list_users
+# ─────────────────────────────────────────────
+
+@patch("bot_xui.softether._run")
+def test_list_users_parses_output(mock_run):
+    mock_run.return_value = """UserList command - List users
+---
+User Name                        |se_123_abc
+Auth Method                      |Password Authentication
+Num Logins                       |5
+Last Login                       |2026-03-18 14:30:00
+Expiration Date                  |2026-04-18
+Transfer Bytes                   |1,000,000
+---
+User Name                        |se_456_def
+Auth Method                      |Password Authentication
+Num Logins                       |0
+Last Login                       |(None)
+Expiration Date                  |No Expiration
+Transfer Bytes                   |0
+"""
+
+    from bot_xui.softether import list_users
+    users = list_users()
+
+    assert len(users) == 2
+    assert users[0]["username"] == "se_123_abc"
+    assert users[0]["auth"] == "Password Authentication"
+    assert users[0]["num_logins"] == 5
+    assert users[0]["last_login"] == "2026-03-18 14:30:00"
+    assert users[0]["expires"] == "2026-04-18"
+    assert users[0]["transfer_bytes"] == 1000000
+    assert users[1]["last_login"] is None
+    assert users[1]["expires"] is None
+    assert users[1]["num_logins"] == 0
+
+
+@patch("bot_xui.softether._run")
+def test_list_users_empty(mock_run):
+    mock_run.return_value = "UserList command - List users\n"
+
+    from bot_xui.softether import list_users
+    assert list_users() == []
+
+
+@patch("bot_xui.softether._run", side_effect=RuntimeError("fail"))
+def test_list_users_error_returns_empty(mock_run):
+    from bot_xui.softether import list_users
+    assert list_users() == []
