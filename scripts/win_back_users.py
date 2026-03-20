@@ -91,27 +91,86 @@ def get_all_payments():
     return payments_by_tg
 
 
+def _add_traffic(traffic, tg_id, upload, download, enabled=True):
+    """Merge traffic into existing dict for tg_id."""
+    existing = traffic.get(tg_id, {'upload': 0, 'download': 0, 'enabled': True})
+    existing['upload'] += upload
+    existing['download'] += download
+    if not enabled:
+        existing['enabled'] = False
+    traffic[tg_id] = existing
+
+
+def _get_client_name_to_tg_id():
+    """Map client_name → tg_id from vpn_keys table."""
+    rows = execute_query(
+        "SELECT client_name, tg_id FROM vpn_keys",
+        fetch='all',
+    ) or []
+    return {r['client_name']: r['tg_id'] for r in rows}
+
+
 def get_traffic_from_panel(xui):
-    """Получить трафик всех клиентов из панели 3x-ui. Возвращает {tg_id: {upload, download, enabled}}."""
+    """Получить трафик ВСЕХ клиентов: VLESS (3x-ui) + AWG + SoftEther. Возвращает {tg_id: {upload, download, enabled}}."""
     traffic = {}
+
+    # ── VLESS (3x-ui) ──
     inbounds = xui.get_inbounds()
     for ib in inbounds:
+        settings = json.loads(ib.get('settings', '{}'))
+        email_to_tg = {}
+        for client in settings.get('clients', []):
+            if client.get('tgId'):
+                email_to_tg[client.get('email')] = int(client['tgId'])
+
         for cs in ib.get('clientStats', []):
-            tg_id = None
-            # Найти tg_id из settings
-            settings = json.loads(ib.get('settings', '{}'))
-            for client in settings.get('clients', []):
-                if client.get('email') == cs.get('email'):
-                    tg_id = client.get('tgId')
-                    break
+            tg_id = email_to_tg.get(cs.get('email'))
             if tg_id:
-                tg_id = int(tg_id)
-                existing = traffic.get(tg_id, {'upload': 0, 'download': 0, 'enabled': True})
-                existing['upload'] += cs.get('up', 0)
-                existing['download'] += cs.get('down', 0)
-                if not cs.get('enable', True):
-                    existing['enabled'] = False
-                traffic[tg_id] = existing
+                _add_traffic(traffic, tg_id, cs.get('up', 0), cs.get('down', 0), cs.get('enable', True))
+
+    # ── AWG (awg show dump) ──
+    try:
+        import subprocess
+        name_to_tg = _get_client_name_to_tg_id()
+
+        # Map public_key → client name from AWG DB
+        from awg_api.db import list_clients as awg_list_clients
+        awg_clients = awg_list_clients()
+        pub_to_name = {c['public_key']: c['name'] for c in awg_clients}
+
+        result = subprocess.run(
+            ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.strip().split("\n")[1:]:
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            pub_key = parts[0]
+            rx_bytes = int(parts[5]) if parts[5].isdigit() else 0
+            tx_bytes = int(parts[6]) if parts[6].isdigit() else 0
+            name = pub_to_name.get(pub_key)
+            if name:
+                tg_id = name_to_tg.get(name)
+                if tg_id:
+                    _add_traffic(traffic, tg_id, rx_bytes, tx_bytes)
+    except Exception as e:
+        log.warning(f"AWG traffic error: {e}")
+
+    # ── SoftEther (vpncmd UserGet) ──
+    try:
+        from bot_xui.softether import list_users as se_list_users
+        name_to_tg = name_to_tg if 'name_to_tg' in dir() else _get_client_name_to_tg_id()
+
+        for user in se_list_users():
+            username = user.get('username', '')
+            tg_id = name_to_tg.get(username)
+            if tg_id and user.get('transfer_bytes', 0) > 0:
+                # SoftEther reports total bytes (combined up+down), split evenly
+                total = user['transfer_bytes']
+                _add_traffic(traffic, tg_id, total // 2, total // 2)
+    except Exception as e:
+        log.warning(f"SoftEther traffic error: {e}")
+
     return traffic
 
 

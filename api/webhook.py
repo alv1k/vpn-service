@@ -187,15 +187,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         tg_id: int = payment_data["tg_id"]
         tariff_key: str = payment_data["tariff"]
 
-        # ===== 1. Активация подписки =====
-        activate_subscription(payment_id)
-        logger.info("✅ Subscription activated")
-
-        # ===== 2. Получение / создание пользователя =====
+        # ===== 1. Получение / создание пользователя =====
         user_id = get_or_create_user(tg_id)
-
-        # ===== 3. Дата окончания подписки =====
-        subscription_until = get_subscription_until(tg_id)
 
         # ===== 4. Формирование имени VPN клиента =====
         client_name = f"{tariff_key}_{tg_id}_{payment_id[:8]}"
@@ -203,6 +196,9 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         client_id = None
         client_ip = None
         client_public_key = None
+        bio = None
+        sub_url = None
+        se_data = {}
 
         # ===== 5. Создание конфига в зависимости от типа VPN =====
         if vpn_type == "vless":
@@ -227,6 +223,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             if not inbounds:
                 raise RuntimeError("3x-ui inbound not found")
             
+            if len(inbounds) < 3:
+                raise RuntimeError(f"Expected at least 3 inbounds, got {len(inbounds)}")
             inbound_id = inbounds[2]['id']
             
             # Время истечения — 23:59:59 Tokyo последнего дня
@@ -341,9 +339,12 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     raise RuntimeError("Empty client configuration")
 
 
-        # ===== 6. Сохранение в БД =====
-        if vpn_type != "vless":
-            sub_url = None
+        # ===== 6. Активация подписки (после успешного создания VPN) =====
+        activate_subscription(payment_id)
+        subscription_until = get_subscription_until(tg_id)
+        logger.info("✅ Subscription activated")
+
+        # ===== 7. Сохранение в БД =====
         create_vpn_key(
             tg_id=tg_id,
             payment_id=payment_id,
@@ -669,9 +670,9 @@ async def yookassa_webhook(request: Request):
         if is_web_order and web_token:
             web_user = get_user_by_web_token(web_token) if web_token else None
             if web_user:
-                tg_id = str(web_user.get('tg_id') or 0)
+                tg_id = int(web_user.get('tg_id') or 0)
                 # Обновить tg_id в payment_data для process_successful_payment
-                payment_data = {**payment_data, 'tg_id': int(tg_id)}
+                payment_data = {**payment_data, 'tg_id': tg_id}
 
         success = await process_successful_payment(payment_id, payment_data, vpn_type)
         

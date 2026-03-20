@@ -3,6 +3,8 @@
 Персональная страница по токену: /my/{token}
 """
 import base64
+import html as html_mod
+import json as json_mod
 import logging
 from datetime import datetime
 from io import BytesIO
@@ -42,7 +44,7 @@ async def personal_page(token: str):
 
     tg_id = user['tg_id']
     sub_until = user.get('subscription_until')
-    now = datetime.utcnow()
+    now = datetime.now()
     is_active = sub_until and sub_until > now
 
     keys = get_keys_by_tg_id(tg_id)
@@ -54,7 +56,7 @@ async def personal_page(token: str):
     qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
 
     return HTMLResponse(_render_page(
-        name=user.get('first_name') or 'Пользователь',
+        name=html_mod.escape(user.get('first_name') or 'Пользователь'),
         is_active=is_active,
         sub_until=_format_date(sub_until),
         sub_url=sub_url,
@@ -171,7 +173,7 @@ margin-top:.8rem;transition:all .15s}}
 <div class="copied" id="copiedToast">Скопировано!</div>
 
 <script>
-const SUB_URL = "{sub_url}";
+const SUB_URL = {json_mod.dumps(sub_url)};
 
 function copyLink() {{
     navigator.clipboard.writeText(SUB_URL).then(function(){{

@@ -35,12 +35,10 @@ CREATE TABLE IF NOT EXISTS awg_server (
     jmax INT NOT NULL DEFAULT 1000,
     s1 INT NOT NULL DEFAULT 89,
     s2 INT NOT NULL DEFAULT 121,
-    s3 INT NOT NULL DEFAULT 47,
-    s4 INT NOT NULL DEFAULT 32,
-    h1 VARCHAR(64) NOT NULL DEFAULT '100000-800000',
-    h2 VARCHAR(64) NOT NULL DEFAULT '100000-8000000',
-    h3 VARCHAR(64) NOT NULL DEFAULT '100000-80000000',
-    h4 VARCHAR(64) NOT NULL DEFAULT '100000-800000000',
+    h1 BIGINT NOT NULL DEFAULT 0,
+    h2 BIGINT NOT NULL DEFAULT 0,
+    h3 BIGINT NOT NULL DEFAULT 0,
+    h4 BIGINT NOT NULL DEFAULT 0,
     i1 TEXT DEFAULT NULL,
     i2 TEXT DEFAULT NULL,
     i3 TEXT DEFAULT NULL,
@@ -87,17 +85,17 @@ def save_server_config(cfg: dict):
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO awg_server (id, private_key, public_key, listen_port,
-            jc, jmin, jmax, s1, s2, s3, s4, h1, h2, h3, h4,
+            jc, jmin, jmax, s1, s2, h1, h2, h3, h4,
             i1, i2, i3, i4, i5)
         VALUES (1, %(private_key)s, %(public_key)s, %(listen_port)s,
-            %(jc)s, %(jmin)s, %(jmax)s, %(s1)s, %(s2)s, %(s3)s, %(s4)s,
+            %(jc)s, %(jmin)s, %(jmax)s, %(s1)s, %(s2)s,
             %(h1)s, %(h2)s, %(h3)s, %(h4)s,
             %(i1)s, %(i2)s, %(i3)s, %(i4)s, %(i5)s)
         ON DUPLICATE KEY UPDATE
             private_key=VALUES(private_key), public_key=VALUES(public_key),
             listen_port=VALUES(listen_port),
             jc=VALUES(jc), jmin=VALUES(jmin), jmax=VALUES(jmax),
-            s1=VALUES(s1), s2=VALUES(s2), s3=VALUES(s3), s4=VALUES(s4),
+            s1=VALUES(s1), s2=VALUES(s2),
             h1=VALUES(h1), h2=VALUES(h2), h3=VALUES(h3), h4=VALUES(h4),
             i1=VALUES(i1), i2=VALUES(i2), i3=VALUES(i3), i4=VALUES(i4), i5=VALUES(i5)
     """, cfg)

@@ -35,7 +35,7 @@ def generate_preshared_key() -> str:
 def _format_awg_params(srv: dict) -> str:
     """Format AWG obfuscation params for config file."""
     lines = []
-    for key in ("jc", "jmin", "jmax", "s1", "s2", "s3", "s4"):
+    for key in ("jc", "jmin", "jmax", "s1", "s2"):
         val = srv.get(key)
         if val is not None:
             lines.append(f"{key.capitalize() if len(key) <= 2 else key[0].upper() + key[1:]} = {val}")

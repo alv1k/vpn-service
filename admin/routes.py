@@ -1,25 +1,28 @@
 """Admin API router — unified panel endpoints for AWG + VLESS + Bot data."""
+import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from sse_starlette.sse import EventSourceResponse
 
 # Add project root for imports
 sys.path.insert(0, "/home/alvik/vpn-service")
 
-from . import db as awg_db
-from . import admin_db
-from .config import (
+from awg_api import db as awg_db
+from admin import db as admin_db
+from awg_api.config import (
     MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
 )
 
-logger = logging.getLogger("awg_api.admin")
+logger = logging.getLogger("admin")
 
 router = APIRouter(prefix="/api/admin")
 
@@ -63,7 +66,8 @@ def _clean(rows: list[dict]) -> list[dict]:
 def _get_online_users() -> list[dict]:
     """Parse xray access log + awg handshakes to find who's online now."""
     online = []
-    seen_emails = set()
+    vless_ips: dict[str, set[str]] = {}   # email -> set of IPs
+    vless_ts: dict[str, str] = {}         # email -> latest timestamp
 
     # VLESS: parse access.log for activity in last 5 minutes
     access_log = "/home/alvik/vpn-service/docker/x-ui-logs/access.log"
@@ -95,15 +99,15 @@ def _get_online_users() -> list[dict]:
             if not email_match:
                 continue
             email = email_match.group(1).strip()
-            if email in seen_emails:
-                continue
-            seen_emails.add(email)
+            vless_ips.setdefault(email, set()).add(ip)
+            vless_ts[email] = ts.strftime("%H:%M:%S")
 
+        for email, ips in vless_ips.items():
             online.append({
                 "name": email,
-                "ip": ip,
+                "ip_count": len(ips),
                 "type": "vless",
-                "last_seen": ts.strftime("%H:%M:%S"),
+                "last_seen": vless_ts[email],
             })
     except Exception as e:
         logger.warning(f"Access log parse error: {e}")
@@ -124,15 +128,38 @@ def _get_online_users() -> list[dict]:
             last_handshake = int(parts[4]) if parts[4] != "0" else 0
             if last_handshake > 0 and (time.time() - last_handshake) < 300:
                 name = pub_to_name.get(pub_key, pub_key[:12])
-                ip = endpoint.split(":")[0] if endpoint else "?"
                 online.append({
                     "name": name,
-                    "ip": ip,
+                    "ip_count": 1,
                     "type": "awg",
                     "last_seen": datetime.fromtimestamp(last_handshake, tz=timezone.utc).strftime("%H:%M:%S"),
                 })
     except Exception as e:
         logger.warning(f"AWG online parse error: {e}")
+
+    # SoftEther: active sessions
+    try:
+        from bot_xui.softether import list_sessions
+        for s in list_sessions():
+            online.append({
+                "name": s["username"],
+                "ip_count": 1,
+                "type": "softether",
+                "last_seen": "connected",
+            })
+    except Exception as e:
+        logger.warning(f"SoftEther online parse error: {e}")
+
+    # Enrich with expiration dates and first names
+    try:
+        names = [u["name"] for u in online]
+        info_map = admin_db.get_expiry_by_client_names(names)
+        for u in online:
+            info = info_map.get(u["name"], {})
+            u["expires"] = info.get("expires")
+            u["first_name"] = info.get("first_name", "")
+    except Exception as e:
+        logger.warning(f"Expiry lookup error: {e}")
 
     return online
 
@@ -142,10 +169,28 @@ async def online_users():
     return _get_online_users()
 
 
+@router.get("/online/stream")
+async def online_stream(request: Request):
+    """SSE stream — pushes online users only when the list changes."""
+    async def event_generator():
+        prev_key = None
+        while True:
+            if await request.is_disconnected():
+                break
+            users = _get_online_users()
+            # Build a hashable key from sorted names to detect changes
+            cur_key = tuple(sorted((u["name"], u["type"]) for u in users))
+            if cur_key != prev_key:
+                prev_key = cur_key
+                yield {"event": "online", "data": json.dumps(users)}
+            await asyncio.sleep(10)
+
+    return EventSourceResponse(event_generator())
+
+
 @router.get("/finance")
 async def finance():
     """Server financials: revenue, costs, profitability."""
-    import os
     from datetime import datetime as dt
 
     conn = awg_db._get_conn()
@@ -256,11 +301,25 @@ async def dashboard():
     pay_stats = admin_db.payment_stats()
     recent = admin_db.recent_payments(10)
 
+    # SoftEther stats
+    se_users = []
+    se_running = False
+    try:
+        from bot_xui.softether import list_users as se_list_users
+        se_users = se_list_users()
+        se_running = True
+    except Exception as e:
+        logger.warning(f"SoftEther stats error: {e}")
+
     return {
         "awg": {
             "clients_total": len(awg_clients),
             "clients_enabled": awg_enabled,
             "interface_up": awg_up,
+        },
+        "softether": {
+            "users_total": len(se_users),
+            "running": se_running,
         },
         "xui": {
             "inbounds": xui_data["inbounds"],
@@ -338,17 +397,28 @@ async def xui_inbound_clients(inbound_id: int):
     try:
         xui = _get_xui()
         inbounds = xui.get_inbounds()
+
+        # Build global stats map across ALL inbounds (email -> aggregated stats)
+        global_stats: dict[str, dict] = {}
+        for _ib in inbounds:
+            for cs in _ib.get("clientStats", []):
+                email = cs.get("email", "")
+                if email in global_stats:
+                    global_stats[email]["up"] += cs.get("up", 0)
+                    global_stats[email]["down"] += cs.get("down", 0)
+                else:
+                    global_stats[email] = {**cs}
+
         for ib in inbounds:
             if ib["id"] != inbound_id:
                 continue
             settings = json.loads(ib.get("settings", "{}"))
             clients = settings.get("clients", [])
-            stats = {cs["email"]: cs for cs in ib.get("clientStats", [])}
 
             result = []
             for c in clients:
                 email = c.get("email", "")
-                cs = stats.get(email, {})
+                cs = global_stats.get(email, {})
                 expiry = c.get("expiryTime", 0)
                 expiry_str = ""
                 if expiry and expiry > 0:
@@ -388,6 +458,148 @@ async def xui_inbound_clients(inbound_id: int):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── SoftEther ─────────────────────────────────────────────────────────────────
+
+@router.get("/softether/users")
+async def softether_users():
+    try:
+        from bot_xui.softether import list_users
+        return list_users()
+    except Exception as e:
+        logger.error(f"SoftEther users error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.delete("/softether/users/{username}")
+async def softether_delete_user(username: str):
+    try:
+        from bot_xui.softether import delete_user
+        ok = delete_user(username)
+        if ok:
+            return {"status": "deleted"}
+        return JSONResponse({"error": "Failed to delete"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/softether/users/{username}/disable")
+async def softether_disable_user(username: str):
+    try:
+        from bot_xui.softether import disable_user
+        ok = disable_user(username)
+        if ok:
+            return {"status": "disabled"}
+        return JSONResponse({"error": "Failed to disable"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/softether/users/{username}/config")
+async def softether_user_config(username: str):
+    """Get stored connection config for a SoftEther user from vpn_keys."""
+    try:
+        conn = awg_db._get_conn()
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT vless_link, vpn_file FROM vpn_keys "
+            "WHERE client_name = %s AND vpn_type = 'softether' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (username,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return JSONResponse({"error": "No stored config for this user"}, status_code=404)
+        config_json = row.get("vless_link")  # stores JSON {host, port, hub, username, password}
+        vpn_file = row.get("vpn_file")
+        config = {}
+        if config_json:
+            try:
+                config = json.loads(config_json)
+            except Exception:
+                config = {"raw": config_json}
+        return {"config": config, "vpn_file": vpn_file}
+    except Exception as e:
+        logger.error(f"SoftEther config lookup error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/softether/users")
+async def softether_create_user(request: Request):
+    try:
+        body = await request.json()
+        username = body.get("username", "").strip()
+        password = body.get("password", "").strip()
+        expiry = body.get("expiry", "").strip()  # YYYY/MM/DD
+        if not username or not password:
+            return JSONResponse({"error": "username and password required"}, status_code=400)
+        from bot_xui.softether import create_user, set_user_expiry
+        ok = create_user(username, password)
+        if not ok:
+            return JSONResponse({"error": "Failed to create user"}, status_code=500)
+        if expiry:
+            set_user_expiry(username, expiry)
+        return {"status": "created", "username": username}
+    except Exception as e:
+        logger.error(f"SoftEther create error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.patch("/softether/users/{username}/password")
+async def softether_set_password(username: str, request: Request):
+    try:
+        body = await request.json()
+        password = body.get("password", "").strip()
+        if not password:
+            return JSONResponse({"error": "password required"}, status_code=400)
+        from bot_xui.softether import _run
+        _run("UserPasswordSet", username, f"/PASSWORD:{password}")
+        return {"status": "password_updated"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.patch("/softether/users/{username}/expiry")
+async def softether_set_expiry(username: str, request: Request):
+    try:
+        body = await request.json()
+        expiry = body.get("expiry", "").strip()  # YYYY/MM/DD or "none"
+        if not expiry:
+            return JSONResponse({"error": "expiry required (YYYY/MM/DD or 'none')"}, status_code=400)
+        from bot_xui.softether import set_user_expiry
+        ok = set_user_expiry(username, expiry if expiry != "none" else "none")
+        if ok:
+            return {"status": "expiry_updated"}
+        return JSONResponse({"error": "Failed to set expiry"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── New Users Today ───────────────────────────────────────────────────────────
+
+@router.get("/users/today")
+async def users_today():
+    rows = admin_db.new_users_today()
+    return _clean(rows)
+
+
+# ── Winback Log ───────────────────────────────────────────────────────────────
+
+@router.get("/winback")
+async def winback_log():
+    rows = admin_db.list_winback_log()
+    return _clean(rows)
+
+
+# ── Promocodes ────────────────────────────────────────────────────────────────
+
+@router.get("/promocodes")
+async def promocodes_list():
+    rows = admin_db.list_promocodes()
+    return _clean(rows)
+
+
 # ── Users ────────────────────────────────────────────────────────────────────
 
 @router.get("/users")
@@ -406,3 +618,23 @@ async def user_keys(tg_id: int):
 async def user_payments(tg_id: int):
     rows = admin_db.get_user_payments(tg_id)
     return _clean(rows)
+
+
+# ── Admin page serving ────────────────────────────────────────────────────────
+
+def get_admin_page_route():
+    """Return the admin page endpoint for mounting in the app."""
+    async def admin_page():
+        html_path = os.path.join(os.path.dirname(__file__), "static", "admin.html")
+        with open(html_path) as f:
+            html = f.read()
+        from awg_api.config import API_PASSWORD
+        html = html.replace("{{AWG_PASSWORD}}", API_PASSWORD)
+        return HTMLResponse(html)
+    return admin_page
+
+
+@router.get("/favicon.png")
+async def favicon():
+    path = os.path.join(os.path.dirname(__file__), "static", "favicon.png")
+    return FileResponse(path, media_type="image/png")

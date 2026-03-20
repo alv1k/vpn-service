@@ -44,7 +44,8 @@ def set_user_expiry(username: str, expires_str: str) -> bool:
     try:
         _run("UserExpiresSet", username, f"/EXPIRES:{expires_str}")
         return True
-    except RuntimeError:
+    except RuntimeError as e:
+        logger.error(f"Failed to set expiry for {username}: {e}")
         return False
 
 
@@ -53,7 +54,8 @@ def delete_user(username: str) -> bool:
         _run("UserDelete", username)
         logger.info(f"SoftEther user deleted: {username}")
         return True
-    except RuntimeError:
+    except RuntimeError as e:
+        logger.error(f"Failed to delete user {username}: {e}")
         return False
 
 
@@ -63,5 +65,77 @@ def disable_user(username: str) -> bool:
         _run("UserExpiresSet", username, "/EXPIRES:2000/01/01")
         logger.info(f"SoftEther user disabled: {username}")
         return True
-    except RuntimeError:
+    except RuntimeError as e:
+        logger.error(f"Failed to disable user {username}: {e}")
         return False
+
+
+def list_sessions() -> list[dict]:
+    """List active sessions (connected users) in the hub."""
+    try:
+        output = _run("SessionList")
+    except RuntimeError:
+        return []
+
+    sessions = []
+    current = {}
+    for line in output.splitlines():
+        if "|" not in line or line.startswith("---"):
+            continue
+        key, _, value = line.partition("|")
+        key = key.strip()
+        value = value.strip()
+
+        if key == "Session Name":
+            if current:
+                sessions.append(current)
+            current = {"session": value}
+        elif key == "User Name":
+            current["username"] = value
+        elif key == "Source Host Name":
+            current["source"] = value
+        elif key == "Transfer Bytes":
+            current["transfer_bytes"] = int(value.replace(",", "")) if value.replace(",", "").isdigit() else 0
+
+    if current:
+        sessions.append(current)
+
+    # Filter out SecureNAT internal session
+    return [s for s in sessions if s.get("username") != "SecureNAT"]
+
+
+def list_users() -> list[dict]:
+    """List all users in the hub. Returns list of dicts with user info."""
+    try:
+        output = _run("UserList")
+    except RuntimeError:
+        return []
+
+    users = []
+    current = {}
+    for line in output.splitlines():
+        if "|" not in line or line.startswith("---"):
+            continue
+        key, _, value = line.partition("|")
+        key = key.strip()
+        value = value.strip()
+
+        if key == "User Name":
+            if current:
+                users.append(current)
+            current = {"username": value}
+        elif key == "Auth Method":
+            current["auth"] = value
+        elif key == "Num Logins":
+            current["num_logins"] = int(value) if value.isdigit() else 0
+        elif key == "Last Login":
+            current["last_login"] = value if value != "(None)" else None
+        elif key == "Expiration Date":
+            current["expires"] = value if value != "No Expiration" else None
+        elif key == "Transfer Bytes":
+            current["transfer_bytes"] = int(value.replace(",", "")) if value.replace(",", "").isdigit() else 0
+
+    if current:
+        users.append(current)
+
+    return users
