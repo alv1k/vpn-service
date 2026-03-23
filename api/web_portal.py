@@ -36,43 +36,49 @@ def _format_date(dt):
     return str(dt)
 
 
+HAPP_ROUTING_CONFIG = {
+    "blockip": [], "blocksites": [],
+    "directip": ["geoip:private", "geoip:ru"],
+    "directsites": [
+        "geosite:category-ru", "geosite:category-gov-ru",
+        "geosite:mailru", "geosite:vk",
+        "domain:ru", "domain:su", "domain:xn--p1ai",
+        "vk.com", "vk.cc", "vk.me", "cdn-vk.net",
+        "tbank-online.com", "tinkoff.ru",
+        "sberbank.ru", "online.sberbank.ru",
+        "yandex.ru", "yandex.net", "yandex.com",
+        "mail.ru", "list.ru", "inbox.ru",
+        "ok.ru", "odnoklassniki.ru",
+        "avito.ru", "ozon.ru",
+        "wildberries.ru", "wb.ru",
+        "gosuslugi.ru", "mos.ru",
+        "lenta.com", "lenta.tech",
+        "kinopoisk.ru", "ivi.ru", "rutube.ru",
+    ],
+    "dnshosts": {"cloudflare-dns.com": "1.1.1.1", "dns.google": "8.8.8.8"},
+    "domainstrategy": "IPIfNonMatch",
+    "domesticdnsdomain": "https://dns.google/dns-query",
+    "domesticdnsip": "77.88.8.8", "domesticdnstype": "DoU",
+    "fakedns": False,
+    "geoipurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+    "geositeurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+    "globalproxy": True, "name": "Tiin Split Rules",
+    "proxyip": [], "proxysites": [],
+    "remotednsdomain": "https://cloudflare-dns.com/dns-query",
+    "remotednsip": "77.88.8.1", "remotednstype": "DoU",
+    "routeorder": "block-proxy-direct",
+}
+
+
+def _happ_routing_deeplink() -> str:
+    b64 = base64.b64encode(json_mod.dumps(HAPP_ROUTING_CONFIG, ensure_ascii=False).encode()).decode()
+    return f"happ://routing/add/{b64}"
+
+
 @web_router.get("/happ-routing", response_class=HTMLResponse)
 async def happ_routing_redirect():
-    import json as _json, base64 as _b64
-    routing_config = {
-        "blockip": [], "blocksites": [],
-        "directip": ["geoip:private", "geoip:ru"],
-        "directsites": [
-            "geosite:category-ru", "geosite:category-gov-ru",
-            "geosite:mailru", "geosite:vk",
-            "domain:ru", "domain:su", "domain:xn--p1ai",
-            "vk.com", "vk.cc", "vk.me", "cdn-vk.net",
-            "tbank-online.com", "tinkoff.ru",
-            "sberbank.ru", "online.sberbank.ru",
-            "yandex.ru", "yandex.net", "yandex.com",
-            "mail.ru", "list.ru", "inbox.ru",
-            "ok.ru", "odnoklassniki.ru",
-            "avito.ru", "ozon.ru",
-            "wildberries.ru", "wb.ru",
-            "gosuslugi.ru", "mos.ru",
-            "lenta.com", "lenta.tech",
-            "kinopoisk.ru", "ivi.ru", "rutube.ru",
-        ],
-        "dnshosts": {"cloudflare-dns.com": "1.1.1.1", "dns.google": "8.8.8.8"},
-        "domainstrategy": "IPIfNonMatch",
-        "domesticdnsdomain": "https://dns.google/dns-query",
-        "domesticdnsip": "77.88.8.8", "domesticdnstype": "DoU",
-        "fakedns": False,
-        "geoipurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
-        "geositeurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
-        "globalproxy": True, "name": "Tiin Split Rules",
-        "proxyip": [], "proxysites": [],
-        "remotednsdomain": "https://cloudflare-dns.com/dns-query",
-        "remotednsip": "77.88.8.1", "remotednstype": "DoU",
-        "routeorder": "block-proxy-direct",
-    }
-    b64 = _b64.b64encode(_json.dumps(routing_config, ensure_ascii=False).encode()).decode()
-    deeplink = f"happ://routing/add/{b64}"
+    deeplink = _happ_routing_deeplink()
+    b64 = deeplink.split("happ://routing/add/")[1]
     intent_link = f"intent://routing/add/{b64}#Intent;scheme=happ;end"
     return f"""<!DOCTYPE html>
 <html><head>
@@ -126,6 +132,7 @@ async def personal_page(token: str):
         sub_until=_format_date(sub_until),
         sub_url=sub_url,
         qr_b64=qr_b64,
+        happ_routing_link=_happ_routing_deeplink(),
     ))
 
 
@@ -143,7 +150,7 @@ min-height:100vh;margin:0;background:#0a0a0a;color:#fff}
 </head><body><div class="c"><h1>404</h1><p>Страница не найдена</p></div></body></html>"""
 
 
-def _render_page(name, is_active, sub_until, sub_url, qr_b64):
+def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link=""):
     status_color = "#22c55e" if is_active else "#ef4444"
     status_text = "Активна" if is_active else "Неактивна"
     status_dot = "&#9679;"
@@ -227,7 +234,7 @@ margin-top:.8rem;transition:all .15s}}
     <div class="expiry">до {sub_until}</div>
 </div>
 
-{_render_wizard(sub_url, qr_b64) if sub_url else _render_no_sub()}
+{_render_wizard(sub_url, qr_b64, happ_routing_link) if sub_url else _render_no_sub()}
 
 <div class="back-link">
     <a href="https://t.me/tiin_service_bot">Telegram-бот</a>
@@ -272,12 +279,6 @@ const APPS = {{
     ]
 }};
 
-function showStep(n) {{
-    document.querySelectorAll('.step').forEach(function(s) {{ s.classList.remove('active') }});
-    var el = document.getElementById('step' + n);
-    if (el) el.classList.add('active');
-}}
-
 function selectDevice(device) {{
     selectedDevice = device;
     var list = document.getElementById('appList');
@@ -304,6 +305,44 @@ function goBack(step) {{
     showStep(step);
 }}
 
+// Routing
+const HAPP_ROUTING_LINK = {json_mod.dumps(happ_routing_link)};
+
+const ROUTING_GUIDES = {{
+    'Happ': `
+        <p class="note" style="margin-top:.8rem">Нажмите для автоматической настройки:</p>
+        <a href="${{HAPP_ROUTING_LINK}}" class="connect-btn primary">Настроить маршруты в Happ</a>
+        <p class="note" style="margin-top:.8rem">Правила применятся автоматически.</p>`,
+    'Hiddify': `
+        <p class="note" style="margin-top:.8rem"><b>Настройка в Hiddify:</b></p>
+        <p class="note">1. Откройте приложение &rarr; Настройки &rarr; Конфигурация</p>
+        <p class="note">2. Найдите раздел <b>Правила маршрутизации</b></p>
+        <p class="note">3. Включите <b>Обход локальных адресов</b></p>
+        <p class="note">4. В разделе «Прямое подключение» добавьте: <b>geosite:category-ru</b> и <b>geoip:ru</b></p>
+        <p class="note" style="margin-top:.5rem;color:#a78bfa">Российские сайты будут открываться напрямую.</p>`,
+    'Streisand': `
+        <p class="note" style="margin-top:.8rem"><b>Настройка в Streisand:</b></p>
+        <p class="note">1. Откройте приложение &rarr; Настройки &rarr; Маршрутизация</p>
+        <p class="note">2. Выберите режим <b>Обход локальных и выбранных адресов</b></p>
+        <p class="note">3. Добавьте в список обхода: <b>.ru, .su, .рф</b></p>
+        <p class="note">4. Включите <b>GeoIP: RU &rarr; Direct</b></p>
+        <p class="note" style="margin-top:.5rem;color:#a78bfa">Российские сайты будут открываться напрямую.</p>`,
+    'VPN4TV': `
+        <p class="note" style="margin-top:.8rem"><b>Настройка на Android TV:</b></p>
+        <p class="note">Маршрутизация настраивается так же, как в Hiddify.</p>
+        <p class="note">Настройки &rarr; Конфигурация &rarr; Правила маршрутизации &rarr; добавьте <b>geosite:category-ru</b> и <b>geoip:ru</b> в прямое подключение.</p>`,
+}};
+
+function showStep(n) {{
+    document.querySelectorAll('.step').forEach(function(s) {{ s.classList.remove('active') }});
+    var el = document.getElementById('step' + n);
+    if (el) el.classList.add('active');
+    if (n === 4 && selectedApp) {{
+        var guide = ROUTING_GUIDES[selectedApp.name] || ROUTING_GUIDES['Hiddify'];
+        document.getElementById('routingContent').innerHTML = guide;
+    }}
+}}
+
 // Init
 showStep(1);
 </script>
@@ -322,12 +361,12 @@ def _render_no_sub():
 </div>"""
 
 
-def _render_wizard(sub_url, qr_b64):
+def _render_wizard(sub_url, qr_b64, happ_routing_link=""):
     return f"""
 <!-- Step 1: Device -->
 <div class="step" id="step1">
 <div class="card">
-    <div class="step-indicator">Шаг 1 из 3</div>
+    <div class="step-indicator">Шаг 1 из 4</div>
     <h2>Ваше устройство</h2>
     <div class="device-grid">
         <div class="device-btn" onclick="selectDevice('android')">
@@ -352,7 +391,7 @@ def _render_wizard(sub_url, qr_b64):
 <!-- Step 2: App -->
 <div class="step" id="step2">
 <div class="card">
-    <div class="step-indicator">Шаг 2 из 3</div>
+    <div class="step-indicator">Шаг 2 из 4</div>
     <h2>Выберите приложение</h2>
     <div id="appList"></div>
     <div class="back-link"><a href="javascript:goBack(1)">&larr; Назад</a></div>
@@ -362,7 +401,7 @@ def _render_wizard(sub_url, qr_b64):
 <!-- Step 3: Connect -->
 <div class="step" id="step3">
 <div class="card">
-    <div class="step-indicator">Шаг 3 из 3</div>
+    <div class="step-indicator">Шаг 3 из 4</div>
     <h2>Подключение</h2>
 
     <p class="note">1. Скачайте <b><span id="chosenAppName"></span></b> если ещё не установлено:</p>
@@ -379,7 +418,21 @@ def _render_wizard(sub_url, qr_b64):
     </div>
     <p class="note">Отсканируйте QR-код камерой или из приложения</p>
 
+    <a href="javascript:showStep(4)" class="connect-btn secondary">Настроить маршрутизацию &rarr;</a>
     <div class="back-link"><a href="javascript:goBack(2)">&larr; Назад</a></div>
+</div>
+</div>
+
+<!-- Step 4: Routing -->
+<div class="step" id="step4">
+<div class="card">
+    <div class="step-indicator">Шаг 4 из 4</div>
+    <h2>Маршрутизация</h2>
+    <p class="note">Российские сайты будут работать напрямую, без VPN — быстрее и стабильнее.</p>
+
+    <div id="routingContent"></div>
+
+    <div class="back-link" style="margin-top:1rem"><a href="javascript:goBack(3)">&larr; Назад</a></div>
 </div>
 </div>
 """
