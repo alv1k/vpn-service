@@ -29,6 +29,9 @@ router = APIRouter(prefix="/api/admin")
 # XUI client (lazy init)
 _xui = None
 
+# Speed tracking: {(name, type): {"bytes": int, "ts": float, "speed": float}}
+_prev_traffic: dict[tuple[str, str], dict] = {}
+
 
 def _get_xui():
     global _xui
@@ -61,6 +64,26 @@ def _serialize(obj):
 def _clean(rows: list[dict]) -> list[dict]:
     return [{k: _serialize(v) if isinstance(v, (datetime, bytes)) else v
              for k, v in row.items()} for row in rows]
+
+
+def _calc_speed(name: str, proto: str, total_bytes: int) -> float:
+    """Calculate speed in bytes/sec from delta between snapshots."""
+    key = (name, proto)
+    now = time.time()
+    prev = _prev_traffic.get(key)
+    speed = 0.0
+    if prev and now - prev["ts"] > 1:
+        delta_bytes = total_bytes - prev["bytes"]
+        delta_time = now - prev["ts"]
+        if delta_bytes > 0:
+            speed = delta_bytes / delta_time
+    _prev_traffic[key] = {"bytes": total_bytes, "ts": now, "speed": speed}
+    return speed
+
+
+def _speed_mbps(speed_bps: float) -> float:
+    """Convert bytes/sec to Mbit/s, rounded to 1 decimal."""
+    return round(speed_bps * 8 / 1_000_000, 1)
 
 
 def _get_online_users() -> list[dict]:
@@ -112,6 +135,22 @@ def _get_online_users() -> list[dict]:
     except Exception as e:
         logger.warning(f"Access log parse error: {e}")
 
+    # VLESS: get per-client traffic from x-ui for speed calc
+    try:
+        xui = _get_xui()
+        inbounds = xui.get_inbounds()
+        vless_traffic: dict[str, int] = {}  # email -> total bytes
+        for ib in inbounds:
+            for cs in ib.get("clientStats", []):
+                email = cs.get("email", "")
+                vless_traffic[email] = vless_traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
+        for u in online:
+            if u["type"] == "vless" and u["name"] in vless_traffic:
+                speed = _calc_speed(u["name"], "vless", vless_traffic[u["name"]])
+                u["speed_mbps"] = _speed_mbps(speed)
+    except Exception as e:
+        logger.warning(f"VLESS traffic fetch error: {e}")
+
     # AWG: check last handshake from awg show dump
     try:
         awg_clients = awg_db.list_clients()
@@ -121,18 +160,21 @@ def _get_online_users() -> list[dict]:
         )
         for line in result.stdout.strip().split("\n")[1:]:  # skip interface line
             parts = line.split("\t")
-            if len(parts) < 5:
+            if len(parts) < 7:
                 continue
             pub_key = parts[0]
-            endpoint = parts[2] if parts[2] != "(none)" else None
             last_handshake = int(parts[4]) if parts[4] != "0" else 0
             if last_handshake > 0 and (time.time() - last_handshake) < 300:
                 name = pub_to_name.get(pub_key, pub_key[:12])
+                rx = int(parts[5]) if parts[5].isdigit() else 0
+                tx = int(parts[6]) if parts[6].isdigit() else 0
+                speed = _calc_speed(name, "awg", rx + tx)
                 online.append({
                     "name": name,
                     "ip_count": 1,
                     "type": "awg",
                     "last_seen": datetime.fromtimestamp(last_handshake, tz=timezone.utc).strftime("%H:%M:%S"),
+                    "speed_mbps": _speed_mbps(speed),
                 })
     except Exception as e:
         logger.warning(f"AWG online parse error: {e}")
@@ -141,11 +183,13 @@ def _get_online_users() -> list[dict]:
     try:
         from bot_xui.softether import list_sessions
         for s in list_sessions():
+            speed = _calc_speed(s["username"], "softether", s.get("transfer_bytes", 0))
             online.append({
                 "name": s["username"],
                 "ip_count": 1,
                 "type": "softether",
                 "last_seen": "connected",
+                "speed_mbps": _speed_mbps(speed),
             })
     except Exception as e:
         logger.warning(f"SoftEther online parse error: {e}")
@@ -161,6 +205,10 @@ def _get_online_users() -> list[dict]:
     except Exception as e:
         logger.warning(f"Expiry lookup error: {e}")
 
+    # Default speed for entries that didn't get it
+    for u in online:
+        u.setdefault("speed_mbps", 0)
+
     return online
 
 
@@ -173,16 +221,11 @@ async def online_users():
 async def online_stream(request: Request):
     """SSE stream — pushes online users only when the list changes."""
     async def event_generator():
-        prev_key = None
         while True:
             if await request.is_disconnected():
                 break
             users = _get_online_users()
-            # Build a hashable key from sorted names to detect changes
-            cur_key = tuple(sorted((u["name"], u["type"]) for u in users))
-            if cur_key != prev_key:
-                prev_key = cur_key
-                yield {"event": "online", "data": json.dumps(users)}
+            yield {"event": "online", "data": json.dumps(users)}
             await asyncio.sleep(10)
 
     return EventSourceResponse(event_generator())

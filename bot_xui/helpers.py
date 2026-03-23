@@ -24,20 +24,25 @@ def make_main_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура главного меню."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎁 Попробовать бесплатно", callback_data="test_protocol")],
-        [InlineKeyboardButton("📊 Мои конфиги", callback_data="my_configs")],
-        [InlineKeyboardButton("🏷 Тарифы",       callback_data="tariffs")],
-        [InlineKeyboardButton("👥 Реферальная программа", callback_data="referral")],
-        [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data="instructions")],
-        [InlineKeyboardButton("🌐 Личный кабинет (веб)", callback_data="web_portal")],
+        [
+            InlineKeyboardButton("🔑 Мои конфиги", callback_data="my_configs"),
+            InlineKeyboardButton("💎 Тарифы", callback_data="tariffs"),
+        ],
+        [
+            InlineKeyboardButton("📖 Инструкция", callback_data="instructions"),
+            InlineKeyboardButton("🌐 Кабинет", callback_data="web_portal"),
+        ],
+        [
+            InlineKeyboardButton("👥 Пригласить друга", callback_data="referral"),
+            InlineKeyboardButton("✉️ Поддержка", callback_data="feedback"),
+        ],
         [InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service")],
-        [InlineKeyboardButton("✉️ Написать нам", callback_data="feedback")],
     ])
 
 
 MAIN_MENU_TEXT = (
-    "⚡️ тииҥ VPN\n\n"
-    "🔒 Безопасный и быстрый\n"
-    "🌍 Доступ к любым сайтам\n"
+    "⚡️ <b>тииҥ VPN</b>\n\n"
+    "🔒 Безопасный  ·  🚀 Быстрый  ·  🌍 Без ограничений\n\n"
     "Выберите действие:"
 )
 

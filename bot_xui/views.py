@@ -28,28 +28,36 @@ async def show_main_menu(query):
 # Инструкция
 # ──────────────────────────────────────────────────────────────────────────────
 
-_INSTRUCTION_APPS = [
-    ("🤖 Hiddify - Android",       "https://play.google.com/store/apps/details?id=app.hiddify.com"),
-    ("🤖 Happ - Android",          "https://play.google.com/store/apps/details?id=com.happproxy&hl=ru"),
-    ("🍏 Happ - iOS",              "https://apps.apple.com/app/happ-proxy-utility/id6504287215"),
-    ("🍏 Streisand - iOS",          "https://apps.apple.com/app/streisand/id6450534064"),
-    ("💻 Hiddify - Windows/macOS", "https://github.com/hiddify/hiddify-app/releases"),
-    ("📺 VPN4TV - Android TV",     "https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify"),
-    ("🖥 SoftEther - Windows",     "https://www.softether-download.com/en.aspx?product=softether"),
+_INSTRUCTION_APPS_ANDROID = [
+    ("Hiddify", "https://play.google.com/store/apps/details?id=app.hiddify.com"),
+    ("Happ",    "https://play.google.com/store/apps/details?id=com.happproxy&hl=ru"),
+]
+_INSTRUCTION_APPS_IOS = [
+    ("Happ",      "https://apps.apple.com/app/happ-proxy-utility/id6504287215"),
+    ("Streisand", "https://apps.apple.com/app/streisand/id6450534064"),
+]
+_INSTRUCTION_APPS_DESKTOP = [
+    ("Hiddify (Win/Mac)", "https://github.com/hiddify/hiddify-app/releases"),
+    ("SoftEther (Win)",   "https://www.softether-download.com/en.aspx?product=softether"),
+]
+_INSTRUCTION_APPS_TV = [
+    ("VPN4TV", "https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify"),
 ]
 
 async def show_instructions(query):
     caption = (
-        "📱 <b>Инструкция по подключению:</b>\n\n"
-        "<b>1️⃣</b> Выберите приложение для вашей ОС (кнопки ниже)\n"
-        "<b>2️⃣</b> Отсканируйте QR-код или скопируйте ссылку\n"
-        "<b>3️⃣</b> Подключитесь к VPN\n\n"
-        "💬 <b>Поддержка:</b> кнопка «Написать нам» в меню"
+        "📖 <b>Как подключиться</b>\n\n"
+        "<b>1.</b> Скачайте приложение для вашего устройства\n"
+        "<b>2.</b> Откройте <b>Мои конфиги</b> → скопируйте ссылку или QR\n"
+        "<b>3.</b> Вставьте в приложение и подключитесь\n\n"
+        "👇 <b>Выберите ваше устройство:</b>"
     )
     keyboard = [
-        [InlineKeyboardButton(label, url=url)] for label, url in _INSTRUCTION_APPS
-    ] + [
-        [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
+        [InlineKeyboardButton(f"🤖 {label}", url=url) for label, url in _INSTRUCTION_APPS_ANDROID],
+        [InlineKeyboardButton(f"🍏 {label}", url=url) for label, url in _INSTRUCTION_APPS_IOS],
+        [InlineKeyboardButton(f"💻 {label}", url=url) for label, url in _INSTRUCTION_APPS_DESKTOP],
+        [InlineKeyboardButton(f"📺 {label}", url=url) for label, url in _INSTRUCTION_APPS_TV],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
     ]
 
     await query.edit_message_text(caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
@@ -85,50 +93,39 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
     regular_tariffs.sort(key=lambda x: x.get("days", 0))
 
     # ── Текст ──
-    title = "💎 <b>Выберите длительность продления</b>" if mode == "renew" else "💎 <b>Доступные тарифы VPN</b>"
-    text = title + "\n\n"
+    if mode == "renew":
+        text = "🔄 <b>Продление подписки</b>\n\n"
+    else:
+        text = "💎 <b>Тарифы VPN</b>\n\n"
 
     if perm_discount > 0:
-        text += f"🏷 <i>Ваша постоянная скидка: <b>{perm_discount}%</b></i>\n\n"
+        text += f"🏷 Ваша скидка: <b>{perm_discount}%</b>\n\n"
 
     if test_tariffs and not (awg_used or vless_used) and mode == "buy":
-        text += "🎁 <b>Попробуйте бесплатно</b>\n┌─────────────────────\n"
         for t in test_tariffs:
-            text += (
-                f"│ ✨ <b>{t['name']}</b>\n"
-                f"│    ▸ Цена: <b>{t['price']} ₽</b>\n"
-                f"│    ▸ Период: {t['period']}\n"
-                f"│    ▸ Устройств: {t['device_limit']}\n"
-            )
-        text += "└─────────────────────\n\n"
+            text += f"🎁 <b>{t['name']}</b> — бесплатно\n\n"
 
-    text += "📦 <b>Основные тарифы</b>\n"
     for i, t in enumerate(regular_tariffs):
-        bullet = "├" if i < len(regular_tariffs) - 1 else "└"
         if perm_discount > 0:
             discounted = max(1, round(t['price'] * (100 - perm_discount) / 100))
             ppd = discounted / t["days"] if t.get("days") else 0
-            text += f"{bullet}─ <b>{t['name']}</b>\n"
-            text += f"{bullet}   💰 <s>{t['price']} ₽</s> → <b>{discounted} ₽</b>  ·  ⏱ {t['period']}  ·  👥 {t['device_limit']} устройств\n"
+            price_str = f"<s>{t['price']}₽</s> <b>{discounted}₽</b>"
         else:
             ppd = t["price"] / t["days"] if t.get("days") else 0
-            text += f"{bullet}─ <b>{t['name']}</b>\n"
-            text += f"{bullet}   💰 {t['price']} ₽  ·  ⏱ {t['period']}  ·  👥 {t['device_limit']} устройств\n"
+            price_str = f"<b>{t['price']}₽</b>"
+
+        best = "  ⭐️" if t.get("days", 0) >= 90 else ""
+        text += f"▸ <b>{t['period']}</b> — {price_str}"
         if t.get("days", 0) > 3:
-            text += f"{bullet}   💫 всего {ppd:.1f} ₽/день\n"
-        if t.get("features"):
-            text += f"{bullet}   ✨ {', '.join(t['features'])}\n"
-        if t.get("days", 0) >= 90:
-            text += f"{bullet}   🌟 <b>Самый выгодный!</b>\n"
-        if i < len(regular_tariffs) - 1:
-            text += f"{bullet}  \n"
+            text += f"  ({ppd:.1f}₽/день)"
+        text += f"{best}\n"
 
     if special_tariffs and tg_id == ADMIN_TG_ID and mode == "buy":
-        text += "\n⚙️ <b>Служебные тарифы</b>\n"
+        text += "\n"
         for t in special_tariffs:
-            text += f"└─ 🔧 {t['name']}  💰 {t['price']} ₽ · {t['period']}\n"
+            text += f"🔧 {t['name']} — {t['price']}₽\n"
 
-    text += "\n<i>Выберите подходящий тариф ниже:</i> ⬇️"
+    text += "\n👥 До 10 устройств на любом тарифе"
 
     # ── Клавиатура ──
     keyboard = []
@@ -162,9 +159,7 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
             for t in special_tariffs
         ])
 
-    back_label = "◀️ Вернуться в меню"
-    back_data  = "back_to_menu"
-    keyboard.append([InlineKeyboardButton(back_label, callback_data=back_data)])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")])
 
     return text, InlineKeyboardMarkup(keyboard)
 
@@ -231,21 +226,18 @@ async def show_configs(query, xui=None):
         await _show_no_configs(query)
         return
 
-    text = "🔐 <b>Ваши VPN конфиги</b>\n\n"
+    text = "🔑 <b>Ваши конфиги</b>\n\n"
     if active_keys:
-        text += "✅ <b>Активные:</b>\n"
-        for i, key in enumerate(active_keys, 1):
-            prefix = "├─" if i < len(active_keys) else "└─"
+        for key in active_keys:
             if key["vpn_type"] == "softether":
                 emoji = "🖥"
             elif "vless" in key["vpn_type"]:
                 emoji = "🟢"
             else:
                 emoji = "📱"
-            text += f"{prefix} {emoji} <b>{key['client_name']}</b>\n"
-            text += f"{prefix}    ⏱ до: <code>{convert_to_local(key['expires_at'])}</code>\n\n"
+            text += f"{emoji} <b>{key['client_name']}</b>  ·  до {convert_to_local(key['expires_at'])}\n"
 
-    text += "\n<i>Нажмите на конфиг ниже, чтобы показать данные подключения</i> ⬇️"
+    text += "\n<i>Нажмите, чтобы показать данные подключения:</i>"
 
     keyboard: list = []
     row: list = []
@@ -258,32 +250,23 @@ async def show_configs(query, xui=None):
             keyboard.append(row)
             row = []
 
-    keyboard.append([InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")])
 
     await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _show_no_configs(query):
     text = (
-        "❄️ <b>У вас пока нет активных конфигов</b>\n\n"
-        "┌─────────────────────\n"
-        "│ Чтобы получить доступ к VPN:\n"
-        "│ 1️⃣ Выберите подходящий тариф\n"
-        "│ 2️⃣ Оплатите удобным способом\n"
-        "│ 3️⃣ Получите готовый конфиг\n"
-        "└─────────────────────\n\n"
-        "✨ <b>Преимущества:</b>\n"
-        "• ⚡️ Высокая скорость\n"
-        "• 🔒 Безопасное шифрование\n"
-        "• 📱 До 10 устройств\n"
-        "• 🌐 Доступ к любым сайтам\n\n"
-        "👇 <b>Нажмите на кнопку ниже, чтобы выбрать тариф</b>"
+        "🔑 <b>У вас пока нет конфигов</b>\n\n"
+        "Выберите тариф или попробуйте бесплатно — "
+        "конфиг будет создан автоматически."
     )
     await query.edit_message_text(
         text,
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔥 Выбрать тариф", callback_data="tariffs")],
-            [InlineKeyboardButton("◀️ В меню",        callback_data="back_to_menu")],
+            [InlineKeyboardButton("🎁 Попробовать бесплатно", callback_data="test_protocol")],
+            [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
         ]),
         parse_mode="HTML",
     )
@@ -319,19 +302,14 @@ async def show_single_config(query, client_name: str, xui):
             creds = {}
 
         caption = (
-            f"🖥 <b>{status[0]} Конфиг {key['client_name']}</b>\n\n"
-            f"┌─ 📋 <b>Информация</b>\n"
-            f"│  ▸ Статус: <b>{status[1]}</b>\n"
-            f"│  ▸ Действует до: <code>{convert_to_local(expires_at)}</code>\n"
-            f"└─────────────────────\n\n"
-            f"📋 <b>Данные для подключения:</b>\n"
-            f"┌─────────────────────\n"
-            f"│ 🌐 Сервер: <code>{creds.get('host', '')}</code>\n"
-            f"│ 🔌 Порт: <code>{creds.get('port', '')}</code>\n"
-            f"│ 🏠 Hub: <code>{creds.get('hub', '')}</code>\n"
-            f"│ 👤 Логин: <code>{creds.get('username', '')}</code>\n"
-            f"│ 🔑 Пароль: <code>{creds.get('password', '')}</code>\n"
-            f"└─────────────────────\n"
+            f"🖥 <b>{key['client_name']}</b>  {status[0]} {status[1]}\n"
+            f"⏱ До: {convert_to_local(expires_at)}\n\n"
+            f"<b>Данные для подключения:</b>\n\n"
+            f"Сервер: <code>{creds.get('host', '')}</code>\n"
+            f"Порт: <code>{creds.get('port', '')}</code>\n"
+            f"Hub: <code>{creds.get('hub', '')}</code>\n"
+            f"Логин: <code>{creds.get('username', '')}</code>\n"
+            f"Пароль: <code>{creds.get('password', '')}</code>\n"
         )
         await query.message.delete()
 
@@ -366,21 +344,18 @@ async def show_single_config(query, client_name: str, xui):
     bio.seek(0)
 
     caption = (
-        f"🔐 <b>{status[0]} Конфиг {key['client_name']}</b>\n\n"
-        f"┌─ 📋 <b>Информация</b>\n"
-        f"│  ▸ Статус: <b>{status[1]}</b>\n"
-        f"│  ▸ Действует до: <code>{convert_to_local(expires_at)}</code>\n"
-        f"└─ 🔗 <b>Ссылка подписки:</b>\n\n"
-        f"👇 <i>Нажмите чтобы скопировать:</i>\n"
-        f"┌────────────────────\n"
-        f"  <code>{sub_url}</code>\n"
-        f"└────────────────────\n\n"
-        f"<i>Добавьте в приложение — конфиг будет обновляться автоматически</i>\n"
+        f"🟢 <b>{key['client_name']}</b>  {status[0]} {status[1]}\n"
+        f"⏱ До: {convert_to_local(expires_at)}\n\n"
+        f"🔗 <b>Ссылка подписки</b> (нажмите, чтобы скопировать):\n\n"
+        f"<code>{sub_url}</code>\n\n"
+        f"💡 <i>Скопируйте ссылку или отсканируйте QR-код в приложении</i>"
     )
 
-    caption += "\n💡 <i>Скопируйте ссылку или сохраните QR-код</i>"
-
-    keyboard = [[InlineKeyboardButton("🔙 К списку", callback_data="my_configs")]]
+    HAPP_ROUTING_URL = "https://344988.snk.wtf:2096/ruleset/happ-routing-rules.json"
+    keyboard = [
+        [InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")],
+        [InlineKeyboardButton("🔙 К списку", callback_data="my_configs")],
+    ]
 
     await query.message.delete()
     await query.message.chat.send_photo(

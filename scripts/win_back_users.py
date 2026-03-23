@@ -201,7 +201,8 @@ DELAY = {
     'low_traffic': 1,         # 1 день после создания конфига
     'expired_fresh': 1,       # 1 день после истечения подписки
     'expired_old': 30,        # 30 дней после истечения
-    'test_no_purchase': 1,    # 1 день после окончания теста
+    'test_no_purchase': 1,    # 1 день после окончания теста (был трафик)
+    'test_no_connect': 1,    # 1 день после окончания теста (0 трафика)
     'payment_no_config': 0,   # сразу
     'panel_db_mismatch': 0,   # сразу
     'multi_config_partial': 7,# 7 дней без трафика
@@ -215,7 +216,8 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
         'low_traffic': [],         # < 5 MB — попробовал, не заработало
         'expired_fresh': [],       # подписка истекла 1-7 дней
         'expired_old': [],         # подписка истекла 30+ дней
-        'test_no_purchase': [],    # тест использован, не купил
+        'test_no_purchase': [],    # тест использован, был трафик, не купил
+        'test_no_connect': [],     # тест использован, 0 трафика, не купил
         'multi_config_partial': [],# несколько конфигов, один тип не используется
         'payment_no_config': [],   # оплатил, но конфиг не выдан
         'panel_db_mismatch': [],   # активен в БД, деактивирован в панели
@@ -289,8 +291,10 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
         )
         if test_used and not user_payments and not has_active_key:
             days_since_test = _test_expired_days(user_keys)
-            if days_since_test >= DELAY['test_no_purchase']:
+            if total_bytes > 0 and days_since_test >= DELAY['test_no_purchase']:
                 results['test_no_purchase'].append({**info, 'days_since_test': days_since_test})
+            elif total_bytes == 0 and days_since_test >= DELAY['test_no_connect']:
+                results['test_no_connect'].append({**info, 'days_since_test': days_since_test})
             continue
 
         # Сценарий: Несколько типов конфигов, один не используется — 7 дней
@@ -343,6 +347,15 @@ MESSAGES = {
         "Готовы к полному доступу? Выберите тариф — "
         "подписка от {price} ₽/мес с доступом ко всем сайтам 🌐"
     ),
+    'test_no_connect': (
+        "👋 Вы активировали тестовый период, но так и не подключились.\n\n"
+        "Мы продлили вам доступ на <b>1 день</b> — попробуйте прямо сейчас!\n\n"
+        "📱 <b>Быстрый старт:</b>\n"
+        "1️⃣ Нажмите <b>Мои конфиги</b>\n"
+        "2️⃣ Скопируйте ссылку подписки\n"
+        "3️⃣ Вставьте в приложение (Happ, Hiddify, Streisand)\n\n"
+        "Если что-то не получается — напишите нам, поможем! 💬"
+    ),
     'payment_no_config': (
         "⚠️ Мы обнаружили, что ваш платёж был успешным, "
         "но VPN конфиг не был создан.\n\n"
@@ -362,6 +375,12 @@ def get_buttons_for_scenario(scenario):
         return [
             [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
             [{"text": "📋 Инструкция", "callback_data": "instructions"}],
+        ]
+    elif scenario == 'test_no_connect':
+        return [
+            [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
+            [{"text": "📋 Инструкция", "callback_data": "instructions"}],
+            [{"text": "💎 Тарифы", "callback_data": "tariffs"}],
         ]
     elif scenario in ('expired_fresh', 'expired_old', 'test_no_purchase'):
         return [
@@ -413,6 +432,31 @@ def print_report(results):
     print(f"{'='*60}\n")
 
 
+def _extend_test_keys(tg_id: int):
+    """Extend all expired test keys for user by 1 day from now."""
+    tomorrow = NOW + timedelta(days=1)
+    execute_query(
+        "UPDATE vpn_keys SET expires_at = %s "
+        "WHERE tg_id = %s AND expires_at < NOW()",
+        (tomorrow, tg_id),
+    )
+    # Extend VLESS keys in x-ui panel
+    try:
+        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        inbounds = xui.get_inbounds()
+        one_day_ms = 24 * 60 * 60 * 1000
+        for ib in inbounds:
+            settings = json.loads(ib.get("settings", "{}"))
+            for client in settings.get("clients", []):
+                if str(tg_id) in client.get("email", ""):
+                    expiry = client.get("expiryTime", 0)
+                    if 0 < expiry < int(NOW.timestamp() * 1000):
+                        xui.extend_client_expiry(ib["id"], client, one_day_ms)
+                        log.info(f"  Extended VLESS key {client['email']} in x-ui for {tg_id}")
+    except Exception as e:
+        log.warning(f"  Failed to extend VLESS in x-ui for {tg_id}: {e}")
+
+
 async def send_messages(results):
     from bot_xui.messaging import send_link_safely
 
@@ -440,6 +484,11 @@ async def send_messages(results):
                 log.info(f"⏭ Skip {tg_id} [{scenario}] — последняя отправка {days_ago}д назад (cooldown {COOLDOWN_DAYS}д)")
                 skipped += 1
                 continue
+
+            # Extend expired test keys before notifying
+            if scenario == 'test_no_connect':
+                _extend_test_keys(tg_id)
+                log.info(f"  Extended test keys +1 day for {tg_id}")
 
             msg = msg_template
             if '{price}' in msg:

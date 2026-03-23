@@ -167,7 +167,7 @@ fi
 
 # Test 8: SoftEther VPN Azure relay
 source <(grep -E '^SOFTETHER_SERVER_PASSWORD=' "$ENV_FILE")
-AZURE_OUTPUT=$(/opt/softether/vpncmd localhost:5555 /SERVER /PASSWORD:"$SOFTETHER_SERVER_PASSWORD" /CMD VpnAzureGetStatus 2>&1)
+AZURE_OUTPUT=$(timeout 30 /opt/softether/vpncmd localhost:5555 /SERVER /PASSWORD:"$SOFTETHER_SERVER_PASSWORD" /CMD VpnAzureGetStatus 2>&1)
 if echo "$AZURE_OUTPUT" | grep -q "Connection to VPN Azure Cloud Server is Established|Yes"; then
     AZURE_HOST=$(echo "$AZURE_OUTPUT" | grep "Hostname.*VPN Azure" | awk -F'|' '{print $2}' | xargs)
     log "✅ VPN Azure connected: $AZURE_HOST"
