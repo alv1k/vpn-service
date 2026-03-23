@@ -36,6 +36,71 @@ def _format_date(dt):
     return str(dt)
 
 
+@web_router.get("/happ-routing", response_class=HTMLResponse)
+async def happ_routing_redirect():
+    import json as _json, base64 as _b64
+    routing_config = {
+        "blockip": [], "blocksites": [],
+        "directip": ["geoip:private", "geoip:ru"],
+        "directsites": [
+            "geosite:category-ru", "geosite:category-gov-ru",
+            "geosite:mailru", "geosite:vk",
+            "domain:ru", "domain:su", "domain:xn--p1ai",
+            "vk.com", "vk.cc", "vk.me", "cdn-vk.net",
+            "tbank-online.com", "tinkoff.ru",
+            "sberbank.ru", "online.sberbank.ru",
+            "yandex.ru", "yandex.net", "yandex.com",
+            "mail.ru", "list.ru", "inbox.ru",
+            "ok.ru", "odnoklassniki.ru",
+            "avito.ru", "ozon.ru",
+            "wildberries.ru", "wb.ru",
+            "gosuslugi.ru", "mos.ru",
+            "lenta.com", "lenta.tech",
+            "kinopoisk.ru", "ivi.ru", "rutube.ru",
+        ],
+        "dnshosts": {"cloudflare-dns.com": "1.1.1.1", "dns.google": "8.8.8.8"},
+        "domainstrategy": "IPIfNonMatch",
+        "domesticdnsdomain": "https://dns.google/dns-query",
+        "domesticdnsip": "77.88.8.8", "domesticdnstype": "DoU",
+        "fakedns": False,
+        "geoipurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+        "geositeurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+        "globalproxy": True, "name": "Tiin Split Rules",
+        "proxyip": [], "proxysites": [],
+        "remotednsdomain": "https://cloudflare-dns.com/dns-query",
+        "remotednsip": "77.88.8.1", "remotednstype": "DoU",
+        "routeorder": "block-proxy-direct",
+    }
+    b64 = _b64.b64encode(_json.dumps(routing_config, ensure_ascii=False).encode()).decode()
+    deeplink = f"happ://routing/add/{b64}"
+    intent_link = f"intent://routing/add/{b64}#Intent;scheme=happ;end"
+    return f"""<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tiin — настройка маршрутизации</title>
+<style>
+  body {{ font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #f5f5f5; }}
+  .btn {{ display: inline-block; padding: 16px 32px; background: #007aff; color: white;
+          border-radius: 12px; text-decoration: none; font-size: 18px; margin: 10px; }}
+</style>
+</head><body>
+<h2>Настройка маршрутизации</h2>
+<p>Нажмите кнопку, чтобы добавить правила в Happ:</p>
+<a class="btn" id="openBtn" href="{deeplink}">📲 Открыть в Happ</a>
+<p style="margin-top:20px;color:#888;font-size:14px;">Если не открылось автоматически, нажмите кнопку выше.</p>
+<script>
+  // Try direct deep link first
+  var dl = "{deeplink}";
+  var intentDl = "{intent_link}";
+  var isAndroid = /android/i.test(navigator.userAgent);
+  if (isAndroid) {{
+    document.getElementById('openBtn').href = intentDl;
+  }}
+  setTimeout(function() {{ window.location.href = isAndroid ? intentDl : dl; }}, 300);
+</script>
+</body></html>"""
+
+
 @web_router.get("/my/{token}", response_class=HTMLResponse)
 async def personal_page(token: str):
     user = get_user_by_web_token(token)

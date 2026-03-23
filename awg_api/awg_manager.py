@@ -32,8 +32,13 @@ def generate_preshared_key() -> str:
     return _run(["awg", "genpsk"]).stdout.strip()
 
 
-def _format_awg_params(srv: dict) -> str:
-    """Format AWG obfuscation params for config file."""
+def _format_awg_params(srv: dict, include_i_params: bool = True) -> str:
+    """Format AWG obfuscation params for config file.
+
+    Args:
+        include_i_params: Include I1-I5 params. Set False for client configs
+            because AmneziaWG app cannot parse the <r N> syntax.
+    """
     lines = []
     for key in ("jc", "jmin", "jmax", "s1", "s2"):
         val = srv.get(key)
@@ -46,11 +51,12 @@ def _format_awg_params(srv: dict) -> str:
         if val is not None:
             lines.append(f"{key.upper()} = {val}")
 
-    # I1-I5: CPS concealment packets (AWG 2.0)
-    for key in ("i1", "i2", "i3", "i4", "i5"):
-        val = srv.get(key)
-        if val:
-            lines.append(f"{key.upper()} = {val}")
+    # I1-I5: CPS concealment packets (AWG 2.0) — server-side only
+    if include_i_params:
+        for key in ("i1", "i2", "i3", "i4", "i5"):
+            val = srv.get(key)
+            if val:
+                lines.append(f"{key.upper()} = {val}")
 
     return "\n".join(lines)
 
@@ -99,7 +105,7 @@ def generate_client_conf(client_id: str) -> Optional[str]:
     if not srv:
         return None
 
-    awg_params = _format_awg_params(srv)
+    awg_params = _format_awg_params(srv, include_i_params=False)
 
     conf = f"""[Interface]
 PrivateKey = {client['private_key']}

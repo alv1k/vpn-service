@@ -127,7 +127,7 @@ def new_users_today() -> list[dict]:
     cur.execute("""
         SELECT tg_id, first_name, last_name, created_at
         FROM users
-        WHERE DATE(created_at) = CURDATE()
+        WHERE DATE(created_at + INTERVAL 9 HOUR) = CURDATE()
         ORDER BY created_at DESC
     """)
     rows = cur.fetchall()

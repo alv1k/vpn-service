@@ -38,8 +38,14 @@ class XUIClient:
         if not self._logged_in:
             self.login()
         response = self.session.request(method, url, **kwargs)
-        if response.status_code == 401:
+        # 3x-ui returns 200 with HTML login page or 404 with empty body
+        # when session expires (not 401)
+        content_type = response.headers.get('content-type', '')
+        if response.status_code in (401, 404) or (
+            'application/json' not in content_type and response.status_code == 200
+        ):
             logger.info("XUI session expired, re-logging in")
+            self._logged_in = False
             self.login()
             response = self.session.request(method, url, **kwargs)
         return response

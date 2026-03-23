@@ -342,6 +342,7 @@
               <th>Type</th>
               <th>First Name</th>
               <th>Name</th>
+              <th>Speed</th>
               <th>IPs</th>
               <th>Expires</th>
             </tr>
@@ -567,9 +568,10 @@
 
     function fmtDate(s) {
       if (!s) return '—';
-      const d = new Date(s);
-      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' +
-             d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      const d = new Date(s + 'Z');                // treat DB value as UTC
+      d.setTime(d.getTime() + 9 * 3600000);       // shift to UTC+9
+      return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }) + ' ' +
+             d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
     }
 
     // ── Online (SSE) ──────────────────────────────────────────────────────────
@@ -611,6 +613,9 @@
                 </td>
                 <td>${u.first_name || '—'}</td>
                 <td>${u.name}</td>
+                <td class="mono">${u.speed_mbps > 0
+                    ? '<span style="color:var(--green)">' + u.speed_mbps + ' Mbps</span>'
+                    : '<span style="color:var(--muted)">—</span>'}</td>
                 <td>${u.ip_count > 1
                     ? '<span style="color:var(--orange)">' + u.ip_count + '</span>'
                     : u.ip_count}</td>
@@ -618,7 +623,7 @@
                     ? new Date(u.expires).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
                     : '—'}</td>
               </tr>`).join('')
-          : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No active connections</td></tr>';
+          : '<tr><td colspan="6" style="color:var(--muted);text-align:center">No active connections</td></tr>';
       }
     }
 
@@ -852,19 +857,20 @@
 
     async function awgConfig(id, name) {
       const conf = await api(`/api/wireguard/client/${id}/configuration`);
+      window._awgConfRaw = conf;
+      const escaped = conf.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       openModal(`
         <h2>Client Config</h2>
-        <pre>${conf}</pre>
-        <button class="btn mt" onclick="navigator.clipboard.writeText(document.querySelector('.modal pre').textContent); this.textContent='Copied!'">Copy</button>
+        <pre>${escaped}</pre>
+        <button class="btn mt" onclick="navigator.clipboard.writeText(window._awgConfRaw); this.textContent='Copied!'">Copy</button>
         <button class="btn mt" onclick="awgDownloadConf()">Download</button>
         <button class="btn mt" onclick="closeModal()">Close</button>`);
       window._awgConfName = name || 'awg';
     }
 
     function awgDownloadConf() {
-      const text = document.querySelector('.modal pre').textContent;
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+      a.href = URL.createObjectURL(new Blob([window._awgConfRaw], { type: 'text/plain' }));
       a.download = window._awgConfName + '.conf';
       a.click();
       URL.revokeObjectURL(a.href);

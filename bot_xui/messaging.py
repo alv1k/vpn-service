@@ -29,8 +29,21 @@ async def send_message_by_tg_id(
             parse_mode=parse_mode,
             reply_markup=reply_markup,
         )
+        try:
+            from api.db import execute_query
+            execute_query("UPDATE users SET bot_blocked = 0 WHERE tg_id = %s AND bot_blocked = 1", (tg_id,))
+        except Exception:
+            pass
         return True
     except Exception as e:
+        err = str(e).lower()
+        if "blocked" in err or "deactivated" in err:
+            try:
+                from api.db import execute_query
+                execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
+                logger.info(f"[send_message] Пользователь {tg_id} заблокировал бота — помечен в БД")
+            except Exception as db_err:
+                logger.error(f"[send_message] Не удалось пометить {tg_id}: {db_err}")
         logger.error(f"[send_message] Ошибка отправки для {tg_id}: {e}")
         return False
 
