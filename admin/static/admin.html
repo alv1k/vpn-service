@@ -294,6 +294,14 @@
       input[type=text],
       input[type=search] { max-width: 100%; min-height: 44px; }
 
+      /* Truncate online name column */
+      .col-online-name {
+        max-width: 90px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       /* Hide less important columns */
       .col-ip, .col-uuid, .col-last-online, .col-limit,
       .col-expires-promo, .col-auth, .col-logins, .col-created { display: none; }
@@ -612,7 +620,7 @@
                   </span>
                 </td>
                 <td>${u.first_name || '—'}</td>
-                <td>${u.name}</td>
+                <td class="col-online-name">${u.name}</td>
                 <td class="mono">${u.speed_mbps > 0
                     ? '<span style="color:var(--green)">' + u.speed_mbps + ' Mbps</span>'
                     : '<span style="color:var(--muted)">—</span>'}</td>

@@ -134,7 +134,9 @@ class XUIClient:
 
             result = response.json()
             logger.info(f"Extend expiry response: {result}")
-            return result.get('success', False)
+            if result.get('success', False):
+                return new_expiry  # return new expiry (ms) on success
+            return False
 
         except Exception as e:
             logger.error(f"Error extending client expiry: {e}", exc_info=True)
@@ -229,25 +231,38 @@ class XUIClient:
     def get_client_subscription_url(self, tg_id):
         """Получить ссылку подписки клиента из панели.
         Формат: {XUI_SUB_HOST}/sub/{XUI_SUB_PATH}/{subId}
+        Если у пользователя несколько клиентов, возвращает активного (не истёкшего).
         """
         from config import XUI_SUB_HOST, XUI_SUB_PATH
         if not XUI_SUB_HOST or not XUI_SUB_PATH:
             logger.warning("XUI_SUB_HOST or XUI_SUB_PATH not configured")
             return None
         try:
+            import time
+            now_ms = int(time.time() * 1000)
             response = self._request("GET", f"{self.host}/panel/api/inbounds/list")
             result = response.json()
 
             if not result.get('success'):
                 return None
 
+            best_sub_id = None
+            best_expiry = -1
             for inbound in result.get('obj', []):
                 settings = json.loads(inbound.get('settings', '{}'))
                 for client in settings.get('clients', []):
                     if str(client.get('tgId')) == str(tg_id):
                         sub_id = client.get('subId')
-                        if sub_id:
-                            return f"{XUI_SUB_HOST}/sub/{XUI_SUB_PATH}/{sub_id}"
+                        if not sub_id:
+                            continue
+                        expiry = client.get('expiryTime', 0)
+                        # 0 means unlimited; positive and not yet expired; pick latest expiry
+                        if expiry == 0 or expiry > now_ms:
+                            if expiry == 0 or expiry > best_expiry:
+                                best_sub_id = sub_id
+                                best_expiry = expiry
+            if best_sub_id:
+                return f"{XUI_SUB_HOST}/sub/{XUI_SUB_PATH}/{best_sub_id}"
             return None
 
         except Exception as e:

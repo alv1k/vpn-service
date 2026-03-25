@@ -9,7 +9,9 @@
 import logging
 import os
 import sys
+import io
 import pytz
+import qrcode
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,7 +39,7 @@ from api.db import (
     set_permanent_discount,
 )
 
-from bot_xui.helpers  import make_main_keyboard, MAIN_MENU_TEXT, safe_edit_text
+from bot_xui.helpers  import make_main_keyboard, MAIN_MENU_TEXT, MTPROTO_PROXY_LINK, safe_edit_text, make_proxy_file
 from bot_xui.views    import (
     show_main_menu, show_tariffs, show_configs,
     show_single_config, show_instructions, show_renew_tariffs,
@@ -135,6 +137,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             text = MAIN_MENU_TEXT
+            # Personal web page link
+            from api.db import get_web_token
+            token = get_web_token(tg_id)
+            if token:
+                text += f'\n\n🌐 <a href="https://344988.snk.wtf/my/{token}">Личный кабинет</a> — работает без Telegram'
             if tg_id == ADMIN_TG_ID:
                 mode = "🧪 ВКЛ" if is_test_mode() else "✅ ВЫКЛ"
                 text += f"\n\n⚙️ Тестовый режим: <b>{mode}</b> (/testmode)"
@@ -142,12 +149,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = await _refer_text(context, update.effective_user.id)
-    await update.message.reply_text(text, parse_mode="HTML")
+    text, link = await _refer_text(context, update.effective_user.id)
+    qr = _make_qr(link)
+    await update.message.reply_photo(photo=qr, caption=text, parse_mode="HTML")
 
 
-async def _refer_text(context, tg_id: int) -> str:
-    """Возвращает текст реферальной страницы."""
+def _make_qr(data: str) -> io.BytesIO:
+    """Генерирует QR-код и возвращает PNG в BytesIO."""
+    img = qrcode.make(data, box_size=8, border=2)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    buf.name = "qr.png"
+    return buf
+
+
+async def _refer_text(context, tg_id: int) -> tuple[str, str]:
+    """Возвращает (текст реферальной страницы, ссылку)."""
     bot_info = await context.bot.get_me()
     link     = f"https://t.me/{bot_info.username}?start={tg_id}"
 
@@ -155,15 +173,16 @@ async def _refer_text(context, tg_id: int) -> str:
     subscription     = get_subscription_until(tg_id)
     subscription_str = subscription.strftime("%d.%m.%Y") if subscription else "не активна"
 
-    return (
+    text = (
         f"👥 <b>Пригласите друга</b>\n\n"
         f"Получайте <b>+{REFERRAL_REWARD_DAYS} дня</b> подписки за каждого друга!\n\n"
-        f"Ваша ссылка (нажмите, чтобы скопировать):\n"
+        f"Отсканируйте QR-код или скопируйте ссылку:\n"
         f"<code>{link}</code>\n\n"
         f"Приглашено: <b>{count}</b>"
         + (f"  ·  Заработано: <b>{count * REFERRAL_REWARD_DAYS} дн.</b>" if count else "")
         + f"\n📅 Подписка до: <b>{subscription_str}</b>"
     )
+    return text, link
 
 
 
@@ -655,13 +674,47 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_renew_tariffs(query, context, inbound_id, client_name)
 
     elif data == "referral":
-        text = await _refer_text(context, query.from_user.id)
-        await query.edit_message_text(
-            text,
+        text, link = await _refer_text(context, query.from_user.id)
+        qr = _make_qr(link)
+        await query.message.delete()
+        await context.bot.send_photo(
+            chat_id=query.from_user.id,
+            photo=qr,
+            caption=text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
-            ])
+            ]),
+        )
+
+    elif data == "proxy_file":
+        await query.edit_message_text(
+            "🔗 <b>Прокси для Telegram</b>\n\n"
+            "Нажмите кнопку ниже — прокси подключится автоматически.\n"
+            "Перешлите файл друзьям, у кого не работает Telegram.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚡ Подключить прокси", url=MTPROTO_PROXY_LINK)],
+                [InlineKeyboardButton("📎 Скачать файл", callback_data="proxy_download")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
+            ]),
+        )
+
+    elif data == "proxy_download":
+        proxy = make_proxy_file()
+        await query.message.delete()
+        await context.bot.send_document(
+            chat_id=query.from_user.id,
+            document=proxy,
+            caption=(
+                "📎 <b>Прокси для Telegram</b>\n\n"
+                "Откройте файл — прокси подключится автоматически.\n"
+                "Перешлите файл друзьям, у кого не работает Telegram."
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
+            ]),
         )
 
     elif data == "feedback":

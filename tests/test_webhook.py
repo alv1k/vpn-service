@@ -38,8 +38,8 @@ def test_webhook_rejects_invalid_ip(client):
     assert response.status_code == 403
 
 
-def test_webhook_skips_ip_check_for_test_payment(client):
-    """Тестовый платёж (test_mode=true в metadata) — IP-проверка пропускается."""
+def test_webhook_rejects_test_mode_bypass(client):
+    """test_mode=true в metadata НЕ должен пропускать IP-проверку (CVE fix)."""
     response = client.post("/webhook", json={
         "event": "payment.succeeded",
         "object": {
@@ -48,8 +48,8 @@ def test_webhook_skips_ip_check_for_test_payment(client):
             "metadata": {"test_mode": "true"},
         },
     })
-    # Должен пройти мимо IP-проверки (не 403)
-    assert response.status_code != 403
+    # IP check must ALWAYS be enforced — non-YooKassa IP → 403
+    assert response.status_code == 403
 
 
 @patch("api.webhook.verify_yookassa_ip")
@@ -108,13 +108,14 @@ def test_webhook_unknown_payment(mock_verify, mock_status, client):
 @pytest.mark.asyncio
 @patch("api.webhook.send_telegram_notification", new_callable=AsyncMock)
 @patch("api.webhook.send_telegram_document", new_callable=AsyncMock)
+@patch("api.webhook.sync_expiry")
 @patch("api.webhook.create_vpn_key")
 @patch("api.webhook.get_subscription_until")
 @patch("api.webhook.activate_subscription")
 @patch("api.webhook.get_or_create_user", return_value=1)
 async def test_activation_after_vpn_creation_awg(
     mock_get_user, mock_activate, mock_get_sub, mock_create_key,
-    mock_send_doc, mock_send_notif,
+    mock_sync_expiry, mock_send_doc, mock_send_notif,
 ):
     """activate_subscription must be called AFTER VPN config creation, not before."""
     from api.webhook import process_successful_payment

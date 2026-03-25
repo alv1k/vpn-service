@@ -26,7 +26,7 @@ from api.db import (
     create_vpn_key, set_awg_test_activated, set_vless_test_activated,
     is_awg_test_activated, is_vless_test_activated,
     set_softether_test_activated, is_softether_test_activated,
-    get_keys_by_tg_id,
+    get_keys_by_tg_id, sync_expiry,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,14 +157,19 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
 
         if existing:
             # Extend existing client
-            success = xui.extend_client_expiry(
+            result = xui.extend_client_expiry(
                 existing['inbound_id'],
                 existing['client'],
                 duration_ms,
             )
-            if not success:
+            if not result:
                 logger.error(f"Failed to extend referral VPN for {tg_id}")
                 return None
+
+            # Sync new expiry (result is new_expiry_ms) to MySQL
+            new_expiry_ms = result
+            new_expiry_dt = datetime.fromtimestamp(new_expiry_ms / 1000, tz=timezone.utc)
+            sync_expiry(tg_id, new_expiry_dt)
 
             logger.info(f"Referral: extended VPN for {tg_id} by {days} days")
             return {"action": "extended", "days": days}
@@ -213,6 +218,9 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
             vless_link=vless_link, expires_at=expires_at, vpn_type="vless",
             subscription_link=sub_url,
         )
+
+        # Sync expiry to users.subscription_until + vpn_keys
+        sync_expiry(tg_id, expires_at)
 
         logger.info(f"Referral: created new VPN for {tg_id}, {days} days")
         return {"action": "created", "days": days, "vless_link": vless_link, "sub_url": sub_url}

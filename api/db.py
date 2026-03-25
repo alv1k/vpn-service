@@ -338,6 +338,26 @@ def update_payment_status(payment_id: str, status: str):
     )
 
 
+def claim_payment_for_processing(payment_id: str) -> bool:
+    """Atomically claim a pending payment for processing.
+
+    Uses UPDATE ... WHERE status='pending' so only one concurrent call wins.
+    Returns True if this call claimed it, False if already claimed/processed.
+    """
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            "UPDATE payments SET status = 'paid' WHERE payment_id = %s AND status = 'pending'",
+            (payment_id,),
+        )
+        db.commit()
+        return cursor.rowcount > 0
+    finally:
+        cursor.close()
+        db.close()
+
+
 def is_payment_processed(payment_id: str) -> bool:
     row = execute_query(
         "SELECT status FROM payments WHERE payment_id = %s",
@@ -439,6 +459,19 @@ def deactivate_key_by_payment(payment_id: str):
         (payment_id,)
     )
 
+def sync_expiry(tg_id: int, expires_at_utc: datetime):
+    """Sync expiry across users.subscription_until and all active vpn_keys.expires_at."""
+    # Ensure naive UTC datetime for MySQL
+    if expires_at_utc.tzinfo is not None:
+        expires_at_utc = expires_at_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    upsert_user_subscription(tg_id, expires_at_utc)
+    execute_query(
+        "UPDATE vpn_keys SET expires_at = %s WHERE tg_id = %s AND expires_at > NOW()",
+        (expires_at_utc, tg_id)
+    )
+    logger.info(f"Synced expiry for tg_id={tg_id} to {expires_at_utc}")
+
+
 def update_vless_link(tg_id: int, vless_link: str):
     """Обновить vless_link для всех VLESS-ключей пользователя."""
     execute_query(
@@ -499,14 +532,25 @@ def validate_promocode(code: str, tg_id: int) -> tuple[dict | None, str | None]:
 
 
 def use_promocode(promo_id: int, tg_id: int):
-    execute_query(
-        "INSERT INTO promocode_usages (promocode_id, tg_id) VALUES (%s, %s)",
-        (promo_id, tg_id)
-    )
-    execute_query(
-        "UPDATE promocodes SET used_count = used_count + 1 WHERE id = %s",
-        (promo_id,)
-    )
+    """Atomically record promo usage and increment counter in a single transaction."""
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO promocode_usages (promocode_id, tg_id) VALUES (%s, %s)",
+            (promo_id, tg_id),
+        )
+        cursor.execute(
+            "UPDATE promocodes SET used_count = used_count + 1 WHERE id = %s",
+            (promo_id,),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cursor.close()
+        db.close()
 
 
 def get_user_promo_usage_count(promo_id: int, tg_id: int) -> int:
