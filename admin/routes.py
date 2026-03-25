@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from sse_starlette.sse import EventSourceResponse
 
@@ -24,7 +24,23 @@ from awg_api.config import (
 
 logger = logging.getLogger("admin")
 
-router = APIRouter(prefix="/api/admin")
+SESSION_MAX_AGE = 86400  # 24h
+
+
+def _require_admin_session(request: Request):
+    """Verify connect.sid session cookie — reuses AWG API session store."""
+    from awg_api.main import _sessions
+    token = request.cookies.get("connect.sid")
+    if not token or token not in _sessions:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    from datetime import timezone
+    created = _sessions[token]
+    if datetime.now(timezone.utc).timestamp() - created > SESSION_MAX_AGE:
+        del _sessions[token]
+        raise HTTPException(status_code=401, detail="Session expired")
+
+
+router = APIRouter(prefix="/api/admin", dependencies=[Depends(_require_admin_session)])
 
 # XUI client (lazy init)
 _xui = None
@@ -667,7 +683,9 @@ async def user_payments(tg_id: int):
 
 def get_admin_page_route():
     """Return the admin page endpoint for mounting in the app."""
-    async def admin_page():
+    async def admin_page(request: Request):
+        # Require valid session to serve admin page (it embeds the API password)
+        _require_admin_session(request)
         html_path = os.path.join(os.path.dirname(__file__), "static", "admin.html")
         with open(html_path) as f:
             html = f.read()

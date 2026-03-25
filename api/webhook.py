@@ -21,6 +21,7 @@ from api.subscriptions import activate_subscription
 from api.db import (
     update_payment_status,
     is_payment_processed,
+    claim_payment_for_processing,
     get_payment_status,
     get_payment_by_id,
     get_or_create_user,
@@ -29,6 +30,7 @@ from api.db import (
     get_user_email,
     deactivate_key_by_payment,
     get_user_by_web_token,
+    sync_expiry,
 )
 from api.wireguard import AmneziaWGClient
 from bot_xui.tariffs import TARIFFS
@@ -64,12 +66,8 @@ YOO_IPS = [
 logger.info("WEBHOOK APP STARTED")
 
 
-def verify_yookassa_ip(request: Request, is_test_payment: bool = False):
-    """Проверка IP адреса YooKassa. Для тестовых платежей проверка пропускается."""
-    if is_test_payment:
-        logger.info(f"[TEST PAYMENT] IP check skipped for {request.client.host if request.client else 'unknown'}")
-        return
-
+def verify_yookassa_ip(request: Request):
+    """Проверка IP адреса YooKassa. IP check is ALWAYS enforced."""
     if not request.client:
         raise HTTPException(status_code=403, detail="No client IP")
 
@@ -344,6 +342,30 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         subscription_until = get_subscription_until(tg_id)
         logger.info("✅ Subscription activated")
 
+        # ===== 6.5. Sync expiry across all stores =====
+        # For VLESS: 3x-ui expiry was calculated from now(), but activate_subscription
+        # calculates from paid_at — they can diverge. Use subscription_until as the
+        # single source of truth and re-sync 3x-ui.
+        if vpn_type == "vless" and subscription_until:
+            sub_until_ms = int(subscription_until.replace(tzinfo=timezone.utc).timestamp() * 1000) if subscription_until.tzinfo is None else int(subscription_until.timestamp() * 1000)
+            existing_xui = xui.get_client_by_tg_id(tg_id)
+            if existing_xui:
+                updated_client = {**existing_xui['client'], 'expiryTime': sub_until_ms}
+                if not updated_client.get('flow'):
+                    updated_client['flow'] = 'xtls-rprx-vision'
+                import json as _json
+                payload = {
+                    "id": existing_xui['inbound_id'],
+                    "settings": _json.dumps({"clients": [updated_client]})
+                }
+                xui._request(
+                    "POST",
+                    f"{xui.host}/panel/api/inbounds/updateClient/{existing_xui['client']['id']}",
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                )
+                logger.info(f"Re-synced 3x-ui expiry to {subscription_until}")
+
         # ===== 7. Сохранение в БД =====
         create_vpn_key(
             tg_id=tg_id,
@@ -358,6 +380,10 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             subscription_link=sub_url,
             vpn_file=se_data.get("vpn_file") if vpn_type == "softether" else None,
         )
+
+        # Sync expiry to vpn_keys for existing keys too
+        if subscription_until:
+            sync_expiry(tg_id, subscription_until if subscription_until.tzinfo else subscription_until.replace(tzinfo=timezone.utc))
 
         logger.info("💾 VPN config saved to DB")
 
@@ -592,13 +618,12 @@ async def yookassa_webhook(request: Request):
     tg_id = metadata.get("tg_id")
     tariff = metadata.get("tariff", "default")
     vpn_type = metadata.get("vpn_type")
-    is_test_payment = metadata.get("test_mode") == "true"
     is_web_order = metadata.get("source") == "web"
     web_email = metadata.get("email", "")
     web_token = metadata.get("web_token", "")
 
-    # ===== 3. Проверка IP (пропускается для тестовых платежей) =====
-    verify_yookassa_ip(request, is_test_payment=is_test_payment)
+    # ===== 3. Проверка IP (ALWAYS enforced) =====
+    verify_yookassa_ip(request)
     
     if not payment_id:
         logger.warning("⚠️ No payment_id in webhook")
@@ -666,19 +691,32 @@ async def yookassa_webhook(request: Request):
     
     # ===== 9. ⭐ ОБРАБОТКА УСПЕШНОГО ПЛАТЕЖА ⭐ =====
     if current_status == "pending" and new_status == "paid":
+        # Atomically claim payment — only one concurrent webhook wins
+        if not claim_payment_for_processing(payment_id):
+            logger.info(f"🔁 Payment already claimed by another request: {payment_id}")
+            return Response(status_code=200)
+
+        # Verify paid amount matches tariff price
+        paid_amount = float(payment_data.get("amount") or 0)
+        tariff_info = TARIFFS.get(tariff, {})
+        expected_price = tariff_info.get("price")
+        if expected_price is not None and paid_amount < expected_price:
+            logger.error(f"❌ Amount mismatch: paid={paid_amount}, expected={expected_price}, payment={payment_id}")
+            update_payment_status(payment_id, "pending")  # revert claim
+            return Response(status_code=400)
+
         # Для веб-заказов: привязать tg_id из users если есть
         if is_web_order and web_token:
             web_user = get_user_by_web_token(web_token) if web_token else None
             if web_user:
                 tg_id = int(web_user.get('tg_id') or 0)
-                # Обновить tg_id в payment_data для process_successful_payment
                 payment_data = {**payment_data, 'tg_id': tg_id}
 
         success = await process_successful_payment(payment_id, payment_data, vpn_type)
-        
+
         if not success:
             logger.error(f"❌ Failed to process payment {payment_id}")
-            # Не обновляем статус — YooKassa повторит webhook
+            update_payment_status(payment_id, "pending")  # revert so YooKassa retries
             if tg_id:
                 await send_telegram_notification(
                     tg_id,
@@ -687,15 +725,14 @@ async def yookassa_webhook(request: Request):
                     f"Мы уже знаем о проблеме, конфиг будет создан автоматически."
                 )
             return Response(status_code=500)  # YooKassa повторит запрос
-    
-    # ===== 10. Проверка идемпотентности =====
-    if is_payment_processed(payment_id):
-        logger.info(f"🔁 Payment already marked as processed: {payment_id}")
-        return Response(status_code=200)
-    
-    # ===== 11. Обновление статуса в БД =====
-    update_payment_status(payment_id, new_status)
-    logger.info(f"💾 Payment status updated: {payment_id} -> {new_status}")
+
+        logger.info(f"💾 Payment claimed and processed: {payment_id} -> paid")
+    elif new_status == "canceled":
+        # ===== 10. Обновление статуса отмены =====
+        update_payment_status(payment_id, new_status)
+        logger.info(f"💾 Payment status updated: {payment_id} -> {new_status}")
+    else:
+        logger.info(f"ℹ️ Ignoring status transition: {payment_id} {current_status} -> {new_status}")
     
     # ===== 12. Уведомление пользователя о статусе =====
     if tg_id:
@@ -747,25 +784,5 @@ async def root():
     return HTMLResponse(html)
 
 
-@app.post("/test/payment/{payment_id}")
-async def test_payment_processing(payment_id: str):
-    """
-    🧪 Тестовый endpoint для проверки обработки платежа
-    НЕ ИСПОЛЬЗОВАТЬ В ПРОДАКШЕНЕ!
-    
-    Usage: POST /test/payment/your_payment_id
-    """
-    logger.warning(f"⚠️ TEST endpoint called for payment: {payment_id}")
-    
-    payment_data = get_payment_by_id(payment_id)
-    if not payment_data:
-        return {"error": "Payment not found"}
-    
-    vpn_type = payment_data.get("vpn_type", "vless")
-    success = await process_successful_payment(payment_id, payment_data, vpn_type)
-
-    return {
-        "payment_id": payment_id,
-        "success": success,
-        "message": "Payment processed" if success else "Processing failed"
-    }
+## TEST ENDPOINT REMOVED — was accessible without authentication.
+## Use admin panel or direct DB queries for payment debugging.

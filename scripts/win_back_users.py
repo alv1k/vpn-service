@@ -206,6 +206,7 @@ DELAY = {
     'payment_no_config': 0,   # сразу
     'panel_db_mismatch': 0,   # сразу
     'multi_config_partial': 7,# 7 дней без трафика
+    'never_activated': 1,     # 1 день после регистрации
 }
 
 
@@ -221,6 +222,7 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
         'multi_config_partial': [],# несколько конфигов, один тип не используется
         'payment_no_config': [],   # оплатил, но конфиг не выдан
         'panel_db_mismatch': [],   # активен в БД, деактивирован в панели
+        'never_activated': [],     # зарегистрировался, тест не активировал, ключей нет
     }
 
     for user in users:
@@ -256,6 +258,18 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
             results['payment_no_config'].append(info)
             continue
 
+        # Сценарий: Зарегистрировался, тест не активировал, ключей нет
+        test_used = (
+            user.get('test_vless_activated') or
+            user.get('test_awg_activated') or
+            user.get('test_softether_activated')
+        )
+        if not user_keys and not test_used and not user_payments:
+            reg_age = (NOW - user['created_at']).days if user.get('created_at') else 0
+            if reg_age >= DELAY['never_activated']:
+                results['never_activated'].append({**info, 'reg_days': reg_age})
+            continue
+
         # Нет ключей — пропускаем
         if not user_keys:
             continue
@@ -284,11 +298,6 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
             continue
 
         # Сценарий: Тест использован, не купил — через 1 день после окончания теста
-        test_used = (
-            user.get('test_vless_activated') or
-            user.get('test_awg_activated') or
-            user.get('test_softether_activated')
-        )
         if test_used and not user_payments and not has_active_key:
             days_since_test = _test_expired_days(user_keys)
             if total_bytes > 0 and days_since_test >= DELAY['test_no_purchase']:
@@ -367,6 +376,12 @@ MESSAGES = {
         "Мы уже работаем над исправлением.\n\n"
         "Если VPN не подключается — напишите в поддержку 💬"
     ),
+    'never_activated': (
+        "👋 Привет!\n\n"
+        "Вы зарегистрировались, но ещё не попробовали VPN.\n"
+        "Активируйте <b>бесплатный тест</b> — это займёт пару минут!\n\n"
+        "🔒 Безопасный интернет без ограничений."
+    ),
 }
 
 
@@ -389,6 +404,10 @@ def get_buttons_for_scenario(scenario):
     elif scenario == 'payment_no_config':
         return [
             [{"text": "💬 Написать нам", "url": "https://t.me/tiin_service_bot"}],
+        ]
+    elif scenario == 'never_activated':
+        return [
+            [{"text": "🎁 Активировать тест", "callback_data": "test_period"}],
         ]
     return []
 
@@ -417,6 +436,8 @@ def print_report(results):
                 extra = f" | истёк {u['days_expired']}д назад"
             if 'days_since_test' in u:
                 extra += f" | тест {u['days_since_test']}д назад"
+            if 'reg_days' in u:
+                extra += f" | рег {u['reg_days']}д назад"
             print(
                 f"  tg_id={u['tg_id']:<12} "
                 f"name={u['name']:<15} "
