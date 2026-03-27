@@ -22,12 +22,12 @@ def make_back_keyboard(label: str = "◀️ В меню", data: str = "back_to_m
 
 
 MTPROTO_PROXY_LINK = (
-    "tg://proxy?server=91.132.161.112&port=8443"
+    "tg://proxy?server=tiinservice.ru&port=8443"
     "&secret=7tZhp-UUviXSuUagLCZgx8UzNDQ5ODguc25rLnd0Zg"
 )
 
 MTPROTO_HTTPS_LINK = (
-    "https://t.me/proxy?server=91.132.161.112&port=8443"
+    "https://t.me/proxy?server=tiinservice.ru&port=8443"
     "&secret=7tZhp-UUviXSuUagLCZgx8UzNDQ5ODguc25rLnd0Zg"
 )
 

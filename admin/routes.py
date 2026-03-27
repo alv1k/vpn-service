@@ -370,6 +370,9 @@ async def dashboard():
     except Exception as e:
         logger.warning(f"SoftEther stats error: {e}")
 
+    # MTProto Proxy stats
+    proxy_metrics = _parse_mtg_metrics()
+
     return {
         "awg": {
             "clients_total": len(awg_clients),
@@ -379,6 +382,15 @@ async def dashboard():
         "softether": {
             "users_total": len(se_users),
             "running": se_running,
+        },
+        "proxy": {
+            "connections": proxy_metrics["client_connections"],
+            "running": proxy_metrics["running"],
+            "traffic_in": proxy_metrics["traffic_from_client"],
+            "traffic_out": proxy_metrics["traffic_to_client"],
+            "traffic_in_fmt": _fmt_bytes(proxy_metrics["traffic_from_client"]),
+            "traffic_out_fmt": _fmt_bytes(proxy_metrics["traffic_to_client"]),
+            "ping_ms": _ping_telegram_dc(),
         },
         "xui": {
             "inbounds": xui_data["inbounds"],
@@ -474,6 +486,29 @@ async def xui_inbound_clients(inbound_id: int):
             settings = json.loads(ib.get("settings", "{}"))
             clients = settings.get("clients", [])
 
+            # Lookup first_name via vpn_keys → users
+            emails = [c.get("email", "") for c in clients]
+            name_map: dict[str, str] = {}  # email -> first_name
+            tgid_map: dict[str, int] = {}  # email -> tg_id
+            if emails:
+                try:
+                    conn = awg_db._get_conn()
+                    cur = conn.cursor(dictionary=True)
+                    ph = ",".join(["%s"] * len(emails))
+                    cur.execute(
+                        f"SELECT k.client_name, u.first_name, u.tg_id "
+                        f"FROM vpn_keys k JOIN users u ON k.tg_id = u.tg_id "
+                        f"WHERE k.client_name IN ({ph})",
+                        tuple(emails),
+                    )
+                    for r in cur.fetchall():
+                        name_map[r["client_name"]] = r.get("first_name") or ""
+                        tgid_map[r["client_name"]] = r.get("tg_id")
+                    cur.close()
+                    conn.close()
+                except Exception as e:
+                    logger.warning(f"VLESS first_name lookup: {e}")
+
             result = []
             for c in clients:
                 email = c.get("email", "")
@@ -509,6 +544,8 @@ async def xui_inbound_clients(inbound_id: int):
                     "expiry_ts": expiry,
                     "last_online": last_str,
                     "limitIp": c.get("limitIp", 0),
+                    "first_name": name_map.get(email, ""),
+                    "tg_id_db": tgid_map.get(email),
                 })
             return result
         return JSONResponse({"error": "Inbound not found"}, status_code=404)
@@ -635,20 +672,304 @@ async def softether_set_expiry(username: str, request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+def _ping_telegram_dc() -> float | None:
+    """Ping Telegram DC2 and return latency in ms."""
+    try:
+        r = subprocess.run(
+            ["ping", "-c", "1", "-W", "2", "149.154.167.51"],
+            capture_output=True, text=True, timeout=5,
+        )
+        match = re.search(r"time=([\d.]+)", r.stdout)
+        if match:
+            return round(float(match.group(1)), 1)
+    except Exception:
+        pass
+    return None
+
+
+def _parse_mtg_metrics() -> dict:
+    """Fetch and parse mtg Prometheus metrics."""
+    import urllib.request
+    result = {
+        "running": False,
+        "client_connections": 0,
+        "telegram_connections": 0,
+        "replay_attacks": 0,
+        "domain_fronting": 0,
+        "traffic_from_client": 0,
+        "traffic_to_client": 0,
+        "dc_details": [],
+    }
+    try:
+        resp = urllib.request.urlopen("http://127.0.0.1:3129/metrics", timeout=3)
+        text = resp.read().decode()
+        result["running"] = True
+
+        dc_map: dict[str, dict] = {}  # dc -> {ip, connections, from, to}
+
+        for line in text.split("\n"):
+            if line.startswith("#") or not line.strip():
+                continue
+            if line.startswith("mtg_client_connections"):
+                val = line.split("} ")[-1] if "} " in line else "0"
+                result["client_connections"] += int(float(val))
+            elif line.startswith("mtg_telegram_connections"):
+                val = line.split("} ")[-1] if "} " in line else "0"
+                count = int(float(val))
+                result["telegram_connections"] += count
+                # Parse DC details
+                dc_match = re.search(r'dc="(\d+)"', line)
+                ip_match = re.search(r'telegram_ip="([^"]+)"', line)
+                if dc_match:
+                    dc = dc_match.group(1)
+                    dc_map.setdefault(dc, {"dc": dc, "ip": ip_match.group(1) if ip_match else "?",
+                                           "connections": 0, "traffic_from_client": 0, "traffic_to_client": 0})
+                    dc_map[dc]["connections"] = count
+            elif line.startswith("mtg_replay_attacks"):
+                val = line.split()[-1]
+                result["replay_attacks"] = int(float(val))
+            elif line.startswith("mtg_domain_fronting"):
+                val = line.split()[-1]
+                result["domain_fronting"] = int(float(val))
+            elif line.startswith("mtg_telegram_traffic"):
+                val = line.split("} ")[-1] if "} " in line else "0"
+                traffic = int(float(val))
+                dc_match = re.search(r'dc="(\d+)"', line)
+                ip_match = re.search(r'telegram_ip="([^"]+)"', line)
+                if dc_match:
+                    dc = dc_match.group(1)
+                    dc_map.setdefault(dc, {"dc": dc, "ip": ip_match.group(1) if ip_match else "?",
+                                           "connections": 0, "traffic_from_client": 0, "traffic_to_client": 0})
+                if 'direction="from_client"' in line:
+                    result["traffic_from_client"] += traffic
+                    if dc_match:
+                        dc_map[dc_match.group(1)]["traffic_from_client"] = traffic
+                elif 'direction="to_client"' in line:
+                    result["traffic_to_client"] += traffic
+                    if dc_match:
+                        dc_map[dc_match.group(1)]["traffic_to_client"] = traffic
+
+        result["dc_details"] = list(dc_map.values())
+    except Exception as e:
+        logger.warning(f"MTProto metrics parse error: {e}")
+    return result
+
+
+@router.get("/proxy")
+async def proxy_stats():
+    return _parse_mtg_metrics()
+
+
 # ── New Users Today ───────────────────────────────────────────────────────────
 
 @router.get("/users/today")
 async def users_today():
     rows = admin_db.new_users_today()
-    return _clean(rows)
+    cleaned = _clean(rows)
+
+    # Get client_names for these users from vpn_keys
+    tg_ids = [r["tg_id"] for r in cleaned if r.get("tg_id")]
+    user_ids = [r["id"] for r in cleaned if not r.get("tg_id") and r.get("id")]
+
+    if not tg_ids and not user_ids:
+        return cleaned
+
+    conn = awg_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+    conditions = []
+    params: list = []
+    if tg_ids:
+        conditions.append(f"tg_id IN ({','.join(['%s'] * len(tg_ids))})")
+        params.extend(tg_ids)
+    if user_ids:
+        conditions.append(f"user_id IN ({','.join(['%s'] * len(user_ids))})")
+        params.extend(user_ids)
+    cur.execute(
+        f"SELECT tg_id, user_id, client_name, vpn_type FROM vpn_keys WHERE {' OR '.join(conditions)}",
+        tuple(params),
+    )
+    key_rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    # tg_id -> list of client_names (for TG users)
+    tg_keys: dict[int, list[dict]] = {}
+    for kr in key_rows:
+        if kr.get("tg_id") and kr["tg_id"] != 0:
+            tg_keys.setdefault(kr["tg_id"], []).append(kr)
+
+    # user_id -> list of client_names (for web users)
+    uid_keys: dict[int, list[dict]] = {}
+    for kr in key_rows:
+        if kr.get("user_id"):
+            uid_keys.setdefault(kr["user_id"], []).append(kr)
+
+    # Get VLESS traffic from x-ui
+    vless_traffic: dict[str, dict] = {}  # email -> {up, down}
+    try:
+        xui = _get_xui()
+        for ib in xui.get_inbounds():
+            for cs in ib.get("clientStats", []):
+                email = cs.get("email", "")
+                if email in vless_traffic:
+                    vless_traffic[email]["up"] += cs.get("up", 0)
+                    vless_traffic[email]["down"] += cs.get("down", 0)
+                else:
+                    vless_traffic[email] = {"up": cs.get("up", 0), "down": cs.get("down", 0)}
+    except Exception as e:
+        logger.warning(f"VLESS traffic fetch for new users: {e}")
+
+    # Get AWG traffic from awg show dump
+    awg_traffic: dict[str, dict] = {}  # name -> {rx, tx}
+    try:
+        awg_clients = awg_db.list_clients()
+        pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
+        result = subprocess.run(
+            ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.strip().split("\n")[1:]:
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            name = pub_to_name.get(parts[0], "")
+            if name:
+                rx = int(parts[5]) if parts[5].isdigit() else 0
+                tx = int(parts[6]) if parts[6].isdigit() else 0
+                awg_traffic[name] = {"rx": rx, "tx": tx}
+    except Exception as e:
+        logger.warning(f"AWG traffic fetch for new users: {e}")
+
+    # Get online users for speed
+    online = _get_online_users()
+    online_speed: dict[str, float] = {u["name"]: u.get("speed_mbps", 0) for u in online}
+
+    # Enrich each user
+    for u in cleaned:
+        total_up = 0
+        total_down = 0
+        speed = 0.0
+        keys = tg_keys.get(u["tg_id"], []) if u.get("tg_id") else uid_keys.get(u.get("id"), [])
+        for k in keys:
+            cn = k["client_name"]
+            if k["vpn_type"] == "vless" and cn in vless_traffic:
+                total_up += vless_traffic[cn]["up"]
+                total_down += vless_traffic[cn]["down"]
+            elif k["vpn_type"] == "awg" and cn in awg_traffic:
+                total_up += awg_traffic[cn]["tx"]
+                total_down += awg_traffic[cn]["rx"]
+            if cn in online_speed:
+                speed = max(speed, online_speed[cn])
+        u["traffic_up"] = total_up
+        u["traffic_down"] = total_down
+        u["traffic_up_fmt"] = _fmt_bytes(total_up)
+        u["traffic_down_fmt"] = _fmt_bytes(total_down)
+        u["speed_mbps"] = round(speed, 1)
+
+    return cleaned
+
+
+# ── Site Analytics ─────────────────────────────────────────────────────────────
+
+@router.get("/site-stats")
+async def site_stats():
+    from api.db import execute_query
+    rows = execute_query(
+        "SELECT event_type, COUNT(*) AS cnt FROM site_events GROUP BY event_type",
+        fetch='all',
+    )
+    stats = {r["event_type"]: r["cnt"] for r in rows}
+
+    # Unique visitors = distinct visitor_id for 'visit' events
+    uv = execute_query(
+        "SELECT COUNT(DISTINCT visitor_id) AS cnt FROM site_events WHERE event_type='visit'",
+        fetch='one',
+    )
+    stats["unique_visitors"] = uv["cnt"] if uv else 0
+
+    # Today counts (UTC+9)
+    today_rows = execute_query(
+        """SELECT event_type, COUNT(*) AS cnt FROM site_events
+           WHERE DATE(CONVERT_TZ(created_at, '+00:00', '+09:00'))
+               = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+09:00'))
+           GROUP BY event_type""",
+        fetch='all',
+    )
+    today = {r["event_type"]: r["cnt"] for r in today_rows}
+
+    uv_today = execute_query(
+        """SELECT COUNT(DISTINCT visitor_id) AS cnt FROM site_events
+           WHERE event_type='visit'
+           AND DATE(CONVERT_TZ(created_at, '+00:00', '+09:00'))
+             = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+09:00'))""",
+        fetch='one',
+    )
+    today["unique_visitors"] = uv_today["cnt"] if uv_today else 0
+
+    return {"total": stats, "today": today}
+
+
+# ── Email Stats ───────────────────────────────────────────────────────────────
+
+@router.get("/email-stats")
+async def email_stats():
+    from api.db import execute_query
+
+    # Total sent / opened from email_opens
+    totals = execute_query(
+        "SELECT COUNT(*) AS total, SUM(opened_at IS NOT NULL) AS opened FROM email_opens",
+        fetch='one',
+    )
+    total_sent = totals["total"] if totals else 0
+    total_opened = int(totals["opened"] or 0) if totals else 0
+
+    # Today's support messages (from site contact form)
+    today_support = execute_query(
+        """SELECT COUNT(*) AS cnt FROM auth_codes
+           WHERE channel = 'email'
+           AND DATE(CONVERT_TZ(created_at, '+00:00', '+09:00'))
+             = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+09:00'))""",
+        fetch='one',
+    )
+
+    # Recent tracking entries (convert CET → UTC+9)
+    recent = execute_query(
+        """SELECT email, campaign,
+           CONVERT_TZ(opened_at, '+01:00', '+09:00') AS opened_at,
+           CONVERT_TZ(created_at, '+01:00', '+09:00') AS created_at
+           FROM email_opens ORDER BY created_at DESC LIMIT 20""",
+        fetch='all',
+    )
+
+    return {
+        "total_sent": total_sent,
+        "total_opened": total_opened,
+        "today_codes": today_support["cnt"] if today_support else 0,
+        "recent": _clean(recent or []),
+    }
 
 
 # ── Winback Log ───────────────────────────────────────────────────────────────
 
+_WINBACK_MESSAGES = {
+    'zero_traffic': "👋 Привет!\nМы заметили, что вы ещё не подключились к VPN. Нужна помощь с настройкой?\n📱 Быстрый старт:\n1️⃣ Нажмите Мои конфиги\n2️⃣ Скопируйте ссылку подписки\n3️⃣ Вставьте в приложение (Happ, Hiddify, Streisand)\nЕсли что-то не получается — напишите нам 💬",
+    'low_traffic': "👋 Привет!\nПохоже, VPN подключение не заработало как нужно. Мы можем помочь!\nПопробуйте:\n• Обновите ссылку подписки\n• Используйте Happ или Hiddify\n• Включите/выключите VPN заново\nЕсли не помогло — напишите в поддержку 💬",
+    'expired_fresh': "⏰ Ваша подписка недавно истекла.\nПродлите сейчас и получите бесперебойный доступ к VPN!\n💡 Чем длиннее период — тем выгоднее цена за день.",
+    'expired_old': "👋 Давно не виделись!\nМы обновили сервис — стало быстрее и стабильнее.\nВозвращайтесь — будем рады! 🎁",
+    'test_no_purchase': "👋 Вы пробовали наш тестовый период.\nГотовы к полному доступу? Выберите тариф — подписка с доступом ко всем сайтам 🌐",
+    'test_no_connect': "👋 Вы активировали тестовый период, но так и не подключились.\nМы продлили вам доступ на 1 день — попробуйте прямо сейчас!\n📱 Быстрый старт:\n1️⃣ Нажмите Мои конфиги\n2️⃣ Скопируйте ссылку подписки\n3️⃣ Вставьте в приложение\nЕсли что-то не получается — напишите нам 💬",
+    'payment_no_config': "⚠️ Мы обнаружили, что ваш платёж был успешным, но VPN конфиг не был создан.\nМы уже разбираемся с этим. Если вопрос не решится — напишите в поддержку 💬",
+    'panel_db_mismatch': "⚠️ Обнаружена проблема с вашим конфигом. Мы уже работаем над исправлением.\nЕсли VPN не подключается — напишите в поддержку 💬",
+    'never_activated': "👋 Привет!\nВы зарегистрировались, но ещё не попробовали VPN.\nАктивируйте бесплатный тест — это займёт пару минут!\n🔒 Безопасный интернет без ограничений.",
+}
+
+
 @router.get("/winback")
 async def winback_log():
     rows = admin_db.list_winback_log()
-    return _clean(rows)
+    cleaned = _clean(rows)
+    for r in cleaned:
+        r["message"] = _WINBACK_MESSAGES.get(r.get("scenario", ""), "")
+    return cleaned
 
 
 # ── Promocodes ────────────────────────────────────────────────────────────────
@@ -684,8 +1005,8 @@ async def user_payments(tg_id: int):
 def get_admin_page_route():
     """Return the admin page endpoint for mounting in the app."""
     async def admin_page(request: Request):
-        # Require valid session to serve admin page (it embeds the API password)
-        _require_admin_session(request)
+        # nginx auth_basic already protects this path — skip session check
+        # so the page can load and create its own session via POST /api/session
         html_path = os.path.join(os.path.dirname(__file__), "static", "admin.html")
         with open(html_path) as f:
             html = f.read()

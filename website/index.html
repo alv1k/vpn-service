@@ -127,7 +127,22 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
         </div>
         <div class="promo-msg" id="promoMsg"></div>
         <div class="total">Итого: <span class="old-price" id="oldPrice" style="display:none"></span><span class="amount" id="totalAmount">—</span></div>
+
+        <!-- Email verification -->
+        <div id="codeSection" style="display:none;margin-top:.8rem">
+            <div style="color:#888;font-size:.85rem;text-align:center;margin-bottom:.5rem">
+                Код отправлен на <b id="codeEmailDisplay" style="color:#a78bfa"></b>
+            </div>
+            <div class="input-wrap">
+                <input type="text" id="codeInput" placeholder="Код из письма" maxlength="6"
+                       style="text-align:center;letter-spacing:4px;font-size:1.1rem" autocomplete="one-time-code">
+            </div>
+        </div>
+
         <button class="pay-btn" id="payBtn" disabled>Перейти к оплате</button>
+        <div id="changeEmail" style="display:none;text-align:center;margin-top:.5rem">
+            <a href="javascript:resetCode()" style="color:#888;font-size:.8rem;text-decoration:none">Изменить email</a>
+        </div>
     </div>
 
     <div class="footer">
@@ -259,13 +274,28 @@ function applyPromo() {
     });
 }
 
+var codeStage = false; // false = need to send code, true = code sent, waiting for input
+
 function checkForm() {
     var email = document.getElementById('emailInput').value.trim();
     var valid = email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/) && selectedTariff;
     document.getElementById('payBtn').disabled = !valid;
 }
 
-document.getElementById('emailInput').addEventListener('input', checkForm);
+function resetCode() {
+    codeStage = false;
+    document.getElementById('codeSection').style.display = 'none';
+    document.getElementById('changeEmail').style.display = 'none';
+    document.getElementById('codeInput').value = '';
+    document.getElementById('emailInput').disabled = false;
+    document.getElementById('payBtn').textContent = 'Перейти к оплате';
+    checkForm();
+}
+
+document.getElementById('emailInput').addEventListener('input', function() {
+    if (codeStage) resetCode();
+    checkForm();
+});
 
 document.getElementById('payBtn').addEventListener('click', function() {
     var email = document.getElementById('emailInput').value.trim();
@@ -274,30 +304,72 @@ document.getElementById('payBtn').addEventListener('click', function() {
         return;
     }
     document.getElementById('emailError').style.display = 'none';
+    var btn = document.getElementById('payBtn');
 
-    showStep(2);
+    if (!codeStage) {
+        // Step 1: send verification code
+        btn.disabled = true;
+        btn.textContent = 'Отправка кода...';
 
-    fetch(API + '/order', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email, tariff_id: selectedTariff.id, promo_code: appliedPromo ? appliedPromo.code : null })
-    })
-    .then(function(r) { return r.json() })
-    .then(function(data) {
-        if (data.payment_url) {
-            // Save payment_id for polling
-            sessionStorage.setItem('payment_id', data.payment_id);
-            // Redirect to YooKassa
-            window.location.href = data.payment_url;
-        } else {
-            alert('Ошибка создания платежа');
+        fetch(API + '/order/send-code', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email })
+        })
+        .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
+        .then(function(res) {
+            if (res.data.ok) {
+                codeStage = true;
+                document.getElementById('codeEmailDisplay').textContent = email;
+                document.getElementById('codeSection').style.display = 'block';
+                document.getElementById('changeEmail').style.display = 'block';
+                document.getElementById('emailInput').disabled = true;
+                btn.textContent = 'Подтвердить и оплатить';
+                btn.disabled = false;
+                document.getElementById('codeInput').focus();
+            } else {
+                alert(res.data.detail || res.data.message || 'Ошибка отправки кода');
+                btn.textContent = 'Перейти к оплате';
+                btn.disabled = false;
+            }
+        })
+        .catch(function() {
+            alert('Ошибка соединения');
+            btn.textContent = 'Перейти к оплате';
+            btn.disabled = false;
+        });
+    } else {
+        // Step 2: verify code and create order
+        var code = document.getElementById('codeInput').value.trim();
+        if (!code) { alert('Введите код из письма'); return; }
+
+        showStep(2);
+
+        fetch(API + '/order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                email: email,
+                tariff_id: selectedTariff.id,
+                code: code,
+                promo_code: appliedPromo ? appliedPromo.code : null
+            })
+        })
+        .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
+        .then(function(res) {
+            if (res.data.payment_url) {
+                sessionStorage.setItem('payment_id', res.data.payment_id);
+                window.location.href = res.data.payment_url;
+            } else {
+                showStep(1);
+                alert(res.data.detail || res.data.message || 'Ошибка создания платежа');
+            }
+        })
+        .catch(function() {
             showStep(1);
-        }
-    })
-    .catch(function(err) {
-        alert('Ошибка соединения');
-        showStep(1);
-    });
+            alert('Ошибка соединения');
+        });
+    }
 });
 
 // On page load: check if returning from payment

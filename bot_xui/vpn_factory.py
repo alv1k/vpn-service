@@ -341,8 +341,16 @@ async def handle_test_vless(query, xui: XUIClient):
         set_vless_test_activated(tg_id)
 
         await query.message.reply_text(
-            "Выберите действие:",
+            "⚙️ <b>Важно для пользователей Happ:</b>\n\n"
+            "Чтобы YouTube, Instagram и другие заблокированные сайты "
+            "открывались через VPN, настройте маршрутизацию:\n\n"
+            "1. Откройте ссылку ниже на телефоне\n"
+            "2. В Happ: <b>Настройки</b> → <b>Настройки туннеля</b> → "
+            "<b>Маршрутизация</b> → выберите <b>Tiin Split Rules</b>\n"
+            "3. Переподключите VPN",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📲 Настроить маршрутизацию", url="https://344988.snk.wtf/happ-routing")],
                 [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data="instructions")],
                 [InlineKeyboardButton("◀️ В меню",              callback_data="back_to_menu")],
             ]),

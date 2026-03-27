@@ -73,7 +73,7 @@ def test_set_user_expiry_success(mock_run):
     assert result is True
     args = mock_run.call_args[0]
     assert "UserExpiresSet" in args
-    assert "/EXPIRES:2026/04/01" in args
+    assert "/EXPIRES:2026/04/01 23:59:59" in args
 
 
 @patch("bot_xui.softether._run", side_effect=RuntimeError("fail"))
@@ -113,7 +113,7 @@ def test_disable_user_sets_past_expiry(mock_run):
     assert disable_user("testuser") is True
 
     args = mock_run.call_args[0]
-    assert "/EXPIRES:2000/01/01" in args
+    assert "/EXPIRES:2000/01/01 00:00:00" in args
 
 
 @patch("bot_xui.softether._run", side_effect=RuntimeError("fail"))

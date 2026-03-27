@@ -708,8 +708,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             document=proxy,
             caption=(
                 "📎 <b>Прокси для Telegram</b>\n\n"
-                "Откройте файл — прокси подключится автоматически.\n"
-                "Перешлите файл друзьям, у кого не работает Telegram."
+                "Скачайте и перешлите друзьям, у кого не работает Telegram."
             ),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
@@ -722,10 +721,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "✉️ <b>Поддержка</b>\n\n"
             "Напишите ваш вопрос или предложение — мы ответим в ближайшее время.\n\n"
-            "👇 Просто отправьте сообщение:",
+            "👇 Просто отправьте сообщение в чат\n\n"
+            "📧 Или напишите на <b>support@tiinservice.ru</b>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Отмена", callback_data="back_to_menu")]
+                [InlineKeyboardButton("📧 Написать на почту", url="mailto:support@tiinservice.ru")],
+                [InlineKeyboardButton("◀️ Отмена", callback_data="back_to_menu")],
             ])
         )
 
@@ -740,23 +741,36 @@ async def notify_expiring_subscriptions(bot):
         users = get_users_expiring_in_days(days)
         for user in users:
             tg_id = user['tg_id']
+            email = user.get('email')
             until = user['subscription_until'].strftime("%d.%m.%Y")
-            try:
-                await bot.send_message(
-                    chat_id=tg_id,
-                    text=(
-                        f"⏳ <b>Подписка истекает через {label}</b>\n\n"
-                        f"📅 Окончание: <b>{until}</b>\n\n"
-                        f"Продлите, чтобы не потерять доступ."
-                    ),
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Продлить", callback_data="tariffs")]
-                    ])
-                )
-                logger.info(f"[NOTIFY] Sent expiry warning ({days}d) to {tg_id}")
-            except Exception as e:
-                logger.warning(f"[NOTIFY] Failed to notify {tg_id}: {e}")
+
+            # Telegram notification (if user has tg_id)
+            if tg_id:
+                try:
+                    await bot.send_message(
+                        chat_id=tg_id,
+                        text=(
+                            f"⏳ <b>Подписка истекает через {label}</b>\n\n"
+                            f"📅 Окончание: <b>{until}</b>\n\n"
+                            f"Продлите, чтобы не потерять доступ."
+                        ),
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔄 Продлить", callback_data="tariffs")]
+                        ])
+                    )
+                    logger.info(f"[NOTIFY] Sent expiry warning ({days}d) to tg:{tg_id}")
+                except Exception as e:
+                    logger.warning(f"[NOTIFY] Failed to notify tg:{tg_id}: {e}")
+
+            # Email notification (for web-only users or as backup)
+            if email and not tg_id:
+                try:
+                    from api.notifications import send_expiry_warning_email
+                    send_expiry_warning_email(to=email, days_left=days, expiry_date=until)
+                    logger.info(f"[NOTIFY] Sent expiry email ({days}d) to {email}")
+                except Exception as e:
+                    logger.warning(f"[NOTIFY] Failed to email {email}: {e}")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Запуск

@@ -125,9 +125,10 @@ def new_users_today() -> list[dict]:
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT tg_id, first_name, last_name, created_at
+        SELECT id, tg_id, first_name, last_name, email, created_at
         FROM users
-        WHERE DATE(created_at + INTERVAL 9 HOUR) = CURDATE()
+        WHERE DATE(CONVERT_TZ(created_at, '+00:00', '+09:00'))
+            = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+09:00'))
         ORDER BY created_at DESC
     """)
     rows = cur.fetchall()
