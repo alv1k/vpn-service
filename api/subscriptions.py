@@ -1,10 +1,10 @@
 from datetime import timedelta, timezone, time, datetime
-from api.db import get_user_by_tg_id, upsert_user_subscription, get_payment_by_id
+from api.db import get_user_by_tg_id, upsert_user_subscription, get_payment_by_id, get_user_by_id, update_user_subscription_by_id
 from bot_xui.tariffs import TARIFFS
 
 TZ_TOKYO = timezone(timedelta(hours=9))
 
-def activate_subscription(payment_id: str):
+def activate_subscription(payment_id: str, user_id: int | None = None):
     payment = get_payment_by_id(payment_id)
 
     if not payment:
@@ -20,7 +20,13 @@ def activate_subscription(payment_id: str):
     duration = timedelta(days=tariff["days"])
     paid_at = payment["created_at"]
 
-    user = get_user_by_tg_id(tg_id)
+    # For web-only users (tg_id=0), look up by user_id instead
+    if tg_id and tg_id != 0:
+        user = get_user_by_tg_id(tg_id)
+    elif user_id:
+        user = get_user_by_id(user_id)
+    else:
+        user = None
 
     # 🧠 если подписка ещё активна — продлеваем от текущего конца
     if user and user.get("subscription_until") and user["subscription_until"] > paid_at:
@@ -35,9 +41,10 @@ def activate_subscription(payment_id: str):
     new_until_eod = new_until_tokyo.replace(hour=23, minute=59, second=59, microsecond=0)
     new_until = new_until_eod.astimezone(timezone.utc).replace(tzinfo=None)
 
-    upsert_user_subscription(
-        tg_id=tg_id,
-        subscription_until=new_until
-    )
+    # Update subscription: by tg_id if available, otherwise by user_id
+    if tg_id and tg_id != 0:
+        upsert_user_subscription(tg_id=tg_id, subscription_until=new_until)
+    elif user and user.get('id'):
+        update_user_subscription_by_id(user['id'], new_until)
 
     return new_until

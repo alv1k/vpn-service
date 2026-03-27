@@ -268,7 +268,29 @@ class XUIClient:
         except Exception as e:
             logger.error(f"Error getting client subscription url: {e}")
             return None
-    
+
+    def get_subscription_url_by_uuid(self, client_uuid: str):
+        """Get subscription URL by client UUID (for web users without tg_id)."""
+        from config import XUI_SUB_HOST, XUI_SUB_PATH
+        if not XUI_SUB_HOST or not XUI_SUB_PATH:
+            return None
+        try:
+            response = self._request("GET", f"{self.host}/panel/api/inbounds/list")
+            result = response.json()
+            if not result.get('success'):
+                return None
+            for inbound in result.get('obj', []):
+                settings = json.loads(inbound.get('settings', '{}'))
+                for client in settings.get('clients', []):
+                    if client.get('id') == client_uuid:
+                        sub_id = client.get('subId')
+                        if sub_id:
+                            return f"{XUI_SUB_HOST}/sub/{XUI_SUB_PATH}/{sub_id}"
+            return None
+        except Exception as e:
+            logger.error(f"Error getting subscription url by uuid: {e}")
+            return None
+
     def delete_client(self, inbound_id, email):
         """Удалить клиента"""
         try:

@@ -40,7 +40,10 @@ def create_user(username: str, password: str) -> bool:
 
 
 def set_user_expiry(username: str, expires_str: str) -> bool:
-    """Set user expiry date. Format: YYYY/MM/DD"""
+    """Set user expiry date. Format: YYYY/MM/DD or YYYY/MM/DD HH:MM:SS"""
+    # vpncmd requires full datetime format: YYYY/MM/DD HH:MM:SS
+    if len(expires_str) == 10:  # YYYY/MM/DD only
+        expires_str = f"{expires_str} 23:59:59"
     try:
         _run("UserExpiresSet", username, f"/EXPIRES:{expires_str}")
         return True
@@ -62,7 +65,7 @@ def delete_user(username: str) -> bool:
 def disable_user(username: str) -> bool:
     """Disable user by setting expiry to past date."""
     try:
-        _run("UserExpiresSet", username, "/EXPIRES:2000/01/01")
+        _run("UserExpiresSet", username, "/EXPIRES:2000/01/01 00:00:00")
         logger.info(f"SoftEther user disabled: {username}")
         return True
     except RuntimeError as e:

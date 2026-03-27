@@ -103,6 +103,20 @@ def get_or_create_user(tg_id: int, first_name: str | None = None, last_name: str
     )
 
 
+def get_user_by_id(user_id: int) -> dict | None:
+    return execute_query(
+        "SELECT * FROM users WHERE id = %s",
+        (user_id,), fetch='one'
+    )
+
+
+def update_user_subscription_by_id(user_id: int, subscription_until):
+    execute_query(
+        "UPDATE users SET subscription_until = %s WHERE id = %s",
+        (subscription_until, user_id)
+    )
+
+
 def get_user_by_web_token(token: str) -> dict | None:
     return execute_query(
         "SELECT * FROM users WHERE web_token = %s",
@@ -402,15 +416,16 @@ def create_vpn_key(
     expires_at=None,
     vpn_type: str = 'awg',
     subscription_link: str = None,
-    vpn_file: str = None
+    vpn_file: str = None,
+    user_id: int = None,
 ):
-    logger.debug(f"create_vpn_key called, tg_id={tg_id}")
+    logger.debug(f"create_vpn_key called, tg_id={tg_id}, user_id={user_id}")
     execute_query(
         """
         INSERT INTO vpn_keys
-            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file)
+            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             payment_id        = VALUES(payment_id),
             client_id         = VALUES(client_id),
@@ -421,9 +436,10 @@ def create_vpn_key(
             expires_at        = VALUES(expires_at),
             vpn_type          = VALUES(vpn_type),
             subscription_link = VALUES(subscription_link),
-            vpn_file          = VALUES(vpn_file)
+            vpn_file          = VALUES(vpn_file),
+            user_id           = VALUES(user_id)
         """,
-        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file)
+        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
     )
     logger.debug("create_vpn_key done")
 
@@ -432,6 +448,14 @@ def get_keys_by_tg_id(tg_id: int) -> list[dict]:
     return execute_query(
         "SELECT * FROM vpn_keys WHERE tg_id = %s",
         (tg_id,), fetch='all'
+    )
+
+
+def get_keys_by_user_id(user_id: int) -> list[dict]:
+    """Get VPN keys for a web-only user by user_id."""
+    return execute_query(
+        "SELECT * FROM vpn_keys WHERE user_id = %s",
+        (user_id,), fetch='all'
     )
 
 
@@ -484,7 +508,7 @@ def get_users_expiring_in_days(days: int) -> list[dict]:
     """Возвращает пользователей, у которых подписка истекает ровно через `days` дней."""
     return execute_query(
         """
-        SELECT tg_id, subscription_until FROM users
+        SELECT tg_id, email, subscription_until FROM users
         WHERE DATE(subscription_until) = DATE(NOW() + INTERVAL %s DAY)
         """,
         (days,), fetch='all'

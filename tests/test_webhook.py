@@ -163,7 +163,7 @@ async def test_activation_after_vpn_creation_awg(
 
     assert result is True
     # activate_subscription called AFTER VPN creation succeeded (not before)
-    mock_activate.assert_called_once_with("pay-12345678")
+    mock_activate.assert_called_once_with("pay-12345678", user_id=None)
     mock_create_key.assert_called_once()
 
 
