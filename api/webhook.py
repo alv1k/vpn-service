@@ -58,6 +58,17 @@ app.include_router(auth_router)
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
+# ── Proxy file download ──
+@app.get("/proxy.html")
+async def proxy_file_download():
+    from bot_xui.helpers import make_proxy_file
+    buf = make_proxy_file()
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/html",
+        headers={"Content-Disposition": f"attachment; filename={buf.name}"},
+    )
+
 # ── Email open tracking pixel ──
 import base64 as _b64
 _PIXEL = _b64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
@@ -447,49 +458,34 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             return True
 
         try:
+            # Build portal URL for wizard link
+            from api.db import get_web_token
+            _wt = get_web_token(tg_id)
+            portal_url = f"https://344988.snk.wtf/my/{_wt}" if _wt else None
+
             if vpn_type == "vless":
-                # Отправляем VLESS как текст с QR кодом  
-                
+                # Отправляем VLESS как QR + краткая информация
                 await send_telegram_photo_from_bytes(
                     tg_id=tg_id,
                     image_bytes=bio,
                     caption=f"✅ <b>Оплата прошла успешно!</b>\n\n"
-                            f"⏱ Тариф: <b>{TARIFFS[tariff_key].get('name', tariff_key)}</b>\n"
-                            f"📅 Период: {TARIFFS[tariff_key].get('period', '30 дней')}\n"
-                            f"👥 Устройств: {TARIFFS[tariff_key].get('device_limit', 10)}\n\n"
-                            f"<b>📱 Инструкция:</b>\n"
-                            f"1. Установите приложение из раздела «Инструкция»\n"
-                            f"2. Отсканируйте QR или скопируйте ссылку ниже\n"
-                            f"3. Подключитесь\n\n"
-                            f"💬 Поддержка: кнопка «Написать нам» в меню",
+                            f"⏱ <b>{TARIFFS[tariff_key].get('name', tariff_key)}</b> · "
+                            f"{TARIFFS[tariff_key].get('period', '30 дней')} · "
+                            f"{TARIFFS[tariff_key].get('device_limit', 10)} устр.",
                 )
 
-                # Отправка subscription ссылки
+                # Ссылка на подписку + кнопки
                 message = (
-                    f"🔗 Ваша ссылка на подписку:\n"
-                    f"👇 <i>Нажмите чтобы скопировать:</i>\n"
-                    f"┌────────────────────\n"
-                    f"  <code>{sub_url}</code>\n"
-                    f"└────────────────────\n\n"
-                    f"📱 Скопируйте ссылку и вставьте в приложение"
+                    f"🔗 <b>Ваша ссылка:</b>\n"
+                    f"<code>{sub_url}</code>\n\n"
+                    f"📱 Скопируйте и вставьте в приложение"
                 )
-                await send_telegram_notification(tg_id, message)
-
-                routing_message = (
-                    "⚙️ <b>Важно для пользователей Happ:</b>\n\n"
-                    "Чтобы YouTube, Instagram и другие заблокированные сайты "
-                    "открывались через VPN, настройте маршрутизацию:\n\n"
-                    "1. Откройте ссылку ниже на телефоне\n"
-                    "2. В Happ: <b>Настройки</b> → <b>Настройки туннеля</b> → "
-                    "<b>Маршрутизация</b> → выберите <b>Tiin Split Rules</b>\n"
-                    "3. Переподключите VPN"
-                )
-                routing_buttons = [
-                    [{"text": "📲 Настроить маршрутизацию", "url": "https://344988.snk.wtf/happ-routing"}],
-                    [{"text": "📑 Инструкция и ссылки", "callback_data": "instructions"}],
-                    [{"text": "◀️ В меню", "callback_data": "back_to_menu"}]
-                ]
-                await send_telegram_notification(tg_id, routing_message, routing_buttons)
+                buttons = []
+                if portal_url:
+                    buttons.append([{"text": "📖 Мастер подключения", "url": portal_url}])
+                buttons.append([{"text": "📲 Happ: настроить маршрутизацию", "url": "https://344988.snk.wtf/happ-routing"}])
+                buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
+                await send_telegram_notification(tg_id, message, buttons)
                 
                 
             elif vpn_type == "softether":
@@ -497,38 +493,27 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 from bot_xui.vpn_factory import _softether_credentials_text
                 message = (
                     f"✅ <b>Оплата прошла успешно!</b>\n\n"
-                    f"⏱ Тариф: <b>{tariff_name}</b>\n"
-                    f"📅 Период: {TARIFFS[tariff_key].get('period', '30 дней')}\n\n"
+                    f"⏱ <b>{tariff_name}</b> · {TARIFFS[tariff_key].get('period', '30 дней')}\n\n"
                     + _softether_credentials_text(se_data["username"], se_data["password"])
-                    + f"\n<b>📱 Инструкция:</b>\n"
-                    f"1. Установите <b>SoftEther VPN Client</b>\n"
-                    f"2. Создайте новое подключение\n"
-                    f"3. Введите данные выше\n"
-                    f"4. Подключитесь\n\n"
-                    f"💬 Поддержка: кнопка «Написать нам» в меню"
                 )
-                await send_telegram_notification(tg_id, message)
-
-                buttons = [
-                    [{"text": "◀️ В меню", "callback_data": "back_to_menu"}]
-                ]
-                await send_telegram_notification(tg_id, "Выберите действие:", buttons)
+                se_buttons = []
+                if portal_url:
+                    se_buttons.append([{"text": "📖 Мастер подключения", "url": portal_url}])
+                se_buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
+                await send_telegram_notification(tg_id, message, se_buttons)
 
             else:
                 # Отправляем AmneziaWG как файл
                 filename = f"amneziawg_{tg_id}_{payment_id[:8]}.conf"
 
                 caption = (
-                    f"✅ Ваш AmneziaWG конфиг готов!\n\n"
-                    f"🔑 Тариф: {tariff_name}\n"
-                    f"🌐 IP: {client_ip}\n"
-                    f"📅 Активен до: {subscription_until:%d.%m.%Y}\n\n"
-                    f"📱 Инструкция:\n"
-                    f"1. Установите AmneziaVPN\n"
-                    f"2. Импортируйте файл конфигурации\n"
-                    f"3. Подключитесь\n\n"
-                    f"💬 Поддержка: кнопка «Написать нам» в меню"
+                    f"✅ <b>Оплата прошла успешно!</b>\n\n"
+                    f"⏱ <b>{tariff_name}</b> · до {subscription_until:%d.%m.%Y}\n"
+                    f"🌐 IP: {client_ip}\n\n"
+                    f"📱 Импортируйте файл в AmneziaVPN"
                 )
+                if portal_url:
+                    caption += f'\n\n<a href="{portal_url}">📖 Мастер подключения</a>'
 
                 await send_telegram_document(tg_id, client_config.encode(), filename, caption)
 
@@ -845,13 +830,16 @@ async def mailru_verify():
     return "mailru-domain: ExTNua2shOgGVi17"
 
 
+@app.get("/favicon.png")
+async def favicon():
+    from fastapi.responses import FileResponse
+    return FileResponse("/home/alvik/vpn-service/website/favicon.png", media_type="image/png")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Лендинг: React SPA (if built) or fallback to static HTML"""
+    """Лендинг: always serve lightweight static HTML (no JS framework needed)"""
     from pathlib import Path
-    react_index = Path(REACT_DIST) / "index.html"
-    if react_index.exists():
-        return HTMLResponse(react_index.read_text())
     html = Path("/home/alvik/vpn-service/website/index.html").read_text()
     return HTMLResponse(html)
 
