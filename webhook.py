@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException, Response
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse
 import json
 import sys
 import httpx
@@ -57,27 +57,6 @@ app.include_router(web_api_router)
 app.include_router(auth_router)
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-# ── Proxy file download ──
-@app.get("/proxy.html")
-async def proxy_file_download():
-    from bot_xui.helpers import make_proxy_file
-    buf = make_proxy_file()
-    return Response(
-        content=buf.getvalue(),
-        media_type="text/html",
-        headers={"Content-Disposition": f"attachment; filename={buf.name}"},
-    )
-
-# ── Email open tracking pixel ──
-import base64 as _b64
-_PIXEL = _b64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
-
-@app.get("/t/{track_id}.gif")
-async def email_open_track(track_id: str):
-    from api.db import execute_query as _eq
-    _eq("UPDATE email_opens SET opened_at = NOW() WHERE track_id = %s AND opened_at IS NULL", (track_id,))
-    return Response(content=_PIXEL, media_type="image/gif", headers={"Cache-Control": "no-store"})
 
 # ===== Белые IP ЮKassa =====
 YOO_IPS = [
@@ -263,33 +242,22 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             expiry_time = int(end_tokyo.timestamp() * 1000)
             
             # ===== Создаем/продлеваем клиента в 3x-ui =====
-            if tg_id and tg_id != 0:
-                existing = xui.get_client_by_tg_id(tg_id)
-                if existing:
-                    client_id = existing['client']['id']
-                    logger.info(f"Existing client found, reusing uuid: {client_id}")
+            existing = xui.get_client_by_tg_id(tg_id)
 
-                success = xui.add_or_extend_client(
-                    inbound_id=inbound_id,
-                    email=client_name,
-                    tg_id=tg_id,
-                    uuid=client_id,
-                    expiry_time=expiry_time,
-                    total_gb=0,
-                    limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
-                )
-            else:
-                # Web user without tg_id — always create new client
-                logger.info(f"Web user (no tg_id), creating new VLESS client")
-                success = xui.add_client(
-                    inbound_id=inbound_id,
-                    email=client_name,
-                    tg_id=0,
-                    uuid=client_id,
-                    expiry_time=expiry_time,
-                    total_gb=0,
-                    limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
-                )
+            if existing:
+                # Клиент уже есть — берём его UUID
+                client_id = existing['client']['id']
+                logger.info(f"Existing client found, reusing uuid: {client_id}")
+
+            success = xui.add_or_extend_client(
+                inbound_id=inbound_id,
+                email=client_name,
+                tg_id=tg_id,
+                uuid=client_id,
+                expiry_time=expiry_time,
+                total_gb=0,  # Безлимит
+                limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
+            )
             
             if not success:
                 raise RuntimeError("Failed to create VLESS client")
@@ -309,10 +277,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             )
             
             # Получаем subscription URL
-            if tg_id and tg_id != 0:
-                sub_url = xui.get_client_subscription_url(tg_id)
-            else:
-                sub_url = xui.get_subscription_url_by_uuid(client_id)
+            sub_url = xui.get_client_subscription_url(tg_id)
 
             # Создаем QR код
             qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -394,7 +359,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         # For VLESS: 3x-ui expiry was calculated from now(), but activate_subscription
         # calculates from paid_at — they can diverge. Use subscription_until as the
         # single source of truth and re-sync 3x-ui.
-        if vpn_type == "vless" and subscription_until and tg_id and tg_id != 0:
+        if vpn_type == "vless" and subscription_until:
             sub_until_ms = int(subscription_until.replace(tzinfo=timezone.utc).timestamp() * 1000) if subscription_until.tzinfo is None else int(subscription_until.timestamp() * 1000)
             existing_xui = xui.get_client_by_tg_id(tg_id)
             if existing_xui:
@@ -427,7 +392,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             vpn_type=vpn_type,
             subscription_link=sub_url,
             vpn_file=se_data.get("vpn_file") if vpn_type == "softether" else None,
-            user_id=web_user_id,
         )
 
         # Sync expiry to vpn_keys for existing keys too
@@ -442,19 +406,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
         if not tg_id or tg_id == 0:
             logger.info("📤 Web order — Telegram notification skipped (no tg_id)")
-            # Send payment confirmation email for web-only users
-            if web_user_id:
-                from api.db import get_user_by_id
-                from api.notifications import send_payment_success_email
-                _web_u = get_user_by_id(web_user_id)
-                if _web_u and _web_u.get('email'):
-                    portal_url = f"https://344988.snk.wtf/my/{_web_u.get('web_token', '')}"
-                    send_payment_success_email(
-                        to=_web_u['email'],
-                        tariff_name=tariff_name,
-                        period=tariff_info.get('period', ''),
-                        portal_url=portal_url,
-                    )
             return True
 
         try:
@@ -824,22 +775,13 @@ async def health_check():
 
 REACT_DIST = "/home/alvik/vpn-service/website_dist"
 
-
-@app.get("/mailru-domainExTNua2shOgGVi17.html", response_class=PlainTextResponse)
-async def mailru_verify():
-    return "mailru-domain: ExTNua2shOgGVi17"
-
-
-@app.get("/favicon.png")
-async def favicon():
-    from fastapi.responses import FileResponse
-    return FileResponse("/home/alvik/vpn-service/website/favicon.png", media_type="image/png")
-
-
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Лендинг: always serve lightweight static HTML (no JS framework needed)"""
+    """Лендинг: React SPA (if built) or fallback to static HTML"""
     from pathlib import Path
+    react_index = Path(REACT_DIST) / "index.html"
+    if react_index.exists():
+        return HTMLResponse(react_index.read_text())
     html = Path("/home/alvik/vpn-service/website/index.html").read_text()
     return HTMLResponse(html)
 

@@ -113,8 +113,9 @@ def test_webhook_unknown_payment(mock_verify, mock_status, client):
 @patch("api.webhook.get_subscription_until")
 @patch("api.webhook.activate_subscription")
 @patch("api.webhook.get_or_create_user", return_value=1)
+@patch("api.db.get_web_token", return_value="test-token-abc")
 async def test_activation_after_vpn_creation_awg(
-    mock_get_user, mock_activate, mock_get_sub, mock_create_key,
+    mock_web_token, mock_get_user, mock_activate, mock_get_sub, mock_create_key,
     mock_sync_expiry, mock_send_doc, mock_send_notif,
 ):
     """activate_subscription must be called AFTER VPN config creation, not before."""
