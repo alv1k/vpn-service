@@ -39,8 +39,9 @@ yookassa==3.9.0
 qrcode[pil]
 python-telegram-bot==20.7
 qrcode==7.4.2
-pillow==10.2.0
-apscheduler-3.11.2 tzlocal-5.3.1
-pytz-2026.1.post1
+pillow>=12.1.0
+apscheduler==3.11.2
+tzlocal==5.3.1
+pytz==2026.1.post1
 pytest==8.3.4
 pytest-asyncio==0.24.0

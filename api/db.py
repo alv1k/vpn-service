@@ -20,25 +20,32 @@ def _get_pool():
     global _pool
     if _pool is None:
         _pool = pooling.MySQLConnectionPool(
-            pool_name="vpn_pool",
-            pool_size=5,
+            pool_name="vpn_api_pool",
+            pool_size=10,
             pool_reset_session=True,
             host=MYSQL_HOST,
             user=MYSQL_USER,
             password=MYSQL_PASSWORD,
             database=MYSQL_DATABASE,
         )
-        logger.info("MySQL connection pool created (size=5)")
+        logger.info("MySQL connection pool created (size=10)")
     return _pool
 
 
 def get_db():
-    return _get_pool().get_connection()
+    """Get a connection from pool, recreating pool if needed."""
+    global _pool
+    try:
+        return _get_pool().get_connection()
+    except Exception as e:
+        logger.warning(f"Pool connection failed, recreating pool: {e}")
+        _pool = None
+        return _get_pool().get_connection()
 
 
-def execute_query(sql: str, params: tuple = (), fetch: str = None):
+def execute_query(sql: str, params: tuple = (), fetch: str = None, _retried: bool = False):
     """
-    Universal query helper.
+    Universal query helper with auto-retry on transient failures.
     fetch=None   → INSERT / UPDATE / DELETE  (returns lastrowid)
     fetch='one'  → fetchone() → dict | None
     fetch='all'  → fetchall() → list[dict]
@@ -53,6 +60,21 @@ def execute_query(sql: str, params: tuple = (), fetch: str = None):
             return cursor.fetchall()
         db.commit()
         return cursor.lastrowid
+    except Exception as e:
+        err_msg = str(e).lower()
+        is_transient = any(s in err_msg for s in (
+            'lost connection', 'gone away', 'broken pipe',
+            'connection reset', 'can\'t connect',
+        ))
+        if is_transient and not _retried:
+            logger.warning(f"Transient DB error, retrying: {e}")
+            try:
+                cursor.close()
+                db.close()
+            except Exception:
+                pass
+            return execute_query(sql, params, fetch, _retried=True)
+        raise
     finally:
         cursor.close()
         db.close()
@@ -72,6 +94,15 @@ def get_user_by_tg_id(tg_id: int) -> dict | None:
 def get_all_users_tg_ids() -> list[int]:
     rows = execute_query("SELECT tg_id FROM users", fetch='all')
     return [r['tg_id'] for r in rows]
+
+
+def get_all_users_with_web_token() -> list[dict]:
+    """Возвращает [{tg_id, web_token}, ...] для всех пользователей с tg_id и web_token."""
+    rows = execute_query(
+        "SELECT tg_id, web_token FROM users WHERE tg_id IS NOT NULL AND tg_id > 0 AND web_token IS NOT NULL",
+        fetch='all'
+    )
+    return rows or []
 
 
 def get_active_subscribers_tg_ids() -> list[int]:
@@ -219,6 +250,21 @@ def is_softether_test_activated(tg_id: int) -> bool:
     return bool(row['test_softether_activated']) if row else False
 
 
+def is_vless_test_activated_by_id(user_id: int) -> bool:
+    row = execute_query(
+        "SELECT test_vless_activated FROM users WHERE id = %s",
+        (user_id,), fetch='one'
+    )
+    return bool(row['test_vless_activated']) if row else False
+
+
+def set_vless_test_activated_by_id(user_id: int, activated: bool = True):
+    execute_query(
+        "UPDATE users SET test_vless_activated = %s WHERE id = %s",
+        (1 if activated else 0, user_id)
+    )
+
+
 # ─────────────────────────────────────────────
 #  Referrals
 # ─────────────────────────────────────────────
@@ -320,13 +366,154 @@ def get_referral_count(tg_id: int) -> int:
 
 
 # ─────────────────────────────────────────────
+#  Web referrals (by user id)
+# ─────────────────────────────────────────────
+
+def _round_subscription_eod_by_id(user_id: int):
+    """Округляет subscription_until до 23:59:59 по Tokyo (+9) — по user.id."""
+    row = execute_query(
+        "SELECT subscription_until FROM users WHERE id = %s",
+        (user_id,), fetch='one'
+    )
+    if not row or not row['subscription_until']:
+        return
+    dt = row['subscription_until']
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_tokyo = dt.astimezone(TZ_TOKYO)
+    eod = dt_tokyo.replace(hour=23, minute=59, second=59, microsecond=0)
+    new_until = eod.astimezone(timezone.utc).replace(tzinfo=None)
+    execute_query(
+        "UPDATE users SET subscription_until = %s WHERE id = %s",
+        (new_until, user_id)
+    )
+
+
+def reward_referrer_by_id(referrer_id: int):
+    """Adds REFERRAL_REWARD_DAYS to referrer's subscription (by user.id)."""
+    logger.info(f"Rewarding referrer user_id={referrer_id} with +{REFERRAL_REWARD_DAYS} days")
+    execute_query(
+        """
+        UPDATE users
+        SET
+            referral_count = referral_count + 1,
+            subscription_until = DATE_ADD(
+                GREATEST(
+                    COALESCE(subscription_until, NOW()),
+                    NOW()
+                ),
+                INTERVAL %s DAY
+            )
+        WHERE id = %s
+        """,
+        (REFERRAL_REWARD_DAYS, referrer_id)
+    )
+    _round_subscription_eod_by_id(referrer_id)
+
+
+def _web_referral_promo_days() -> int:
+    """Проверяет акцию: 20 дней для первых 5 веб-рефералов, старт 2026-03-30 09:00 Якутск (UTC+9)."""
+    now_ykt = datetime.now(TZ_TOKYO)  # Якутск = UTC+9 = то же что Tokyo
+    promo_start = datetime(2026, 3, 30, 9, 0, tzinfo=TZ_TOKYO)
+    promo_end = datetime(2026, 3, 31, 0, 0, tzinfo=TZ_TOKYO)
+    if not (promo_start <= now_ykt < promo_end):
+        return 0
+    promo_date = datetime(2026, 3, 30).date()
+    row = execute_query(
+        "SELECT COUNT(*) AS cnt FROM users "
+        "WHERE referred_by IS NOT NULL AND DATE(created_at) = %s",
+        (promo_date,), fetch='one'
+    )
+    used = row['cnt'] if row else 0
+    if used < 5:
+        return 20
+    return 0
+
+
+def reward_newcomer_by_id(newcomer_id: int):
+    """Дарит дни новому пользователю: 20 дней по акции или REFERRAL_NEWCOMER_DAYS."""
+    promo = _web_referral_promo_days()
+    days = promo if promo else REFERRAL_NEWCOMER_DAYS
+    logger.info(f"Rewarding newcomer user_id={newcomer_id} with +{days} days (promo={bool(promo)})")
+    execute_query(
+        """
+        UPDATE users
+        SET subscription_until = DATE_ADD(
+                GREATEST(COALESCE(subscription_until, NOW()), NOW()),
+                INTERVAL %s DAY
+            )
+        WHERE id = %s
+        """,
+        (days, newcomer_id)
+    )
+    _round_subscription_eod_by_id(newcomer_id)
+
+
+def _update_rowcount(sql: str, params: tuple = ()) -> int:
+    """Execute UPDATE/INSERT and return rowcount (not lastrowid)."""
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(sql, params)
+        db.commit()
+        return cursor.rowcount
+    finally:
+        cursor.close()
+        db.close()
+
+
+MAX_REFERRALS_PER_DAY = 5
+
+
+def process_web_referral(newcomer_id: int, referrer_web_token: str) -> bool:
+    """
+    Process referral from web: look up referrer by web_token,
+    atomically set referred_by, reward both.
+    Returns True if referral was applied.
+    """
+    if not referrer_web_token:
+        return False
+
+    referrer = execute_query(
+        "SELECT id FROM users WHERE web_token = %s",
+        (referrer_web_token,), fetch='one'
+    )
+    if not referrer or referrer['id'] == newcomer_id:
+        return False
+
+    # Per-referrer daily limit
+    today_count = execute_query(
+        "SELECT COUNT(*) AS cnt FROM users "
+        "WHERE referred_by = %s AND DATE(created_at) = CURDATE()",
+        (referrer['id'],), fetch='one'
+    )
+    if today_count and today_count['cnt'] >= MAX_REFERRALS_PER_DAY:
+        logger.warning(f"Referrer {referrer['id']} hit daily limit ({MAX_REFERRALS_PER_DAY})")
+        return False
+
+    # Atomic: only succeeds if referred_by is still NULL (prevents double reward)
+    affected = _update_rowcount(
+        "UPDATE users SET referred_by = %s WHERE id = %s AND referred_by IS NULL",
+        (referrer['id'], newcomer_id)
+    )
+    if not affected:
+        return False
+
+    reward_referrer_by_id(referrer['id'])
+    reward_newcomer_by_id(newcomer_id)
+
+    logger.info(f"Web referral: newcomer={newcomer_id}, referrer={referrer['id']}")
+    return True
+
+
+# ─────────────────────────────────────────────
 #  Payments
 # ─────────────────────────────────────────────
 
-def create_payment(payment_id: str, tg_id: int, tariff: str, amount, status: str = "pending"):
+def create_payment(payment_id: str, tg_id: int, tariff: str, amount, status: str = "pending", is_test: bool = False):
     execute_query(
-        "INSERT INTO payments (payment_id, tg_id, tariff, amount, status) VALUES (%s, %s, %s, %s, %s)",
-        (payment_id, tg_id, tariff, amount, status)
+        "INSERT INTO payments (payment_id, tg_id, tariff, amount, status, is_test) VALUES (%s, %s, %s, %s, %s, %s)",
+        (payment_id, tg_id, tariff, amount, status, int(is_test))
     )
 
 
@@ -496,6 +683,21 @@ def sync_expiry(tg_id: int, expires_at_utc: datetime):
     logger.info(f"Synced expiry for tg_id={tg_id} to {expires_at_utc}")
 
 
+def sync_expiry_by_user_id(user_id: int, expires_at_utc: datetime):
+    """Sync expiry for web-only users (by user_id) to vpn_keys and users table."""
+    if expires_at_utc.tzinfo is not None:
+        expires_at_utc = expires_at_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    execute_query(
+        "UPDATE users SET subscription_until = %s WHERE id = %s",
+        (expires_at_utc, user_id)
+    )
+    execute_query(
+        "UPDATE vpn_keys SET expires_at = %s WHERE user_id = %s AND expires_at > NOW()",
+        (expires_at_utc, user_id)
+    )
+    logger.info(f"Synced expiry for user_id={user_id} to {expires_at_utc}")
+
+
 def update_vless_link(tg_id: int, vless_link: str):
     """Обновить vless_link для всех VLESS-ключей пользователя."""
     execute_query(
@@ -508,7 +710,8 @@ def get_users_expiring_in_days(days: int) -> list[dict]:
     """Возвращает пользователей, у которых подписка истекает ровно через `days` дней."""
     return execute_query(
         """
-        SELECT tg_id, email, subscription_until FROM users
+        SELECT tg_id, email, subscription_until, autopay_enabled, payment_method_id
+        FROM users
         WHERE DATE(subscription_until) = DATE(NOW() + INTERVAL %s DAY)
         """,
         (days,), fetch='all'
@@ -598,3 +801,79 @@ def list_active_promocodes() -> list[dict]:
         "SELECT * FROM promocodes WHERE is_active = 1 ORDER BY created_at DESC",
         fetch='all'
     )
+
+
+# ─────────────────────────────────────────────
+#  Autopay
+# ─────────────────────────────────────────────
+
+def save_user_payment_method(tg_id: int, payment_method_id: str, tariff: str, vpn_type: str = "vless"):
+    """Save payment method and enable autopay for user."""
+    execute_query(
+        "UPDATE users SET payment_method_id = %s, autopay_enabled = 1, "
+        "autopay_tariff = %s, autopay_vpn_type = %s WHERE tg_id = %s",
+        (payment_method_id, tariff, vpn_type, tg_id),
+    )
+
+
+def save_user_payment_method_by_id(user_id: int, payment_method_id: str, tariff: str, vpn_type: str = "vless"):
+    """Save payment method by user_id (for web users)."""
+    execute_query(
+        "UPDATE users SET payment_method_id = %s, autopay_enabled = 1, "
+        "autopay_tariff = %s, autopay_vpn_type = %s WHERE id = %s",
+        (payment_method_id, tariff, vpn_type, user_id),
+    )
+
+
+def disable_autopay(tg_id: int):
+    """Disable autopay for user."""
+    execute_query(
+        "UPDATE users SET autopay_enabled = 0 WHERE tg_id = %s",
+        (tg_id,),
+    )
+
+
+def remove_payment_method(tg_id: int):
+    """Remove saved card and disable autopay."""
+    execute_query(
+        "UPDATE users SET payment_method_id = NULL, autopay_enabled = 0 WHERE tg_id = %s",
+        (tg_id,),
+    )
+
+
+def disable_autopay_by_id(user_id: int):
+    execute_query(
+        "UPDATE users SET autopay_enabled = 0 WHERE id = %s",
+        (user_id,),
+    )
+
+
+def get_autopay_users_due(days_before: int = 1) -> list[dict]:
+    """Get users whose subscription expires within `days_before` days and have autopay enabled."""
+    return execute_query(
+        "SELECT id, tg_id, email, payment_method_id, autopay_tariff, autopay_vpn_type, "
+        "subscription_until, permanent_discount "
+        "FROM users "
+        "WHERE autopay_enabled = 1 AND payment_method_id IS NOT NULL "
+        "AND subscription_until IS NOT NULL "
+        "AND subscription_until BETWEEN NOW() AND NOW() + INTERVAL %s DAY",
+        (days_before,), fetch='all',
+    )
+
+
+def log_autopay(tg_id: int, user_id: int, tariff: str, amount: float,
+                payment_id: str = None, status: str = "pending", error: str = None):
+    execute_query(
+        "INSERT INTO autopay_log (tg_id, user_id, tariff, amount, payment_id, status, error_message) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (tg_id, user_id, tariff, amount, payment_id, status, error),
+    )
+
+
+def cleanup_expired_sessions():
+    """Remove expired web auth sessions."""
+    deleted = _update_rowcount(
+        "DELETE FROM auth_sessions WHERE expires_at <= NOW()",
+    )
+    if deleted:
+        logger.info(f"[SESSION_CLEANUP] Removed {deleted} expired sessions")

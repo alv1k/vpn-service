@@ -42,6 +42,7 @@ AMNEZIA_WG_API_PASSWORD = os.getenv("AMNEZIA_WG_API_PASSWORD")
 XUI_HOST = os.getenv("XUI_HOST")
 XUI_USERNAME = os.getenv("XUI_USERNAME")
 XUI_PASSWORD = os.getenv("XUI_PASSWORD")
+XUI_TOTP_SECRET = os.getenv("XUI_TOTP_SECRET", "")
 
 # VLESS настройки
 VLESS_DOMAIN = os.getenv("VLESS_DOMAIN")
@@ -49,7 +50,9 @@ VLESS_PORT = int(os.getenv("VLESS_PORT", "443"))
 VLESS_PATH = os.getenv("VLESS_PATH")
 VLESS_INBOUND_ID = int(os.getenv("VLESS_INBOUND_ID", "1"))
 VLESS_PBK = os.getenv("VLESS_PBK")
-VLESS_SID = os.getenv("VLESS_SID")
+_VLESS_SID_RAW = os.getenv("VLESS_SID", "")
+VLESS_SID_LIST = [s.strip() for s in _VLESS_SID_RAW.split(",") if s.strip()]
+VLESS_SID = VLESS_SID_LIST[0] if VLESS_SID_LIST else ""
 VLESS_SNI = os.getenv("VLESS_SNI")
 
 # AmneziaWG
@@ -75,7 +78,10 @@ SMTP_FROM = os.getenv("SMTP_FROM")
 REFERRAL_REWARD_DAYS = int(os.getenv("REFERRAL_REWARD_DAYS", "3"))
 REFERRAL_NEWCOMER_DAYS = int(os.getenv("REFERRAL_NEWCOMER_DAYS", "3"))
 
-ADMIN_TG_ID = int(os.getenv("ADMIN_TG_ID", "364224373"))
+_admin_tg_raw = os.getenv("ADMIN_TG_ID")
+if not _admin_tg_raw:
+    raise RuntimeError("ADMIN_TG_ID must be set in .env")
+ADMIN_TG_ID = int(_admin_tg_raw)
 
 
 logger = logging.getLogger(__name__)

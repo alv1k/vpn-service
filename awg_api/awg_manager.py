@@ -12,6 +12,24 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+import re
+
+def _sanitize_config_value(value: str) -> str:
+    """Strip newlines and WireGuard directives from config values to prevent injection."""
+    return re.sub(r'[\n\r]', '', str(value))
+
+
+def _sanitize_name(name: str) -> str:
+    """Strip dangerous chars from client name (used in config comments)."""
+    return re.sub(r'[^\w\s.@_-]', '', str(name))[:64]
+
+
+def _validate_address(addr: str) -> str:
+    """Validate IP address format."""
+    import ipaddress
+    ip = ipaddress.ip_address(addr.split('/')[0])
+    return str(ip)
+
 
 def _run(cmd: list[str], check=True, capture=True) -> subprocess.CompletedProcess:
     logger.debug(f"Running: {' '.join(cmd)}")
@@ -70,23 +88,30 @@ def write_server_conf():
     clients = db.list_clients()
     awg_params = _format_awg_params(srv)
 
+    listen_port = int(srv['listen_port'])  # ensure integer
+    private_key = _sanitize_config_value(srv['private_key'])
+
     conf = f"""[Interface]
-PrivateKey = {srv['private_key']}
+PrivateKey = {private_key}
 Address = {SERVER_ADDRESS}
-ListenPort = {srv['listen_port']}
-PostUp = iptables -t nat -A POSTROUTING -s 10.10.0.0/24 -o ens3 -j MASQUERADE; iptables -A INPUT -p udp -m udp --dport {srv['listen_port']} -j ACCEPT; iptables -A FORWARD -i {AWG_INTERFACE} -j ACCEPT; iptables -A FORWARD -o {AWG_INTERFACE} -j ACCEPT;
-PostDown = iptables -t nat -D POSTROUTING -s 10.10.0.0/24 -o ens3 -j MASQUERADE; iptables -D INPUT -p udp -m udp --dport {srv['listen_port']} -j ACCEPT; iptables -D FORWARD -i {AWG_INTERFACE} -j ACCEPT; iptables -D FORWARD -o {AWG_INTERFACE} -j ACCEPT;
+ListenPort = {listen_port}
+PostUp = iptables -t nat -A POSTROUTING -s 10.10.0.0/24 -o ens3 -j MASQUERADE; iptables -A INPUT -p udp -m udp --dport {listen_port} -j ACCEPT; iptables -A FORWARD -i {AWG_INTERFACE} -j ACCEPT; iptables -A FORWARD -o {AWG_INTERFACE} -j ACCEPT;
+PostDown = iptables -t nat -D POSTROUTING -s 10.10.0.0/24 -o ens3 -j MASQUERADE; iptables -D INPUT -p udp -m udp --dport {listen_port} -j ACCEPT; iptables -D FORWARD -i {AWG_INTERFACE} -j ACCEPT; iptables -D FORWARD -o {AWG_INTERFACE} -j ACCEPT;
 {awg_params}
 """
 
     for c in clients:
         if c["enabled"]:
+            name = _sanitize_name(c['name'])
+            pub_key = _sanitize_config_value(c['public_key'])
+            psk = _sanitize_config_value(c['preshared_key'])
+            addr = _validate_address(c['address'])
             conf += f"""
 [Peer]
-# {c['name']}
-PublicKey = {c['public_key']}
-PresharedKey = {c['preshared_key']}
-AllowedIPs = {c['address']}/32
+# {name}
+PublicKey = {pub_key}
+PresharedKey = {psk}
+AllowedIPs = {addr}/32
 """
 
     with open(AWG_CONF_PATH, "w") as f:
@@ -137,11 +162,12 @@ def reload_interface():
             tmp_path = f.name
 
         _run(["awg", "syncconf", AWG_INTERFACE, tmp_path])
-        subprocess.run(["rm", "-f", tmp_path], check=False)
         logger.info("Interface reloaded via syncconf")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to reload interface: {e.stderr}")
         raise
+    finally:
+        subprocess.run(["rm", "-f", tmp_path], check=False)
 
 
 def interface_up():

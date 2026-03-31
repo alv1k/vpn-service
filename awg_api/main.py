@@ -26,6 +26,20 @@ logger = logging.getLogger("awg_api")
 _sessions: dict[str, float] = {}  # token -> created_at timestamp
 
 SESSION_MAX_AGE = 86400  # 24h
+_MAX_SESSIONS = 100
+
+
+def _purge_expired_sessions():
+    """Remove expired sessions to prevent unbounded growth."""
+    now = datetime.now(timezone.utc).timestamp()
+    expired = [t for t, ts in _sessions.items() if now - ts > SESSION_MAX_AGE]
+    for t in expired:
+        del _sessions[t]
+    # If still over limit, remove oldest
+    if len(_sessions) > _MAX_SESSIONS:
+        sorted_sessions = sorted(_sessions.items(), key=lambda x: x[1])
+        for t, _ in sorted_sessions[:len(_sessions) - _MAX_SESSIONS]:
+            del _sessions[t]
 
 
 def _check_session_from_request(request: Request):
@@ -107,12 +121,13 @@ async def login(request: Request, response: Response):
     if password != API_PASSWORD:
         raise HTTPException(status_code=401, detail="Incorrect password")
 
+    _purge_expired_sessions()
     token = secrets.token_hex(24)
     _sessions[token] = datetime.now(timezone.utc).timestamp()
 
     response.set_cookie(
         key="connect.sid", value=token,
-        httponly=True, samesite="lax", max_age=SESSION_MAX_AGE,
+        httponly=True, secure=True, samesite="lax", max_age=SESSION_MAX_AGE,
     )
     return {"success": True}
 

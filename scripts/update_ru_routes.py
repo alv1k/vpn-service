@@ -133,12 +133,12 @@ def update_amneziawg(ru_networks: list[ipaddress.IPv4Network]):
         f.write(content)
     log.info("Updated WG_ALLOWED_IPS in .env")
 
-    # Recreate container to pick up new env
+    # Restart native AWG API to pick up new AllowedIPs from .env
     subprocess.run(
-        ["docker", "compose", "-f", f"{PROJECT_DIR}/docker-compose.yml", "up", "-d", "amneziawg"],
+        ["systemctl", "restart", "awg-api"],
         check=True, capture_output=True, text=True,
     )
-    log.info("Recreated amneziawg container with new AllowedIPs")
+    log.info("Restarted awg-api service with new AllowedIPs")
 
 
 def update_softether(ru_networks: list[ipaddress.IPv4Network]):
@@ -218,8 +218,8 @@ def send_telegram(message: str):
     )
     try:
         urllib.request.urlopen(req, timeout=10)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"Failed to send Telegram alert: {e}")
 
 
 def main():

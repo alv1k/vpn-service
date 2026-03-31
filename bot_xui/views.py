@@ -57,6 +57,7 @@ async def show_instructions(query):
         [InlineKeyboardButton(f"🍏 {label}", url=url) for label, url in _INSTRUCTION_APPS_IOS],
         [InlineKeyboardButton(f"💻 {label}", url=url) for label, url in _INSTRUCTION_APPS_DESKTOP],
         [InlineKeyboardButton(f"📺 {label}", url=url) for label, url in _INSTRUCTION_APPS_TV],
+        [InlineKeyboardButton("🖥 Windows XP/7 (SoftEther)", callback_data="test_protocol_choose")],
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
     ]
 
@@ -114,7 +115,7 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
             ppd = t["price"] / t["days"] if t.get("days") else 0
             price_str = f"<b>{t['price']}₽</b>"
 
-        best = "  ⭐️" if t.get("days", 0) >= 90 else ""
+        best = "  ⭐️" if t.get("days", 0) >= 365 else ""
         text += f"▸ <b>{t['period']}</b> — {price_str}"
         if t.get("days", 0) > 3:
             text += f"  ({ppd:.1f}₽/день)"

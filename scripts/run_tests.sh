@@ -25,6 +25,18 @@ TEST_SUITES=(
     "tests/test_webhook.py|Webhook"
     "tests/test_awg.py|AWG"
     "tests/test_softether.py|SoftEther"
+    "tests/test_website.py|Website"
+    "tests/test_notifications.py|Notifications"
+    "tests/test_helpers.py|Helpers"
+    "tests/test_utils.py|Utils"
+    "tests/test_tariffs.py|Tariffs"
+    "tests/test_awg_manager.py|AWG-Manager"
+    "tests/test_softether_extended.py|SoftEther-Ext"
+    "tests/test_payment.py|Payment"
+    "tests/test_registration.py|Registration"
+    "tests/test_web_portal.py|Web-Portal"
+    "tests/test_web_referrals.py|Web-Referrals"
+    "tests/test_session.py|Session"
 )
 
 ALL_OK=1

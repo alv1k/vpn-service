@@ -66,7 +66,7 @@ def make_proxy_file() -> io.BytesIO:
 </body>
 </html>"""
     buf = io.BytesIO(html.encode())
-    buf.name = "tiin_proxy.html"
+    buf.name = "tiinservice_telegram_proxy.html"
     return buf
 
 

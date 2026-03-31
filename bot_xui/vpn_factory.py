@@ -26,7 +26,7 @@ from api.db import (
     create_vpn_key, set_awg_test_activated, set_vless_test_activated,
     is_awg_test_activated, is_vless_test_activated,
     set_softether_test_activated, is_softether_test_activated,
-    get_keys_by_tg_id, sync_expiry,
+    get_keys_by_tg_id, sync_expiry, get_subscription_until,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,13 +45,14 @@ def make_qr_bytes(data: str, box_size: int = 10, border: int = 5) -> BytesIO:
     return bio
 
 
-async def create_awg_config(tg_id: int) -> dict:
+async def create_awg_config(tg_id: int, client_name: str = None) -> dict:
     """
     Создаёт клиента в AmneziaWG и возвращает dict с полями:
         client_name, client_id, client_ip, config
     Бросает RuntimeError при любой ошибке.
     """
-    client_name = f"test-{tg_id}-{uuid.uuid4().hex[:8]}"
+    if client_name is None:
+        client_name = f"test-{tg_id}-{uuid.uuid4().hex[:8]}"
 
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
@@ -285,6 +286,83 @@ async def handle_test_awg(query, xui: XUIClient):
         logger.error(f"AWG config error: {e}")
         await query.message.reply_text(
             "❌ Ошибка создания конфига\n\nПопробуйте позже или выберите VLESS.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
+            ]),
+        )
+
+
+async def handle_get_awg_config(query):
+    """Выдаёт AWG конфиг пользователю с активной VLESS подпиской (winback сценарий)."""
+    tg_id = query.from_user.id
+
+    # Проверяем, нет ли уже AWG ключа
+    existing_keys = get_keys_by_tg_id(tg_id)
+    has_awg = any(k['vpn_type'] == 'awg' for k in existing_keys)
+    if has_awg:
+        await query.edit_message_text(
+            "✅ У вас уже есть AmneziaWG конфиг.\n\n"
+            "Нажмите «Мои конфиги» чтобы посмотреть.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
+            ]),
+        )
+        return
+
+    # Проверяем активную подписку
+    sub_until = get_subscription_until(tg_id)
+    if not sub_until or sub_until < datetime.now(timezone.utc):
+        await query.edit_message_text(
+            "❌ У вас нет активной подписки.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 Тарифы", callback_data="tariffs")],
+            ]),
+        )
+        return
+
+    await query.edit_message_text("⏳ Создаю AmneziaWG конфиг...")
+
+    try:
+        client_name = f"awg_{tg_id}"
+        data = await create_awg_config(tg_id, client_name=client_name)
+
+        create_vpn_key(
+            tg_id=tg_id, payment_id=None,
+            client_id=data["client_id"], client_name=data["client_name"],
+            client_ip=data["client_ip"], client_public_key=None,
+            vless_link=data["config"], expires_at=sub_until, vpn_type="awg",
+        )
+
+        config_file = BytesIO(data["config"].encode("utf-8"))
+        config_file.name = f"amneziawg_{tg_id}.conf"
+
+        await query.message.reply_document(
+            document=config_file,
+            caption=(
+                f"🔵 <b>AmneziaWG конфиг</b>\n\n"
+                f"Этот протокол лучше работает на нестабильных каналах, "
+                f"мобильном интернете и в удалённых регионах.\n\n"
+                f"📱 <b>Инструкция:</b>\n"
+                f"1. Установите <a href='https://amnezia.org'>AmneziaVPN</a>\n"
+                f"2. Импортируйте файл конфигурации\n"
+                f"3. Подключитесь\n\n"
+                f"⏱ Действует до: {sub_until.strftime('%d.%m.%Y')}"
+            ),
+            parse_mode="HTML",
+        )
+
+        await query.edit_message_text(
+            "✅ AmneziaWG конфиг создан!\n\nПроверьте сообщение выше ☝️",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
+                [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")],
+            ]),
+        )
+
+    except Exception as e:
+        logger.error(f"AWG config error (winback): {e}")
+        await query.message.reply_text(
+            "❌ Ошибка создания конфига. Попробуйте позже или напишите в поддержку.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
             ]),

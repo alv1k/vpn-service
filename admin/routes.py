@@ -256,11 +256,11 @@ async def finance():
     cur = conn.cursor(dictionary=True)
 
     # Total revenue
-    cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM payments WHERE status='paid'")
+    cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM payments WHERE status='paid' AND is_test=0")
     total_revenue = float(cur.fetchone()["total"])
 
     # First payment date (service start)
-    cur.execute("SELECT MIN(created_at) as d FROM payments WHERE status='paid'")
+    cur.execute("SELECT MIN(created_at) as d FROM payments WHERE status='paid' AND is_test=0")
     row = cur.fetchone()
     first_payment = row["d"] if row and row["d"] else None
 
@@ -269,7 +269,7 @@ async def finance():
     cur.execute(
         "SELECT DATE_FORMAT(created_at, %s) as month,"
         " COUNT(*) as payments, SUM(amount) as revenue"
-        " FROM payments WHERE status='paid'"
+        " FROM payments WHERE status='paid' AND is_test=0"
         " GROUP BY DATE_FORMAT(created_at, %s) ORDER BY month",
         (fmt, fmt),
     )
@@ -960,6 +960,7 @@ _WINBACK_MESSAGES = {
     'payment_no_config': "⚠️ Мы обнаружили, что ваш платёж был успешным, но VPN конфиг не был создан.\nМы уже разбираемся с этим. Если вопрос не решится — напишите в поддержку 💬",
     'panel_db_mismatch': "⚠️ Обнаружена проблема с вашим конфигом. Мы уже работаем над исправлением.\nЕсли VPN не подключается — напишите в поддержку 💬",
     'never_activated': "👋 Привет!\nВы зарегистрировались, но ещё не попробовали VPN.\nАктивируйте бесплатный тест — это займёт пару минут!\n🔒 Безопасный интернет без ограничений.",
+    'recently_inactive': "👋 Мы скучаем!\nЗаметили, что вы давно не заходили. Всё ли в порядке с подключением?\n💡 У нас есть бесплатный прокси для Telegram — работает без VPN.\nА ещё — укажите почту для полезных советов и новостей 📬",
 }
 
 
@@ -970,6 +971,12 @@ async def winback_log():
     for r in cleaned:
         r["message"] = _WINBACK_MESSAGES.get(r.get("scenario", ""), "")
     return cleaned
+
+
+@router.get("/winback/effectiveness")
+async def winback_effectiveness():
+    """Conversion rates per winback scenario (payment or key creation within 7 days)."""
+    return _clean(admin_db.winback_effectiveness())
 
 
 # ── Promocodes ────────────────────────────────────────────────────────────────
@@ -1000,19 +1007,124 @@ async def user_payments(tg_id: int):
     return _clean(rows)
 
 
+@router.get("/funnel")
+async def conversion_funnel():
+    """Воронка конверсий: регистрация → тест → подключение → оплата → повторная."""
+    from api.db import execute_query
+
+    total = execute_query("SELECT COUNT(*) AS n FROM users", fetch='one')['n']
+
+    test_activated = execute_query(
+        "SELECT COUNT(*) AS n FROM users WHERE test_vless_activated = 1 OR test_awg_activated = 1",
+        fetch='one',
+    )['n']
+
+    has_keys = execute_query(
+        "SELECT COUNT(DISTINCT COALESCE(user_id, tg_id)) AS n FROM vpn_keys",
+        fetch='one',
+    )['n']
+
+    connected = execute_query(
+        "SELECT COUNT(DISTINCT tg_id) AS n FROM vpn_keys WHERE tg_id != 0",
+        fetch='one',
+    )['n']
+
+    paid_users = execute_query(
+        "SELECT COUNT(DISTINCT tg_id) AS n FROM payments WHERE status = 'paid' AND is_test = 0",
+        fetch='one',
+    )['n']
+
+    repeat_buyers = execute_query(
+        "SELECT COUNT(*) AS n FROM ("
+        "  SELECT tg_id FROM payments WHERE status = 'paid' AND is_test = 0 "
+        "  GROUP BY tg_id HAVING COUNT(*) >= 2"
+        ") t",
+        fetch='one',
+    )['n']
+
+    autopay_on = execute_query(
+        "SELECT COUNT(*) AS n FROM users WHERE autopay_enabled = 1",
+        fetch='one',
+    )['n']
+
+    revenue_total = execute_query(
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE status = 'paid' AND is_test = 0",
+        fetch='one',
+    )['n']
+
+    revenue_30d = execute_query(
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments "
+        "WHERE status = 'paid' AND is_test = 0 AND created_at >= NOW() - INTERVAL 30 DAY",
+        fetch='one',
+    )['n']
+
+    # Tariff popularity
+    tariff_stats = execute_query(
+        "SELECT tariff, COUNT(*) AS cnt, SUM(amount) AS revenue "
+        "FROM payments WHERE status = 'paid' AND is_test = 0 "
+        "GROUP BY tariff ORDER BY cnt DESC",
+        fetch='all',
+    )
+
+    # Daily registrations (last 30 days)
+    daily_regs = execute_query(
+        "SELECT DATE(created_at) AS day, COUNT(*) AS cnt FROM users "
+        "WHERE created_at >= NOW() - INTERVAL 30 DAY "
+        "GROUP BY DATE(created_at) ORDER BY day",
+        fetch='all',
+    )
+
+    return _clean({
+        "funnel": {
+            "total_users": total,
+            "test_activated": test_activated,
+            "has_vpn_keys": has_keys,
+            "connected": connected,
+            "paid_users": paid_users,
+            "repeat_buyers": repeat_buyers,
+            "autopay_enabled": autopay_on,
+        },
+        "rates": {
+            "test_rate": round(test_activated / total * 100, 1) if total else 0,
+            "paid_rate": round(paid_users / total * 100, 1) if total else 0,
+            "repeat_rate": round(repeat_buyers / paid_users * 100, 1) if paid_users else 0,
+        },
+        "revenue": {
+            "total": float(revenue_total),
+            "last_30d": float(revenue_30d),
+            "arpu": round(float(revenue_total) / paid_users, 1) if paid_users else 0,
+        },
+        "tariff_stats": tariff_stats,
+        "daily_registrations": daily_regs,
+    })
+
+
 # ── Admin page serving ────────────────────────────────────────────────────────
 
 def get_admin_page_route():
     """Return the admin page endpoint for mounting in the app."""
     async def admin_page(request: Request):
         # nginx auth_basic already protects this path — skip session check
-        # so the page can load and create its own session via POST /api/session
+        # Pre-create a session cookie so JS doesn't need the API password
+        import secrets as _secrets
+        from datetime import datetime, timezone
+        from awg_api.main import _sessions, SESSION_MAX_AGE
+
         html_path = os.path.join(os.path.dirname(__file__), "static", "admin.html")
         with open(html_path) as f:
             html = f.read()
-        from awg_api.config import API_PASSWORD
-        html = html.replace("{{AWG_PASSWORD}}", API_PASSWORD)
-        return HTMLResponse(html)
+        # Do NOT embed the real password — use a placeholder so JS skips login
+        html = html.replace("{{AWG_PASSWORD}}", "")
+
+        token = _secrets.token_hex(24)
+        _sessions[token] = datetime.now(timezone.utc).timestamp()
+
+        response = HTMLResponse(html)
+        response.set_cookie(
+            key="connect.sid", value=token,
+            httponly=True, secure=True, samesite="lax", max_age=SESSION_MAX_AGE,
+        )
+        return response
     return admin_page
 
 

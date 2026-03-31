@@ -44,7 +44,7 @@ def test_create_payment(mock_get_pool):
     sql = mock_cursor.execute.call_args[0][0]
     params = mock_cursor.execute.call_args[0][1]
     assert "INSERT INTO payments" in sql
-    assert params == ("pay-abc-123", 123456, "monthly_30d", 199, "pending")
+    assert params == ("pay-abc-123", 123456, "monthly_30d", 199, "pending", 0)
     mock_conn.commit.assert_called_once()
 
 
@@ -211,11 +211,10 @@ def _make_mock_query(user_id=123456, username="testuser"):
     return query
 
 
-@patch("bot_xui.payment.use_promocode")
 @patch("bot_xui.payment.create_payment")
 @patch("bot_xui.payment.Payment")
 @patch("bot_xui.payment.is_test_mode", return_value=False)
-def test_process_payment_with_promo_discount(mock_test_mode, mock_payment_cls, mock_create, mock_use_promo):
+def test_process_payment_with_promo_discount(mock_test_mode, mock_payment_cls, mock_create):
     """Promo discount should reduce price in Payment.create and mark promo used."""
     from bot_xui.payment import process_payment
 
@@ -235,8 +234,7 @@ def test_process_payment_with_promo_discount(mock_test_mode, mock_payment_cls, m
     create_args = mock_payment_cls.create.call_args[0][0]
     assert create_args["amount"]["value"] == "100"
 
-    # Promo marked as used
-    mock_use_promo.assert_called_once_with(1, 123456)
+    # Promo is now consumed in webhook handler, not at payment creation time
 
     # DB payment created with discounted amount
     mock_create.assert_called_once()
