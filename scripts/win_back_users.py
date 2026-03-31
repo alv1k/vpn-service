@@ -91,13 +91,15 @@ def get_all_payments():
     return payments_by_tg
 
 
-def _add_traffic(traffic, tg_id, upload, download, enabled=True):
+def _add_traffic(traffic, tg_id, upload, download, enabled=True, last_online=0):
     """Merge traffic into existing dict for tg_id."""
-    existing = traffic.get(tg_id, {'upload': 0, 'download': 0, 'enabled': True})
+    existing = traffic.get(tg_id, {'upload': 0, 'download': 0, 'enabled': True, 'last_online': 0})
     existing['upload'] += upload
     existing['download'] += download
     if not enabled:
         existing['enabled'] = False
+    if last_online > existing.get('last_online', 0):
+        existing['last_online'] = last_online
     traffic[tg_id] = existing
 
 
@@ -126,7 +128,8 @@ def get_traffic_from_panel(xui):
         for cs in ib.get('clientStats', []):
             tg_id = email_to_tg.get(cs.get('email'))
             if tg_id:
-                _add_traffic(traffic, tg_id, cs.get('up', 0), cs.get('down', 0), cs.get('enable', True))
+                _add_traffic(traffic, tg_id, cs.get('up', 0), cs.get('down', 0),
+                             cs.get('enable', True), cs.get('lastOnline', 0))
 
     # ── AWG (awg show dump) ──
     try:
@@ -207,6 +210,8 @@ DELAY = {
     'panel_db_mismatch': 0,   # сразу
     'multi_config_partial': 7,# 7 дней без трафика
     'never_activated': 1,     # 1 день после регистрации
+    'vless_only_inactive': 1,  # VLESS-only офлайн 1+ день — предложить AWG
+    'recently_inactive': 1,   # не заходил 1-3 дня (был активен)
 }
 
 
@@ -223,11 +228,13 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
         'payment_no_config': [],   # оплатил, но конфиг не выдан
         'panel_db_mismatch': [],   # активен в БД, деактивирован в панели
         'never_activated': [],     # зарегистрировался, тест не активировал, ключей нет
+        'vless_only_inactive': [],  # VLESS-only, офлайн 1+ день, нет AWG — предложить AWG
+        'recently_inactive': [],   # был онлайн 1-3 дня назад, перестал заходить
     }
 
     for user in users:
         tg_id = user['tg_id']
-        if tg_id == ADMIN_TG_ID:
+        if not tg_id or tg_id == ADMIN_TG_ID:
             continue
 
         user_keys = keys_by_tg.get(tg_id, [])
@@ -306,6 +313,24 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
                 results['test_no_connect'].append({**info, 'days_since_test': days_since_test})
             continue
 
+        # Сценарий: VLESS-only пользователь ушёл в офлайн — предложить AWG
+        last_online_ms = user_traffic.get('last_online', 0)
+        has_awg = any(k['vpn_type'] == 'awg' for k in user_keys)
+        if has_active_key and has_vless and not has_awg and last_online_ms > 0:
+            last_online_dt = datetime.utcfromtimestamp(last_online_ms / 1000)
+            days_offline = (NOW - last_online_dt).days
+            if days_offline >= DELAY['vless_only_inactive']:
+                results['vless_only_inactive'].append({**info, 'days_offline': days_offline})
+                continue
+
+        # Сценарий: Был онлайн 1-3 дня назад, перестал заходить
+        if has_active_key and last_online_ms > 0:
+            last_online_dt = datetime.utcfromtimestamp(last_online_ms / 1000)
+            days_offline = (NOW - last_online_dt).days
+            if DELAY['recently_inactive'] <= days_offline <= 3:
+                results['recently_inactive'].append({**info, 'days_offline': days_offline})
+                continue
+
         # Сценарий: Несколько типов конфигов, один не используется — 7 дней
         if has_active_key and len(info['vpn_types']) > 1 and key_age >= DELAY['multi_config_partial']:
             vless_keys = [k for k in user_keys if k['vpn_type'] == 'vless']
@@ -382,6 +407,21 @@ MESSAGES = {
         "Активируйте <b>бесплатный тест</b> — это займёт пару минут!\n\n"
         "🔒 Безопасный интернет без ограничений."
     ),
+    'vless_only_inactive': (
+        "👋 Заметили, что вы не подключались к VPN больше суток.\n\n"
+        "Если есть проблемы с подключением — попробуйте протокол "
+        "<b>AmneziaWG</b>. Он лучше работает на нестабильных каналах, "
+        "мобильном интернете и в удалённых регионах.\n\n"
+        "Нажмите кнопку ниже — мы выдадим вам конфиг AmneziaWG "
+        "в дополнение к текущему VLESS."
+    ),
+    'recently_inactive': (
+        "👋 Мы скучаем!\n\n"
+        "Заметили, что вы давно не заходили. "
+        "Всё ли в порядке с подключением?\n\n"
+        "💡 Кстати, у нас есть бесплатный прокси для Telegram — "
+        "работает без VPN, просто нажмите кнопку ниже."
+    ),
 }
 
 
@@ -408,6 +448,16 @@ def get_buttons_for_scenario(scenario):
     elif scenario == 'never_activated':
         return [
             [{"text": "🎁 Активировать тест", "callback_data": "test_period"}],
+        ]
+    elif scenario == 'vless_only_inactive':
+        return [
+            [{"text": "⚡ Получить AmneziaWG конфиг", "callback_data": "get_awg_config"}],
+            [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
+        ]
+    elif scenario == 'recently_inactive':
+        return [
+            [{"text": "🌐 Прокси для Telegram", "callback_data": "tg_proxy"}],
+            [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
         ]
     return []
 
@@ -438,9 +488,11 @@ def print_report(results):
                 extra += f" | тест {u['days_since_test']}д назад"
             if 'reg_days' in u:
                 extra += f" | рег {u['reg_days']}д назад"
+            if 'days_offline' in u:
+                extra += f" | офлайн {u['days_offline']}д"
             print(
-                f"  tg_id={u['tg_id']:<12} "
-                f"name={u['name']:<15} "
+                f"  tg_id={str(u['tg_id'] or 0):<12} "
+                f"name={str(u['name'] or ''):<15} "
                 f"traffic={u['total_mb']:.1f}MB "
                 f"keys={u['keys']} "
                 f"types={u['vpn_types']} "
@@ -498,6 +550,10 @@ async def send_messages(results):
 
         for u in users:
             tg_id = u['tg_id']
+            if not tg_id:
+                log.info(f"⏭ Skip user_id={u.get('id','?')} [{scenario}] — no tg_id")
+                skipped += 1
+                continue
 
             # Cooldown: не отправлять чаще чем раз в COOLDOWN_DAYS
             if tg_id in recent:
@@ -513,7 +569,9 @@ async def send_messages(results):
 
             msg = msg_template
             if '{price}' in msg:
-                msg = msg.replace('{price}', '149')
+                from bot_xui.tariffs import TARIFFS
+                min_price = min(t['price'] for t in TARIFFS.values() if t['price'] > 0)
+                msg = msg.replace('{price}', str(min_price))
 
             ok = await send_link_safely(
                 tg_id=tg_id,

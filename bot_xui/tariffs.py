@@ -3,24 +3,15 @@ from datetime import timedelta
 
 TARIFFS = {    
     "test_24h": {
-        "name": "Тестовый — 24 часа",
+        "name": "Тестовый — 3 дня",
         "price": 0,
-        "period": "24 часа",
-        "yookassa_description": "Персональный цифровой доступ на 24 часа",
-        "days": 0,
-        "hours" : 24,
+        "period": "3 дня",
+        "yookassa_description": "Персональный цифровой доступ на 3 дня",
+        "days": 3,
+        "hours" : 72,
         "device_limit": 1,
         "is_test": True
     },
-    "trial_1d": {
-        "name": "Пробный — 1 день",
-        "price": 10,
-        "period": "1 день",
-        "yookassa_description": "Персональный цифровой доступ на 1 день",
-        "days": 1,
-        "device_limit": 10,
-        "is_test": False
-    },    
     "weekly_7d": {
         "name": "Неделя — 7 дней",
         "price": 50,
@@ -45,6 +36,15 @@ TARIFFS = {
         "period": "90 дней",
         "yookassa_description": "Персональный цифровой доступ на 90 дней",
         "days": 90,
+        "device_limit": 10,
+        "is_test": False
+    },
+    "annual_365d": {
+        "name": "Год — 365 дней",
+        "price": 1490,
+        "period": "365 дней",
+        "yookassa_description": "Персональный цифровой доступ на 1 год",
+        "days": 365,
         "device_limit": 10,
         "is_test": False
     },

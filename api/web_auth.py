@@ -152,6 +152,18 @@ async def verify(req: VerifyRequest, response: Response):
 
     user = _get_or_create_user_by_contact(destination, channel)
 
+    # Cleanup: remove expired sessions and keep max 10 per user
+    execute_query(
+        "DELETE FROM auth_sessions WHERE user_id = %s AND expires_at <= NOW()",
+        (user['id'],),
+    )
+    execute_query(
+        "DELETE FROM auth_sessions WHERE user_id = %s AND id NOT IN "
+        "(SELECT id FROM (SELECT id FROM auth_sessions WHERE user_id = %s "
+        "ORDER BY created_at DESC LIMIT 9) t)",
+        (user['id'], user['id']),
+    )
+
     # Create session token (30 days)
     session_token = secrets.token_urlsafe(32)
     execute_query(

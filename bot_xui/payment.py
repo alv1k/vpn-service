@@ -15,7 +15,7 @@ from config import (
 )
 from bot_xui.tariffs import TARIFFS
 from bot_xui.test_mode import is_test_mode
-from api.db import create_payment, use_promocode, get_permanent_discount
+from api.db import create_payment, get_permanent_discount
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ async def process_payment(
                     "amount":       {"value": str(price), "currency": "RUB"},
                     "confirmation": {"type": "redirect", "return_url": "https://t.me/tiin_service_bot"},
                     "capture":      True,
+                    "save_payment_method": True,
                     "description":  f"{'Продление' if is_renew else 'Оплата'} тарифа {tariff['name']}",
                     "metadata": {
                         "tg_id":       str(user_id),
@@ -86,8 +87,7 @@ async def process_payment(
                 str(uuid.uuid4()),  # idempotency key
             )
 
-        if promo:
-            use_promocode(promo["id"], user_id)
+        # Note: promo code is consumed in the webhook handler on successful payment
 
         create_payment(
             payment_id=payment.id,
@@ -95,6 +95,7 @@ async def process_payment(
             tariff=tariff_id,
             amount=price,
             status="pending",
+            is_test=use_test,
         )
 
         logger.info(f"Payment created: {payment.id} for user {user_id} (test={use_test})")

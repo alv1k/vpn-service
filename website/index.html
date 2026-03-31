@@ -4,46 +4,115 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TIIN — Быстрый и безопасный доступ в интернет</title>
+<link rel="icon" type="image/png" href="/favicon.png">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;background:#0a0a0a;color:#e5e5e5;
+body{font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e5e5e5;
 min-height:100vh;-webkit-font-smoothing:antialiased}
-.container{max-width:480px;margin:0 auto;padding:1rem}
 
-/* Header */
-.hero{text-align:center;padding:3rem 0 2rem}
-.hero h1{font-size:2rem;color:#fff;letter-spacing:.05em}
-.hero .tagline{color:#a78bfa;font-size:1.1rem;margin-top:.5rem}
-.hero .desc{color:#888;font-size:.9rem;margin-top:1rem;line-height:1.5}
+/* Nav */
+.nav{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.5rem;max-width:960px;margin:0 auto}
+.nav-logo{font-size:1.4rem;font-weight:800;color:#fff;letter-spacing:.08em}
+.nav-links{display:flex;align-items:center;gap:1rem}
+.nav-link{color:#888;text-decoration:none;font-size:.9rem;transition:color .15s}
+.nav-link:hover{color:#fff}
+.nav-cta{background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:.5rem 1.2rem;
+font-size:.85rem;font-weight:600;cursor:pointer;transition:background .15s;text-decoration:none}
+.nav-cta:hover{background:#6d28d9}
+
+/* Hero */
+.l-hero{text-align:center;padding:4rem 1.5rem 3rem;max-width:700px;margin:0 auto}
+.l-hero-badge{display:inline-block;background:rgba(124,58,237,.15);color:#a78bfa;font-size:.75rem;
+font-weight:600;padding:.4rem 1rem;border-radius:20px;border:1px solid rgba(124,58,237,.3);
+margin-bottom:1.5rem;text-transform:uppercase;letter-spacing:.05em}
+.l-hero-title{font-size:2.8rem;font-weight:800;color:#fff;line-height:1.15;letter-spacing:-.02em}
+.l-hero-accent{background:linear-gradient(135deg,#a78bfa,#7c3aed);-webkit-background-clip:text;
+-webkit-text-fill-color:transparent;background-clip:text}
+.l-hero-desc{color:#888;font-size:1.1rem;line-height:1.6;margin-top:1.2rem;max-width:500px;margin-left:auto;margin-right:auto}
+.l-hero-actions{display:flex;gap:.8rem;justify-content:center;margin-top:2rem;flex-wrap:wrap}
+.l-hero-btn{display:inline-flex;align-items:center;justify-content:center;min-width:180px;
+padding:.9rem 1.5rem;font-size:1rem;border-radius:10px;font-weight:600;cursor:pointer;
+transition:all .15s;text-decoration:none;text-align:center}
+.l-hero-stats{display:flex;align-items:center;justify-content:center;gap:1.5rem;margin-top:2.5rem}
+.l-stat{text-align:center}
+.l-stat-num{display:block;font-size:1.5rem;font-weight:800;color:#fff}
+.l-stat-label{display:block;font-size:.75rem;color:#666;margin-top:.2rem}
+.l-stat-sep{width:1px;height:30px;background:#333}
+
+/* Sections */
+.l-section{max-width:900px;margin:0 auto;padding:3rem 1.5rem}
+.l-section-title{text-align:center;font-size:1.6rem;font-weight:700;color:#fff;margin-bottom:2rem}
 
 /* Features */
-.features{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin:1.5rem 0}
-.feat{background:#161616;border:1px solid #262626;border-radius:10px;padding:.8rem;text-align:center}
-.feat .icon{font-size:1.5rem;margin-bottom:.3rem}
-.feat .text{font-size:.8rem;color:#ccc}
+.l-features{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+.l-feat{background:#141414;border:1px solid #1e1e1e;border-radius:14px;padding:1.5rem;transition:border-color .2s}
+.l-feat:hover{border-color:#333}
+.l-feat-icon{font-size:1.8rem;margin-bottom:.8rem}
+.l-feat h3{font-size:.95rem;font-weight:600;color:#fff;margin-bottom:.5rem}
+.l-feat p{font-size:.82rem;color:#777;line-height:1.5}
+
+/* Steps */
+.l-steps{max-width:500px;margin:0 auto;display:flex;flex-direction:column;gap:1.2rem}
+.l-step{display:flex;align-items:flex-start;gap:1rem;background:#141414;border:1px solid #1e1e1e;
+border-radius:14px;padding:1.2rem 1.5rem}
+.l-step-num{flex-shrink:0;width:36px;height:36px;display:flex;align-items:center;justify-content:center;
+background:#7c3aed;color:#fff;border-radius:50%;font-size:.9rem;font-weight:700}
+.l-step-body h3{font-size:.95rem;font-weight:600;color:#fff}
+.l-step-body p{font-size:.82rem;color:#777;margin-top:.3rem;line-height:1.4}
+
+/* Proxy banner */
+.l-proxy-banner{display:flex;flex-direction:column;align-items:center;text-align:center;
+background:linear-gradient(135deg,#1a1030 0%,#161616 100%);border:1px solid rgba(124,58,237,.2);
+border-radius:16px;padding:2rem 1.5rem;max-width:600px;margin:0 auto;gap:1rem}
+.l-proxy-text h3{color:#fff;font-size:1.1rem;margin-bottom:.3rem}
+.l-proxy-text p{color:#999;font-size:.85rem;line-height:1.4}
+.l-proxy-btn{white-space:nowrap;padding:.7rem 1.5rem;font-size:.9rem;text-decoration:none;
+background:#7c3aed;color:#fff;border-radius:10px;font-weight:600;display:inline-block;transition:background .15s}
+.l-proxy-btn:hover{background:#6d28d9}
+.l-proxy-dl{font-size:.8rem;color:#888;text-decoration:none}
+.l-proxy-dl:hover{color:#a78bfa}
 
 /* Tariffs */
-.section-title{font-size:.85rem;color:#888;text-transform:uppercase;letter-spacing:.05em;
-margin:1.5rem 0 .8rem;text-align:center}
-.tariff{background:#161616;border:1px solid #262626;border-radius:12px;padding:1rem;
-margin-bottom:.6rem;cursor:pointer;transition:all .15s;position:relative}
-.tariff:hover,.tariff.selected{border-color:#7c3aed;background:#1a1528}
-.tariff .name{font-weight:600;color:#fff;font-size:.95rem}
-.tariff .details{color:#888;font-size:.8rem;margin-top:.3rem}
-.tariff .price{position:absolute;right:1rem;top:50%;transform:translateY(-50%);
-font-size:1.1rem;font-weight:700;color:#a78bfa}
-.tariff .badge{display:inline-block;background:#7c3aed;color:#fff;font-size:.65rem;
-padding:.15rem .4rem;border-radius:4px;margin-left:.4rem;vertical-align:middle}
+.l-tariffs{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;
+max-width:700px;margin:0 auto 1.5rem}
+.l-tariff{background:#141414;border:2px solid #1e1e1e;border-radius:14px;padding:1.5rem;
+text-align:center;cursor:pointer;transition:all .2s;position:relative}
+.l-tariff:hover{border-color:#333;transform:translateY(-2px)}
+.l-tariff.selected{border-color:#7c3aed;background:#1a1528}
+.l-tariff.popular{border-color:rgba(124,58,237,.2)}
+.l-tariff-badge{position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#7c3aed;
+color:#fff;font-size:.65rem;font-weight:700;padding:.2rem .7rem;border-radius:10px;
+text-transform:uppercase;letter-spacing:.03em}
+.l-tariff-name{font-size:.9rem;font-weight:600;color:#fff}
+.l-tariff-period{font-size:.75rem;color:#666;margin-top:.3rem}
+.l-tariff-price{font-size:1.8rem;font-weight:800;color:#a78bfa;margin-top:.8rem}
+.l-tariff-price span{font-size:1rem}
+.l-tariff-meta{font-size:.72rem;color:#555;margin-top:.5rem}
 
-/* Form */
-.card{background:#161616;border:1px solid #262626;border-radius:12px;padding:1.2rem;margin:1rem 0}
-.card h2{font-size:.9rem;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.8rem}
-.input-wrap{position:relative}
+/* Order form */
+.l-order{max-width:440px;margin:0 auto;background:#141414;border:1px solid #1e1e1e;
+border-radius:14px;padding:1.5rem}
+.l-order h3{font-size:.85rem;color:#888;text-transform:uppercase;letter-spacing:.05em;
+margin-bottom:1rem;text-align:center}
 .input-wrap input{width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
 padding:.8rem;color:#fff;font-size:.95rem;outline:none;transition:border-color .15s}
 .input-wrap input:focus{border-color:#7c3aed}
 .input-wrap input::placeholder{color:#555}
 .error{color:#ef4444;font-size:.8rem;margin-top:.3rem;display:none}
+
+.promo-row{display:flex;flex-direction:column;gap:.5rem;margin-top:.8rem}
+.promo-row input{width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
+padding:.6rem .8rem;color:#fff;font-size:.85rem;outline:none;text-transform:uppercase}
+.promo-row input:focus{border-color:#7c3aed}
+.promo-btn{width:100%;background:none;border:1px solid #444;border-radius:8px;padding:.6rem 1rem;
+color:#aaa;font-size:.8rem;cursor:pointer;transition:all .15s}
+.promo-btn:hover{border-color:#7c3aed;color:#7c3aed}
+.promo-msg{font-size:.8rem;margin-top:.3rem;min-height:1.1em}
+.promo-msg.ok{color:#22c55e}.promo-msg.err{color:#ef4444}
+
+.total{text-align:center;margin-top:.8rem;color:#888;font-size:.85rem}
+.total .amount{color:#fff;font-weight:600;font-size:1.1rem}
+.total .old-price{text-decoration:line-through;color:#666;font-size:.9rem;margin-right:.3rem}
 
 .pay-btn{display:block;width:100%;padding:1rem;background:#7c3aed;color:#fff;border:none;
 border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer;margin-top:1rem;
@@ -51,23 +120,50 @@ transition:all .15s;text-align:center}
 .pay-btn:hover{background:#6d28d9}
 .pay-btn:disabled{background:#333;color:#666;cursor:not-allowed}
 
-.total{text-align:center;margin-top:.8rem;color:#888;font-size:.85rem}
-.total .amount{color:#fff;font-weight:600;font-size:1.1rem}
-.total .old-price{text-decoration:line-through;color:#666;font-size:.9rem;margin-right:.3rem}
+/* FAQ */
+.l-faq{max-width:600px;margin:0 auto}
+.faq-item{border-bottom:1px solid #1e1e1e;cursor:pointer;padding:1rem 0}
+.faq-item:last-child{border-bottom:none}
+.faq-q{display:flex;justify-content:space-between;align-items:center;font-size:.95rem;font-weight:500;color:#ccc}
+.faq-q:hover{color:#fff}
+.faq-arrow{font-size:.6rem;color:#555;transition:transform .2s}
+.faq-arrow.open{transform:rotate(180deg)}
+.faq-a{font-size:.85rem;color:#777;line-height:1.6;margin-top:.6rem;padding-right:1.5rem;display:none}
+.faq-a.open{display:block}
 
-/* Promo */
-.promo-row{display:flex;gap:.5rem;margin-top:.8rem}
-.promo-row input{flex:1;background:#1a1a1a;border:1px solid #333;border-radius:8px;
-padding:.6rem .8rem;color:#fff;font-size:.85rem;outline:none;text-transform:uppercase}
-.promo-row input:focus{border-color:#7c3aed}
-.promo-btn{background:none;border:1px solid #444;border-radius:8px;padding:.6rem 1rem;
-color:#aaa;font-size:.8rem;cursor:pointer;white-space:nowrap;transition:all .15s}
-.promo-btn:hover{border-color:#7c3aed;color:#7c3aed}
-.promo-msg{font-size:.8rem;margin-top:.3rem;min-height:1.1em}
-.promo-msg.ok{color:#22c55e}.promo-msg.err{color:#ef4444}
+/* TG button */
+.tg-btn{display:inline-flex;align-items:center;justify-content:center;gap:.6rem;
+padding:.9rem 1.5rem;background:#2AABEE;color:#fff;border:none;border-radius:10px;
+font-size:1rem;font-weight:600;cursor:pointer;transition:background .15s;text-decoration:none}
+.tg-btn:hover{background:#229ED9}
 
-/* Steps */
-.step{display:none}.step.active{display:block}
+/* Footer */
+.l-footer{text-align:center;padding:3rem 1.5rem;border-top:1px solid #1a1a1a;max-width:900px;margin:0 auto}
+.l-footer-logo{font-size:1.2rem;font-weight:800;color:#fff;letter-spacing:.08em;margin-bottom:1rem}
+.l-footer-links{display:flex;justify-content:center;gap:1.5rem;margin-bottom:1rem}
+.l-footer-links a{color:#666;text-decoration:none;font-size:.85rem;transition:color .15s}
+.l-footer-links a:hover{color:#a78bfa}
+.l-footer-copy{color:#444;font-size:.75rem}
+
+/* Support form */
+.l-support{max-width:440px;margin:0 auto;background:#141414;border:1px solid #1e1e1e;border-radius:14px;padding:1.5rem}
+.l-support h3{font-size:.85rem;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:1rem;text-align:center}
+.l-support textarea{width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
+padding:.8rem;color:#fff;font-size:.9rem;outline:none;transition:border-color .15s;resize:vertical;
+min-height:120px;font-family:inherit;line-height:1.5}
+.l-support textarea:focus{border-color:#7c3aed}
+.l-support textarea::placeholder{color:#555}
+.l-support .char-count{text-align:right;font-size:.75rem;color:#555;margin-top:.3rem}
+.support-btn{display:block;width:100%;padding:1rem;background:#7c3aed;color:#fff;border:none;
+border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer;margin-top:1rem;transition:all .15s}
+.support-btn:hover{background:#6d28d9}
+.support-btn:disabled{background:#333;color:#666;cursor:not-allowed}
+.support-back{display:block;text-align:center;margin-top:.8rem;color:#666;font-size:.85rem;
+text-decoration:none;transition:color .15s}
+.support-back:hover{color:#a78bfa}
+
+/* Steps (pages) */
+.page{display:none}.page.active{display:block}
 
 /* Loading */
 .loading{text-align:center;padding:3rem 0}
@@ -77,58 +173,109 @@ border-top-color:#7c3aed;border-radius:50%;animation:spin .8s linear infinite}
 .loading .text{color:#888;margin-top:1rem;font-size:.9rem}
 
 /* Success */
-.success{text-align:center;padding:2rem 0}
+.success{text-align:center;padding:3rem 1.5rem;max-width:480px;margin:0 auto}
 .success .icon{font-size:3rem;margin-bottom:.5rem}
 .success h2{color:#22c55e;font-size:1.3rem}
 .success .link{display:block;margin:1.5rem auto;padding:1rem;background:#7c3aed;color:#fff;
 border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width:280px}
 .success .link:hover{background:#6d28d9}
 
-/* Footer */
-.footer{text-align:center;padding:2rem 0;color:#555;font-size:.75rem}
-.footer a{color:#888;text-decoration:none}
-.footer a:hover{color:#a78bfa}
-
 /* Responsive */
-@media(max-width:360px){.features{grid-template-columns:1fr}.hero h1{font-size:1.6rem}}
+@media(max-width:768px){.l-hero-title{font-size:2rem}.l-features{grid-template-columns:1fr 1fr}
+.l-tariffs{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.l-hero{padding:2.5rem 1rem 2rem}.l-hero-title{font-size:1.7rem}
+.l-hero-desc{font-size:.95rem}.l-hero-btn{min-width:150px;padding:.8rem 1rem;font-size:.9rem}
+.l-features{grid-template-columns:1fr}.l-tariffs{grid-template-columns:1fr}
+.l-section{padding:2rem 1rem}}
 </style>
 </head>
 <body>
 
-<div class="container">
+<!-- Landing page -->
+<div class="page active" id="page-landing">
 
-<!-- Step 1: Landing -->
-<div class="step active" id="step1">
-    <div class="hero">
-        <h1>TIIN</h1>
-        <div class="tagline">Свободный интернет</div>
-        <div class="desc">Быстрый и стабильный доступ к любым сайтам и сервисам. До 10 устройств одновременно.</div>
+<nav class="nav">
+    <div class="nav-logo">TIIN</div>
+    <div class="nav-links">
+        <a href="/login" class="nav-link">Войти</a>
+        <a href="#tariffs" class="nav-cta" onclick="scrollTo('#tariffs')">Подключить</a>
     </div>
+</nav>
 
-    <div class="features">
-        <div class="feat"><div class="icon">&#9889;</div><div class="text">Высокая скорость</div></div>
-        <div class="feat"><div class="icon">&#128274;</div><div class="text">Шифрование</div></div>
-        <div class="feat"><div class="icon">&#127760;</div><div class="text">Все сайты</div></div>
-        <div class="feat"><div class="icon">&#128241;</div><div class="text">До 10 устройств</div></div>
+<section class="l-hero">
+    <div class="l-hero-badge">VPN-сервис нового поколения</div>
+    <h1 class="l-hero-title">Свободный интернет<br><span class="l-hero-accent">без границ</span></h1>
+    <p class="l-hero-desc">Быстрый и стабильный доступ к любым сайтам и сервисам. Современные протоколы, которые невозможно заблокировать.</p>
+    <div class="l-hero-actions">
+        <a href="#tariffs" class="pay-btn l-hero-btn" style="max-width:220px" onclick="scrollTo('#tariffs')">Подключить VPN</a>        
     </div>
+    <div class="l-hero-actions" style="margin-top: 1rem">
+        <a href="https://t.me/tiin_service_bot?start=web" class="tg-btn l-hero-btn" style="max-width:220px">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="#fff"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg>
+            Telegram-бот
+        </a>
+    </div>
+    <div class="l-hero-stats">
+        <div class="l-stat"><span class="l-stat-num">10</span><span class="l-stat-label">устройств</span></div>
+        <div class="l-stat-sep"></div>
+        <div class="l-stat"><span class="l-stat-num">0</span><span class="l-stat-label">логов</span></div>
+        <div class="l-stat-sep"></div>
+        <div class="l-stat"><span class="l-stat-num">24/7</span><span class="l-stat-label">поддержка</span></div>
+    </div>
+</section>
 
-    <div class="section-title">Тарифы</div>
-    <div id="tariffList"></div>
+<section class="l-section">
+    <h2 class="l-section-title">Почему TIIN?</h2>
+    <div class="l-features">
+        <div class="l-feat"><div class="l-feat-icon">&#9889;</div><h3>Высокая скорость</h3><p>Серверы в Европе с каналами от 1 Гбит/с. Видео, игры, звонки — всё летает.</p></div>
+        <div class="l-feat"><div class="l-feat-icon">&#128737;</div><h3>Невидимый трафик</h3><p>Протоколы VLESS Reality и AmneziaWG маскируют VPN-трафик. Блокировки не работают.</p></div>
+        <div class="l-feat"><div class="l-feat-icon">&#128274;</div><h3>Без логов</h3><p>Мы не храним историю ваших действий. Никакой слежки, никаких записей.</p></div>
+        <div class="l-feat"><div class="l-feat-icon">&#128241;</div><h3>Все устройства</h3><p>iPhone, Android, Windows, macOS, Linux. До 10 устройств на одном аккаунте.</p></div>
+        <div class="l-feat"><div class="l-feat-icon">&#128640;</div><h3>2 минуты на настройку</h3><p>Оплатите — получите ссылку с готовым конфигом. Один клик — и вы подключены.</p></div>
+        <div class="l-feat"><div class="l-feat-icon">&#128172;</div><h3>Живая поддержка</h3><p>Telegram-бот и реальные люди. Поможем настроить на любом устройстве.</p></div>
+    </div>
+</section>
 
-    <div class="card">
-        <h2>Оформление</h2>
+<section class="l-section">
+    <h2 class="l-section-title">Как это работает</h2>
+    <div class="l-steps">
+        <div class="l-step"><div class="l-step-num">1</div><div class="l-step-body"><h3>Выберите тариф</h3><p>От 3 дней до 1 года. Чем дольше — тем дешевле.</p></div></div>
+        <div class="l-step"><div class="l-step-num">2</div><div class="l-step-body"><h3>Оплатите картой</h3><p>Быстрая оплата через ЮKassa. Без комиссий и скрытых платежей.</p></div></div>
+        <div class="l-step"><div class="l-step-num">3</div><div class="l-step-body"><h3>Подключайтесь</h3><p>Получите личный кабинет с конфигом. Установите приложение и нажмите «Подключить».</p></div></div>
+    </div>
+</section>
+
+<section class="l-section">
+    <div class="l-proxy-banner">
+        <svg viewBox="0 0 24 24" width="32" height="32" fill="#7c3aed"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg>
+        <div class="l-proxy-text">
+            <h3>Telegram не открывается?</h3>
+            <p>Подключите бесплатный прокси для Telegram — работает без VPN, в один клик.</p>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.5rem;align-items:center">
+            <a href="tg://proxy?server=tiinservice.ru&port=8443&secret=7tZhp-UUviXSuUagLCZgx8UzNDQ5ODguc25rLnd0Zg" class="l-proxy-btn" id="proxyBtn">Подключить прокси</a>
+            <a href="/proxy.html" class="l-proxy-dl">&#128206; Скачать файл</a>
+        </div>
+    </div>
+</section>
+
+<section class="l-section" id="tariffs">
+    <h2 class="l-section-title">Тарифы</h2>
+    <div class="l-tariffs" id="tariffList"></div>
+
+    <div class="l-order">
+        <h3>Оформление</h3>
         <div class="input-wrap">
             <input type="email" id="emailInput" placeholder="Ваш email" autocomplete="email">
         </div>
         <div class="error" id="emailError">Введите корректный email</div>
         <div class="promo-row">
             <input type="text" id="promoInput" placeholder="Промокод" maxlength="30" autocomplete="off">
-            <button type="button" class="promo-btn" id="promoBtn" onclick="applyPromo()">Применить</button>
+            <button type="button" class="promo-btn" onclick="applyPromo()">Применить</button>
         </div>
         <div class="promo-msg" id="promoMsg"></div>
         <div class="total">Итого: <span class="old-price" id="oldPrice" style="display:none"></span><span class="amount" id="totalAmount">—</span></div>
 
-        <!-- Email verification -->
         <div id="codeSection" style="display:none;margin-top:.8rem">
             <div style="color:#888;font-size:.85rem;text-align:center;margin-bottom:.5rem">
                 Код отправлен на <b id="codeEmailDisplay" style="color:#a78bfa"></b>
@@ -144,31 +291,38 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
             <a href="javascript:resetCode()" style="color:#888;font-size:.8rem;text-decoration:none">Изменить email</a>
         </div>
     </div>
+</section>
 
-    <div class="footer">
-        <a href="https://t.me/tiin_service_bot">Telegram-бот</a> &middot;
+<section class="l-section">
+    <h2 class="l-section-title">Частые вопросы</h2>
+    <div class="l-faq" id="faqList"></div>
+</section>
+
+<footer class="l-footer">
+    <div class="l-footer-logo">TIIN</div>
+    <div class="l-footer-links">
+        <a href="/login">Личный кабинет</a>
+        <a href="https://t.me/tiin_service_bot?start=web">Telegram-бот</a>
         <a href="https://t.me/tiin_service">Канал</a>
+        <a href="javascript:showPage('support')">Поддержка</a>
     </div>
+    <div class="l-footer-copy">&copy; 2026 TIIN. Быстрый и безопасный доступ в интернет.</div>
+</footer>
+
 </div>
 
-<!-- Step 2: Redirect / Loading -->
-<div class="step" id="step2">
-    <div class="loading">
-        <div class="spinner"></div>
-        <div class="text">Перенаправление на оплату...</div>
-    </div>
+<!-- Redirect -->
+<div class="page" id="page-redirect">
+    <div class="loading"><div class="spinner"></div><div class="text">Перенаправление на оплату...</div></div>
 </div>
 
-<!-- Step 3: Waiting for payment -->
-<div class="step" id="step3">
-    <div class="loading">
-        <div class="spinner"></div>
-        <div class="text">Ожидание оплаты...</div>
-    </div>
+<!-- Polling -->
+<div class="page" id="page-polling">
+    <div class="loading"><div class="spinner"></div><div class="text">Ожидание оплаты...</div></div>
 </div>
 
-<!-- Step 4: Success -->
-<div class="step" id="step4">
+<!-- Success -->
+<div class="page" id="page-success">
     <div class="success">
         <div class="icon">&#10004;&#65039;</div>
         <h2>Оплата прошла!</h2>
@@ -177,50 +331,144 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
         <div style="background:#1c1507;border:1px solid #854d0e;border-radius:10px;padding:1rem;margin-top:1.5rem;text-align:left">
             <div style="font-weight:600;color:#facc15;font-size:.9rem">&#9888;&#65039; Сохраните ссылку!</div>
             <p style="color:#a3a3a3;font-size:.8rem;margin-top:.4rem;line-height:1.4">
-                Добавьте страницу в закладки браузера. Это ваш единственный способ доступа к конфигу. Если потеряете ссылку — напишите в поддержку.
+                Добавьте страницу в закладки браузера. Это ваш единственный способ доступа к конфигу.
             </p>
         </div>
     </div>
 </div>
 
+<!-- Support -->
+<div class="page" id="page-support">
+<section class="l-section" style="padding-top:4rem">
+    <h2 class="l-section-title">Поддержка</h2>
+    <div class="l-support">
+        <h3>Написать нам</h3>
+        <div class="input-wrap">
+            <input type="email" id="supEmail" placeholder="Ваш email" autocomplete="email">
+        </div>
+        <div class="error" id="supEmailError">Введите корректный email</div>
+
+        <div id="supCodeSection" style="display:none;margin-top:.8rem">
+            <div style="color:#888;font-size:.85rem;text-align:center;margin-bottom:.5rem">
+                Код отправлен на <b id="supCodeEmail" style="color:#a78bfa"></b>
+            </div>
+            <div class="input-wrap">
+                <input type="text" id="supCode" placeholder="Код из письма" maxlength="6"
+                       style="text-align:center;letter-spacing:4px;font-size:1.1rem" autocomplete="one-time-code">
+            </div>
+        </div>
+
+        <div id="supMsgSection" style="display:none;margin-top:.8rem">
+            <textarea id="supMessage" placeholder="Опишите вашу проблему или вопрос..." maxlength="5000"></textarea>
+            <div class="char-count"><span id="supCharCount">0</span>/5000</div>
+        </div>
+
+        <button class="support-btn" id="supBtn" disabled>Отправить код</button>
+        <div id="supChangeEmail" style="display:none;text-align:center;margin-top:.5rem">
+            <a href="javascript:supResetCode()" style="color:#888;font-size:.8rem;text-decoration:none">Изменить email</a>
+        </div>
+        <a href="javascript:showPage('landing')" class="support-back">&#8592; Вернуться на главную</a>
+    </div>
+</section>
+</div>
+
+<!-- Support success -->
+<div class="page" id="page-support-ok">
+<div class="success" style="padding-top:5rem">
+    <div class="icon">&#9993;&#65039;</div>
+    <h2 style="color:#a78bfa">Сообщение отправлено!</h2>
+    <p style="color:#888;margin-top:.5rem">Мы ответим на ваш email в ближайшее время.</p>
+    <a href="javascript:showPage('landing')" class="link" style="background:#7c3aed">На главную</a>
+</div>
 </div>
 
 <script>
 var API = "/api/web";
 var selectedTariff = null;
 var tariffs = [];
-var appliedPromo = null;  // {code, type, value, discount_price}
+var appliedPromo = null;
+var codeStage = false;
 
-function showStep(n) {
-    document.querySelectorAll('.step').forEach(function(s) { s.classList.remove('active') });
-    document.getElementById('step' + n).classList.add('active');
+function showPage(id) {
+    document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active') });
+    document.getElementById('page-' + id).classList.add('active');
 }
 
-// Load tariffs
+function scrollTo(sel) {
+    var el = document.querySelector(sel);
+    if (el) { event.preventDefault(); el.scrollIntoView({ behavior: 'smooth' }); }
+}
+
+// Referral
+(function() {
+    var params = new URLSearchParams(window.location.search);
+    var ref = params.get('ref');
+    if (ref && ref.length <= 64 && /^[A-Za-z0-9_-]+$/.test(ref)) localStorage.setItem('tiin_ref', ref);
+})();
+function getRef() { return localStorage.getItem('tiin_ref') || null; }
+
+// Analytics
+(function() {
+    var vid = localStorage.getItem('tiin_vid');
+    if (!vid) { vid = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substr(2); localStorage.setItem('tiin_vid', vid); }
+    var blob = new Blob([JSON.stringify({ event: 'visit', visitor_id: vid })], { type: 'application/json' });
+    navigator.sendBeacon && navigator.sendBeacon('/api/web/event', blob);
+    document.getElementById('proxyBtn').addEventListener('click', function() {
+        var b = new Blob([JSON.stringify({ event: 'click_proxy', visitor_id: vid })], { type: 'application/json' });
+        navigator.sendBeacon && navigator.sendBeacon('/api/web/event', b);
+    });
+})();
+
+// FAQ
+var faqData = [
+    { q: 'Как начать пользоваться?', a: 'Выберите тариф, оплатите, и вы получите ссылку на личный кабинет с инструкциями по подключению. Настройка занимает 2 минуты.' },
+    { q: 'Какие устройства поддерживаются?', a: 'iPhone, Android, Windows, macOS, Linux. На каждом тарифе до 10 устройств одновременно.' },
+    { q: 'Это безопасно?', a: 'Да. Мы используем современные протоколы шифрования (VLESS Reality, AmneziaWG). Трафик невозможно прочитать или заблокировать.' },
+    { q: 'Что если не заработает?', a: 'Напишите нам в Telegram-бот — поможем настроить. Если совсем не подойдёт, вернём деньги.' },
+    { q: 'Вы храните логи?', a: 'Нет. Мы не ведём журналов активности и не отслеживаем, какие сайты вы посещаете.' }
+];
+var faqHtml = '';
+faqData.forEach(function(f, i) {
+    faqHtml += '<div class="faq-item" onclick="toggleFaq(' + i + ')">' +
+        '<div class="faq-q"><span>' + f.q + '</span><span class="faq-arrow" id="faq-arrow-' + i + '">&#9660;</span></div>' +
+        '<div class="faq-a" id="faq-a-' + i + '">' + f.a + '</div></div>';
+});
+document.getElementById('faqList').innerHTML = faqHtml;
+
+function toggleFaq(i) {
+    var a = document.getElementById('faq-a-' + i);
+    var arrow = document.getElementById('faq-arrow-' + i);
+    var open = a.classList.contains('open');
+    a.classList.toggle('open');
+    arrow.classList.toggle('open');
+}
+
+// Tariffs
 fetch(API + '/tariffs')
     .then(function(r) { return r.json() })
     .then(function(data) {
         tariffs = data;
         var html = '';
         data.forEach(function(t) {
-            var badge = t.days >= 90 ? '<span class="badge">Выгодно</span>' : '';
-            var ppd = t.days > 0 ? (t.price / t.days).toFixed(1) : '';
-            var details = t.period + ' · ' + t.device_limit + ' устройств';
-            if (t.days > 3) details += ' · ' + ppd + ' Р/день';
-            html += '<div class="tariff" onclick="selectTariff(\'' + t.id + '\')" id="tariff_' + t.id + '">' +
-                '<div class="name">' + t.name + badge + '</div>' +
-                '<div class="details">' + details + '</div>' +
-                '<div class="price">' + t.price + ' &#8381;</div></div>';
+            var pop = t.days >= 90 ? ' popular' : '';
+            var badge = t.days >= 90 ? '<div class="l-tariff-badge">Выгодно</div>' : '';
+            var meta = t.device_limit + ' устройств';
+            if (t.days > 3) meta += ' &middot; ' + (t.price / t.days).toFixed(0) + ' &#8381;/день';
+            html += '<div class="l-tariff' + pop + '" onclick="selectTariff(\'' + t.id + '\')" id="tariff_' + t.id + '">' +
+                badge +
+                '<div class="l-tariff-name">' + t.name + '</div>' +
+                '<div class="l-tariff-period">' + t.period + '</div>' +
+                '<div class="l-tariff-price">' + t.price + ' <span>&#8381;</span></div>' +
+                '<div class="l-tariff-meta">' + meta + '</div></div>';
         });
         document.getElementById('tariffList').innerHTML = html;
     });
 
 function selectTariff(id) {
     selectedTariff = tariffs.find(function(t) { return t.id === id });
-    document.querySelectorAll('.tariff').forEach(function(el) { el.classList.remove('selected') });
+    document.querySelectorAll('.l-tariff').forEach(function(el) { el.classList.remove('selected') });
     document.getElementById('tariff_' + id).classList.add('selected');
     updateTotal();
-    // Re-validate promo for new tariff
     if (appliedPromo) applyPromo();
     checkForm();
 }
@@ -242,39 +490,22 @@ function updateTotal() {
 function applyPromo() {
     var code = document.getElementById('promoInput').value.trim();
     var msgEl = document.getElementById('promoMsg');
-    if (!code) {
-        appliedPromo = null;
-        msgEl.textContent = '';
-        msgEl.className = 'promo-msg';
-        updateTotal();
-        return;
-    }
+    if (!code) { appliedPromo = null; msgEl.textContent = ''; msgEl.className = 'promo-msg'; updateTotal(); return; }
     var tariffId = selectedTariff ? selectedTariff.id : null;
-    fetch(API + '/promo/validate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: code, tariff_id: tariffId })
-    })
+    fetch(API + '/promo/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code, tariff_id: tariffId }) })
     .then(function(r) { return r.json() })
     .then(function(d) {
         if (d.valid) {
-            appliedPromo = { code: code, type: d.type, value: d.value, discount_price: d.discount_price };
-            msgEl.textContent = d.message || 'Промокод применён';
-            msgEl.className = 'promo-msg ok';
+            appliedPromo = { code: code, discount_price: d.discount_price };
+            msgEl.textContent = d.message || 'Промокод применён'; msgEl.className = 'promo-msg ok';
         } else {
-            appliedPromo = null;
-            msgEl.textContent = d.message || 'Неверный промокод';
-            msgEl.className = 'promo-msg err';
+            appliedPromo = null; msgEl.textContent = d.message || 'Неверный промокод'; msgEl.className = 'promo-msg err';
         }
         updateTotal();
     })
-    .catch(function() {
-        msgEl.textContent = 'Ошибка проверки';
-        msgEl.className = 'promo-msg err';
-    });
+    .catch(function() { msgEl.textContent = 'Ошибка проверки'; msgEl.className = 'promo-msg err'; });
 }
-
-var codeStage = false; // false = need to send code, true = code sent, waiting for input
 
 function checkForm() {
     var email = document.getElementById('emailInput').value.trim();
@@ -299,23 +530,14 @@ document.getElementById('emailInput').addEventListener('input', function() {
 
 document.getElementById('payBtn').addEventListener('click', function() {
     var email = document.getElementById('emailInput').value.trim();
-    if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
-        document.getElementById('emailError').style.display = 'block';
-        return;
-    }
+    if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) { document.getElementById('emailError').style.display = 'block'; return; }
     document.getElementById('emailError').style.display = 'none';
     var btn = document.getElementById('payBtn');
 
     if (!codeStage) {
-        // Step 1: send verification code
-        btn.disabled = true;
-        btn.textContent = 'Отправка кода...';
-
-        fetch(API + '/order/send-code', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email })
-        })
+        btn.disabled = true; btn.textContent = 'Отправка кода...';
+        fetch(API + '/order/send-code', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email }) })
         .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
         .then(function(res) {
             if (res.data.ok) {
@@ -324,88 +546,145 @@ document.getElementById('payBtn').addEventListener('click', function() {
                 document.getElementById('codeSection').style.display = 'block';
                 document.getElementById('changeEmail').style.display = 'block';
                 document.getElementById('emailInput').disabled = true;
-                btn.textContent = 'Подтвердить и оплатить';
-                btn.disabled = false;
+                btn.textContent = 'Подтвердить и оплатить'; btn.disabled = false;
                 document.getElementById('codeInput').focus();
             } else {
                 alert(res.data.detail || res.data.message || 'Ошибка отправки кода');
-                btn.textContent = 'Перейти к оплате';
-                btn.disabled = false;
+                btn.textContent = 'Перейти к оплате'; btn.disabled = false;
             }
         })
-        .catch(function() {
-            alert('Ошибка соединения');
-            btn.textContent = 'Перейти к оплате';
-            btn.disabled = false;
-        });
+        .catch(function() { alert('Ошибка соединения'); btn.textContent = 'Перейти к оплате'; btn.disabled = false; });
     } else {
-        // Step 2: verify code and create order
         var code = document.getElementById('codeInput').value.trim();
         if (!code) { alert('Введите код из письма'); return; }
-
-        showStep(2);
-
-        fetch(API + '/order', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                email: email,
-                tariff_id: selectedTariff.id,
-                code: code,
-                promo_code: appliedPromo ? appliedPromo.code : null
-            })
-        })
+        showPage('redirect');
+        fetch(API + '/order', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, tariff_id: selectedTariff.id, code: code,
+                promo_code: appliedPromo ? appliedPromo.code : null, ref: getRef() }) })
         .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
         .then(function(res) {
             if (res.data.payment_url) {
                 sessionStorage.setItem('payment_id', res.data.payment_id);
+                sessionStorage.setItem('web_token', res.data.web_token);
                 window.location.href = res.data.payment_url;
-            } else {
-                showStep(1);
-                alert(res.data.detail || res.data.message || 'Ошибка создания платежа');
-            }
+            } else { showPage('landing'); alert(res.data.detail || res.data.message || 'Ошибка создания платежа'); }
         })
-        .catch(function() {
-            showStep(1);
-            alert('Ошибка соединения');
-        });
+        .catch(function() { showPage('landing'); alert('Ошибка соединения'); });
     }
 });
 
-// On page load: check if returning from payment
+// Payment polling on return
 (function() {
     var pid = sessionStorage.getItem('payment_id');
     if (!pid) return;
-
-    showStep(3);
+    showPage('polling');
     var attempts = 0;
-    var maxAttempts = 60; // 5 minutes
-
     var poll = setInterval(function() {
-        attempts++;
-        if (attempts > maxAttempts) {
-            clearInterval(poll);
-            document.querySelector('#step3 .text').textContent = 'Платёж обрабатывается. Проверьте позже.';
-            return;
-        }
-
-        fetch(API + '/status/' + pid)
-            .then(function(r) { return r.json() })
-            .then(function(data) {
-                if (data.status === 'paid' && data.portal_url) {
-                    clearInterval(poll);
-                    sessionStorage.removeItem('payment_id');
-                    document.getElementById('portalLink').href = data.portal_url;
-                    showStep(4);
-                } else if (data.status === 'canceled') {
-                    clearInterval(poll);
-                    sessionStorage.removeItem('payment_id');
-                    alert('Платёж отменён');
-                    showStep(1);
-                }
-            });
+        if (++attempts > 60) { clearInterval(poll); document.querySelector('#page-polling .text').textContent = 'Платёж обрабатывается. Проверьте позже.'; return; }
+        fetch(API + '/status/' + pid).then(function(r) { return r.json() }).then(function(data) {
+            if (data.status === 'paid') {
+                clearInterval(poll);
+                var wt = sessionStorage.getItem('web_token');
+                sessionStorage.removeItem('payment_id'); sessionStorage.removeItem('web_token');
+                document.getElementById('portalLink').href = 'https://344988.snk.wtf/my/' + wt; showPage('success');
+            } else if (data.status === 'canceled') {
+                clearInterval(poll); sessionStorage.removeItem('payment_id');
+                alert('Платёж отменён'); showPage('landing');
+            }
+        });
     }, 5000);
 })();
+
+// ── Support form ──
+var supCodeStage = false;
+var supMsgStage = false;
+
+function supResetCode() {
+    supCodeStage = false; supMsgStage = false;
+    document.getElementById('supCodeSection').style.display = 'none';
+    document.getElementById('supMsgSection').style.display = 'none';
+    document.getElementById('supChangeEmail').style.display = 'none';
+    document.getElementById('supCode').value = '';
+    document.getElementById('supMessage').value = '';
+    document.getElementById('supCharCount').textContent = '0';
+    document.getElementById('supEmail').disabled = false;
+    document.getElementById('supBtn').textContent = 'Отправить код';
+    supCheckForm();
+}
+
+function supCheckForm() {
+    var email = document.getElementById('supEmail').value.trim();
+    var valid = email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);
+    if (supMsgStage) {
+        var msg = document.getElementById('supMessage').value.trim();
+        document.getElementById('supBtn').disabled = !valid || !msg;
+    } else {
+        document.getElementById('supBtn').disabled = !valid;
+    }
+}
+
+document.getElementById('supEmail').addEventListener('input', function() {
+    if (supCodeStage) supResetCode();
+    supCheckForm();
+});
+
+document.getElementById('supMessage').addEventListener('input', function() {
+    document.getElementById('supCharCount').textContent = this.value.length;
+    supCheckForm();
+});
+
+document.getElementById('supBtn').addEventListener('click', function() {
+    var email = document.getElementById('supEmail').value.trim();
+    var errEl = document.getElementById('supEmailError');
+    if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) { errEl.style.display = 'block'; return; }
+    errEl.style.display = 'none';
+    var btn = document.getElementById('supBtn');
+
+    if (!supCodeStage) {
+        // Step 1: send code
+        btn.disabled = true; btn.textContent = 'Отправка кода...';
+        fetch(API + '/support/send-code', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email }) })
+        .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
+        .then(function(res) {
+            if (res.data.ok) {
+                supCodeStage = true;
+                document.getElementById('supCodeEmail').textContent = email;
+                document.getElementById('supCodeSection').style.display = 'block';
+                document.getElementById('supChangeEmail').style.display = 'block';
+                document.getElementById('supEmail').disabled = true;
+                document.getElementById('supMsgSection').style.display = 'block';
+                supMsgStage = true;
+                btn.textContent = 'Отправить сообщение'; btn.disabled = true;
+                document.getElementById('supCode').focus();
+            } else {
+                alert(res.data.detail || res.data.message || 'Ошибка отправки кода');
+                btn.textContent = 'Отправить код'; btn.disabled = false;
+            }
+        })
+        .catch(function() { alert('Ошибка соединения'); btn.textContent = 'Отправить код'; btn.disabled = false; });
+    } else {
+        // Step 2: submit message
+        var code = document.getElementById('supCode').value.trim();
+        var msg = document.getElementById('supMessage').value.trim();
+        if (!code) { alert('Введите код из письма'); return; }
+        if (!msg) { alert('Введите сообщение'); return; }
+        btn.disabled = true; btn.textContent = 'Отправка...';
+        fetch(API + '/support/contact', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, message: msg, code: code }) })
+        .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
+        .then(function(res) {
+            if (res.data.ok) {
+                supResetCode();
+                showPage('support-ok');
+            } else {
+                alert(res.data.detail || res.data.message || 'Ошибка отправки');
+                btn.textContent = 'Отправить сообщение'; btn.disabled = false;
+            }
+        })
+        .catch(function() { alert('Ошибка соединения'); btn.textContent = 'Отправить сообщение'; btn.disabled = false; });
+    }
+});
 </script>
 
 </body>

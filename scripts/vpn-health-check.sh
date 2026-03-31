@@ -4,12 +4,10 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="/home/alvik/vpn-service/.env"
-source <(grep -E '^(TELEGRAM_BOT_TOKEN|ADMIN_TG_ID)=' "$ENV_FILE")
+source <(grep -E '^(TELEGRAM_BOT_TOKEN|ADMIN_TG_ID|MYSQL_USER|MYSQL_PASSWORD)=' "$ENV_FILE")
 LOG_FILE="/home/alvik/vpn-service/logs/vpn-health.log"
 BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
 ADMIN_CHAT_ID="${ADMIN_TG_ID:-364224373}"
-PROXY="socks5://127.0.0.1:10808"
-XRAY_PID=""
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -21,71 +19,47 @@ notify() {
         -d "{\"chat_id\": ${ADMIN_CHAT_ID}, \"parse_mode\": \"HTML\", \"text\": \"$1\"}" > /dev/null 2>&1
 }
 
-cleanup() {
-    if [ -n "$XRAY_PID" ] && kill -0 "$XRAY_PID" 2>/dev/null; then
-        kill "$XRAY_PID" 2>/dev/null
-        wait "$XRAY_PID" 2>/dev/null
+# Attempt to restart a service, wait 5s, run a recheck command.
+# Usage: try_restart "service_label" "restart_cmd" "recheck_cmd"
+# Sets TRY_RESTART_OK=1 if recovered, 0 if still failed.
+try_restart() {
+    local label="$1"
+    local restart_cmd="$2"
+    local recheck_cmd="$3"
+    TRY_RESTART_OK=0
+    log "🔄 Attempting restart: $restart_cmd"
+    eval "$restart_cmd" >/dev/null 2>&1
+    sleep 5
+    if eval "$recheck_cmd" >/dev/null 2>&1; then
+        TRY_RESTART_OK=1
+        log "✅ $label auto-recovered after restart"
+    else
+        log "❌ $label still down after restart"
     fi
-    rm -f /tmp/xray-healthcheck.json
 }
-trap cleanup EXIT
 
-# Create temporary xray client config
-cat > /tmp/xray-healthcheck.json << 'XRAY_EOF'
-{
-  "inbounds": [{
-    "port": 10808,
-    "listen": "127.0.0.1",
-    "protocol": "socks",
-    "settings": { "udp": true }
-  }],
-  "outbounds": [{
-    "protocol": "vless",
-    "settings": {
-      "vnext": [{
-        "address": "127.0.0.1",
-        "port": 7443,
-        "users": [{
-          "id": "e2a31746-f921-4c7f-ace6-fe14d43bc9b6",
-          "flow": "xtls-rprx-vision",
-          "encryption": "none"
-        }]
-      }]
-    },
-    "streamSettings": {
-      "network": "tcp",
-      "security": "reality",
-      "realitySettings": {
-        "serverName": "www.samsung.com",
-        "fingerprint": "chrome",
-        "publicKey": "roVVvuq4ZkvEu43rKEBm9fC0VXwMO1PVVd2YzvhiWEQ",
-        "shortId": "f6c9863acf",
-        "spiderX": "/"
-      }
-    }
-  }]
-}
-XRAY_EOF
 
-# Start local xray client
-docker exec -d x-ui /app/bin/xray-linux-amd64 run -c /dev/stdin < /tmp/xray-healthcheck.json 2>/dev/null
-
-# Alternative: run xray directly if available, otherwise use a simple connectivity test
-# Since running xray inside docker with stdin is tricky, test direct connectivity instead
 
 log "=== Health Check Start ==="
 
 RESULTS=""
 FAILED=0
+RECOVERED=""
 
 # Test 1: Check xray is listening on 7443
 if ss -tlnp | grep -q ':7443'; then
     log "✅ Xray listening on 7443"
     RESULTS+="✅ Xray port 7443: OK\n"
 else
-    log "❌ Xray NOT listening on 7443"
-    RESULTS+="❌ Xray port 7443: DOWN\n"
-    FAILED=1
+    try_restart "Xray" "sudo docker restart x-ui" "ss -tlnp | grep -q ':7443'"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ Xray port 7443: OK [auto-recovered]\n"
+        RECOVERED+="Xray "
+    else
+        log "❌ Xray NOT listening on 7443"
+        RESULTS+="❌ Xray port 7443: DOWN [auto-restart failed]\n"
+        FAILED=1
+    fi
 fi
 
 # Test 2: Check nginx stream on 443
@@ -93,9 +67,15 @@ if ss -tlnp | grep -q ':443'; then
     log "✅ Nginx stream on 443"
     RESULTS+="✅ Nginx port 443: OK\n"
 else
-    log "❌ Nginx NOT on 443"
-    RESULTS+="❌ Nginx port 443: DOWN\n"
-    FAILED=1
+    try_restart "Nginx" "sudo systemctl restart nginx" "ss -tlnp | grep -q ':443'"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ Nginx port 443: OK [auto-recovered]\n"
+        RECOVERED+="Nginx "
+    else
+        log "❌ Nginx NOT on 443"
+        RESULTS+="❌ Nginx port 443: DOWN [auto-restart failed]\n"
+        FAILED=1
+    fi
 fi
 
 # Test 3: DNS resolution
@@ -124,19 +104,7 @@ for DNS_SERVER in 1.1.1.1 8.8.8.8; do
     fi
 done
 
-# Test 4: Ping youtube.com
-PING_RESULT=$(ping -c 3 -W 5 youtube.com 2>/dev/null | tail -1)
-if [ -n "$PING_RESULT" ]; then
-    PING_AVG=$(echo "$PING_RESULT" | awk -F'/' '{print $5}')
-    log "✅ Ping youtube.com: ${PING_AVG}ms avg"
-    RESULTS+="✅ Ping youtube.com: ${PING_AVG}ms\n"
-else
-    log "❌ Ping youtube.com FAILED"
-    RESULTS+="❌ Ping youtube.com: FAIL\n"
-    FAILED=1
-fi
-
-# Test 5: HTTP connectivity to youtube.com
+# Test 4: HTTP connectivity to youtube.com
 HTTP_START=$(date +%s%N)
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 https://www.youtube.com 2>/dev/null)
 HTTP_TIME=$(( ($(date +%s%N) - HTTP_START) / 1000000 ))
@@ -166,8 +134,11 @@ else
 fi
 
 # Test 8: SoftEther VPN Azure relay
+# SoftEther: vpncmd requires /PASSWORD in args (no stdin option).
+# Minimize exposure: read from .env only when needed, unset after.
 source <(grep -E '^SOFTETHER_SERVER_PASSWORD=' "$ENV_FILE")
 AZURE_OUTPUT=$(timeout 30 /opt/softether/vpncmd localhost:5555 /SERVER /PASSWORD:"$SOFTETHER_SERVER_PASSWORD" /CMD VpnAzureGetStatus 2>&1)
+unset SOFTETHER_SERVER_PASSWORD
 if echo "$AZURE_OUTPUT" | grep -q "Connection to VPN Azure Cloud Server is Established|Yes"; then
     AZURE_HOST=$(echo "$AZURE_OUTPUT" | grep "Hostname.*VPN Azure" | awk -F'|' '{print $2}' | xargs)
     log "✅ VPN Azure connected: $AZURE_HOST"
@@ -183,16 +154,95 @@ if docker ps --format '{{.Names}} {{.Status}}' | grep -q "^x-ui Up"; then
     log "✅ x-ui container running"
     RESULTS+="✅ x-ui container: UP\n"
 else
-    log "❌ x-ui container DOWN"
-    RESULTS+="❌ x-ui container: DOWN\n"
-    FAILED=1
+    try_restart "x-ui" "sudo docker restart x-ui" "docker ps --format '{{.Names}} {{.Status}}' | grep -q '^x-ui Up'"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ x-ui container: UP [auto-recovered]\n"
+        RECOVERED+="x-ui "
+    else
+        log "❌ x-ui container DOWN"
+        RESULTS+="❌ x-ui container: DOWN [auto-restart failed]\n"
+        FAILED=1
+    fi
+fi
+
+# Test 10: AmneziaWG API on port 51821
+AWG_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://127.0.0.1:51821/ 2>/dev/null)
+if [ "$AWG_CODE" -ge 200 ] && [ "$AWG_CODE" -lt 500 ]; then
+    log "✅ AWG API on 51821: HTTP $AWG_CODE"
+    RESULTS+="✅ AWG API 51821: OK\n"
+else
+    try_restart "AWG API" "sudo systemctl restart awg-api" "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 http://127.0.0.1:51821/ 2>/dev/null | grep -qE '^[2-4]'"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ AWG API 51821: OK [auto-recovered]\n"
+        RECOVERED+="AWG-API "
+    else
+        log "❌ AWG API on 51821: DOWN"
+        RESULTS+="❌ AWG API 51821: DOWN\n"
+        FAILED=1
+    fi
+fi
+
+# Test 11: Telegram Bot service
+if systemctl is-active --quiet bot.service; then
+    log "✅ Bot service running"
+    RESULTS+="✅ Bot service: OK\n"
+else
+    try_restart "Bot" "sudo systemctl restart bot.service" "systemctl is-active --quiet bot.service"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ Bot service: OK [auto-recovered]\n"
+        RECOVERED+="Bot "
+    else
+        log "❌ Bot service DOWN"
+        RESULTS+="❌ Bot service: DOWN\n"
+        FAILED=1
+    fi
+fi
+
+# Test 12: FastAPI service (webhook + web portal)
+API_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://127.0.0.1:8000/docs 2>/dev/null)
+if [ "$API_CODE" -ge 200 ] && [ "$API_CODE" -lt 500 ]; then
+    log "✅ API service on 8000: HTTP $API_CODE"
+    RESULTS+="✅ API service 8000: OK\n"
+else
+    try_restart "API" "sudo systemctl restart api.service" "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 http://127.0.0.1:8000/docs 2>/dev/null | grep -qE '^[2-4]'"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ API service 8000: OK [auto-recovered]\n"
+        RECOVERED+="API "
+    else
+        log "❌ API service on 8000: DOWN"
+        RESULTS+="❌ API service 8000: DOWN\n"
+        FAILED=1
+    fi
+fi
+
+# Test 13: MySQL
+MYSQL_PING="docker exec -e MYSQL_PWD=${MYSQL_PASSWORD} vpn_mysql mysqladmin ping -h 127.0.0.1 -u${MYSQL_USER} --silent"
+if $MYSQL_PING 2>/dev/null | grep -q "alive"; then
+    log "✅ MySQL alive"
+    RESULTS+="✅ MySQL: OK\n"
+else
+    try_restart "MySQL" "docker restart vpn_mysql" "$MYSQL_PING 2>/dev/null | grep -q 'alive'"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ MySQL: OK [auto-recovered]\n"
+        RECOVERED+="MySQL "
+    else
+        log "❌ MySQL DOWN"
+        RESULTS+="❌ MySQL: DOWN\n"
+        FAILED=1
+    fi
 fi
 
 log "=== Health Check End ==="
 
-if [ "$FAILED" -eq 1 ]; then
+if [ "$FAILED" -eq 1 ] && [ -n "$RECOVERED" ]; then
+    notify "🚨 <b>VPN Health Check FAILED</b>\n⚠️ Auto-recovered: ${RECOVERED}\n\n${RESULTS}"
+    log "⚠️ Notification sent — issues detected (some auto-recovered)"
+elif [ "$FAILED" -eq 1 ]; then
     notify "🚨 <b>VPN Health Check FAILED</b>\n\n${RESULTS}"
     log "⚠️ Notification sent — issues detected"
+elif [ -n "$RECOVERED" ]; then
+    notify "⚠️ <b>VPN Health Check OK</b> [auto-recovered]\n\n${RESULTS}"
+    log "✅ All OK after auto-recovery"
 else
     notify "✅ <b>VPN Health Check OK</b>\n\n${RESULTS}"
 fi

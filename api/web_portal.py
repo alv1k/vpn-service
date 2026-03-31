@@ -13,7 +13,7 @@ import qrcode
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
-from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id
+from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id, is_vless_test_activated_by_id
 
 logger = logging.getLogger(__name__)
 web_router = APIRouter()
@@ -58,7 +58,7 @@ HAPP_ROUTING_CONFIG = {
     "dnshosts": {"cloudflare-dns.com": "1.1.1.1", "dns.google": "8.8.8.8"},
     "domainstrategy": "IPIfNonMatch",
     "domesticdnsdomain": "https://dns.google/dns-query",
-    "domesticdnsip": "77.88.8.8", "domesticdnstype": "DoU",
+    "domesticdnsip": "77.88.8.8", "domesticdnstype": "DoH",
     "fakedns": False,
     "geoipurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
     "geositeurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
@@ -84,6 +84,7 @@ async def happ_routing_redirect():
 <html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tiin — настройка маршрутизации</title>
+<link rel="icon" type="image/png" href="/favicon.png">
 <style>
   body {{ font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #f5f5f5; }}
   .btn {{ display: inline-block; padding: 16px 32px; background: #007aff; color: white;
@@ -128,6 +129,8 @@ async def personal_page(token: str):
     sub_url = active_vless[0]['subscription_link'] if active_vless else ""
     qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
 
+    test_used = is_vless_test_activated_by_id(user['id'])
+
     return HTMLResponse(_render_page(
         name=html_mod.escape(user.get('first_name') or 'Пользователь'),
         is_active=is_active,
@@ -136,6 +139,8 @@ async def personal_page(token: str):
         qr_b64=qr_b64,
         happ_routing_link=_happ_routing_deeplink(),
         email=html_mod.escape(user.get('email') or ''),
+        web_token=token,
+        test_used=test_used,
     ))
 
 
@@ -147,13 +152,14 @@ def _page_not_found():
     return """<!DOCTYPE html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Не найдено</title>
+<link rel="icon" type="image/png" href="/favicon.png">
 <style>body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;
 min-height:100vh;margin:0;background:#0a0a0a;color:#fff}
 .c{text-align:center;padding:2rem}h1{font-size:3rem;margin:0}p{color:#888;margin-top:1rem}</style>
 </head><body><div class="c"><h1>404</h1><p>Страница не найдена</p></div></body></html>"""
 
 
-def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link="", email=""):
+def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link="", email="", web_token="", test_used=False):
     status_color = "#22c55e" if is_active else "#ef4444"
     status_text = "Активна" if is_active else "Неактивна"
     status_dot = "&#9679;"
@@ -164,6 +170,7 @@ def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link=
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TIIN - Личный кабинет</title>
+<link rel="icon" type="image/png" href="/favicon.png">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;background:#0a0a0a;color:#e5e5e5;
@@ -250,9 +257,13 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
         <span class="text">{status_text}</span>
     </div>
     <div class="expiry">до {sub_until}</div>
+    <a href="https://t.me/tiin_service_bot?start=renew" class="connect-btn primary"
+       style="margin-top:1rem;text-align:center;display:block;text-decoration:none">
+        🔄 Продлить подписку
+    </a>
 </div>
 
-{_render_wizard(sub_url, qr_b64, happ_routing_link) if sub_url else _render_no_sub()}
+{_render_wizard(sub_url, qr_b64, happ_routing_link) if sub_url else _render_no_sub(web_token, test_used)}
 
 <!-- Support form -->
 <div class="card">
@@ -467,13 +478,51 @@ showStep(1);
 </html>"""
 
 
-def _render_no_sub():
-    return """
+def _render_no_sub(web_token="", test_used=False):
+    if not test_used and web_token:
+        test_btn = f"""
+        <button class="connect-btn primary" id="testBtn" onclick="activateTest()" style="margin-top:1rem">
+            🎁 Активировать тест — 3 дня бесплатно
+        </button>
+        <div id="testErr" style="color:#ef4444;text-align:center;font-size:.85rem;margin-top:.5rem;display:none"></div>
+        <script>
+        function activateTest() {{
+            var btn = document.getElementById('testBtn');
+            var err = document.getElementById('testErr');
+            btn.disabled = true; btn.textContent = 'Активация...'; err.style.display = 'none';
+            var ref = localStorage.getItem('tiin_ref') || null;
+            if (!ref) {{ var _r = new URLSearchParams(window.location.search).get('ref'); if (_r && _r.length <= 64 && /^[A-Za-z0-9_-]+$/.test(_r)) ref = _r; }}
+            fetch('/api/web/activate-test', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{web_token: '{web_token}', ref: ref}})
+            }})
+            .then(function(r) {{ return r.json().then(function(d) {{ return {{status: r.status, data: d}}; }}); }})
+            .then(function(res) {{
+                if (res.data.ok) {{
+                    window.location.reload();
+                }} else {{
+                    err.textContent = res.data.detail || 'Ошибка активации';
+                    err.style.display = 'block';
+                    btn.disabled = false; btn.textContent = '🎁 Активировать тест — 3 дня бесплатно';
+                }}
+            }})
+            .catch(function() {{
+                err.textContent = 'Ошибка сети';
+                err.style.display = 'block';
+                btn.disabled = false; btn.textContent = '🎁 Активировать тест — 3 дня бесплатно';
+            }});
+        }}
+        </script>"""
+    else:
+        test_btn = '<p style="margin-top:.5rem;font-size:.8rem">Оформите подписку на <a href="https://tiinservice.ru" style="color:#a78bfa">tiinservice.ru</a></p>'
+
+    return f"""
 <div class="card">
     <div class="no-sub">
         <div class="emoji">❄️</div>
         <p>Нет активной подписки</p>
-        <p style="margin-top:.5rem;font-size:.8rem">Оформите через Telegram-бот</p>
+        {test_btn}
     </div>
 </div>"""
 
@@ -528,7 +577,7 @@ def _render_wizard(sub_url, qr_b64, happ_routing_link=""):
     <a id="autoConnectBtn" href="#" class="connect-btn primary">Подключить VPN</a>
 
     <p class="note" style="margin-top:1.2rem">Или добавьте вручную — скопируйте ссылку:</p>
-    <div class="sub-link" onclick="copyLink()">{sub_url}</div>
+    <div class="sub-link" onclick="copyLink()">{html_mod.escape(sub_url)}</div>
 
     <div class="qr-wrap">
         <img src="data:image/png;base64,{qr_b64}" alt="QR">

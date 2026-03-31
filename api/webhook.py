@@ -38,15 +38,86 @@ from bot_xui.utils import XUIClient
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────
+#  IP rate limiter (in-memory, per-endpoint)
+# ─────────────────────────────────────────────
+from collections import defaultdict
+import threading
+
+_rate_lock = threading.Lock()
+_rate_buckets: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+
+RATE_LIMITS = {
+    "/api/auth/send-code": (5, 300),      # 5 requests per 5 min
+    "/api/auth/verify": (10, 300),        # 10 per 5 min — prevent brute-force on 6-digit codes
+    "/api/web/order/send-code": (5, 300),
+    "/api/web/activate-test": (3, 3600),   # 3 per hour
+    "/api/web/support/send-code": (5, 300),
+    "/api/web/order": (10, 300),           # 10 per 5 min
+    "/api/web/event": (30, 60),           # 30 per minute — prevent DB flooding
+}
+
+
+_rate_last_purge = 0.0
+
+def _check_rate_limit(ip: str, path: str) -> bool:
+    """Returns True if request is allowed, False if rate-limited."""
+    limit_cfg = None
+    for prefix, cfg in RATE_LIMITS.items():
+        if path == prefix or path.startswith(prefix):
+            limit_cfg = cfg
+            break
+    if not limit_cfg:
+        return True
+
+    max_req, window = limit_cfg
+    now = time.time()
+    with _rate_lock:
+        # Periodically purge stale IPs (every 10 minutes)
+        global _rate_last_purge
+        if now - _rate_last_purge > 600:
+            _rate_last_purge = now
+            max_window = max(w for _, w in RATE_LIMITS.values())
+            for p in list(_rate_buckets.keys()):
+                for k in list(_rate_buckets[p].keys()):
+                    _rate_buckets[p][k] = [t for t in _rate_buckets[p][k] if now - t < max_window]
+                    if not _rate_buckets[p][k]:
+                        del _rate_buckets[p][k]
+                if not _rate_buckets[p]:
+                    del _rate_buckets[p]
+
+        bucket = _rate_buckets[path][ip]
+        # Purge old entries
+        _rate_buckets[path][ip] = bucket = [t for t in bucket if now - t < window]
+        if len(bucket) >= max_req:
+            return False
+        bucket.append(now)
+    return True
+
+
 app = FastAPI()
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+    if ip == "testclient":
+        return await call_next(request)
+    if not _check_rate_limit(ip, request.url.path):
+        return Response(
+            content='{"detail":"Слишком много запросов. Попробуйте позже."}',
+            status_code=429,
+            media_type="application/json",
+        )
+    return await call_next(request)
 
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://alekscko.beget.tech", "http://alekscko.beget.tech"],
+    allow_origins=["https://alekscko.beget.tech"],
     allow_credentials=True,
     allow_methods=["GET", "POST"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 from api.web_portal import web_router
@@ -206,8 +277,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
     try:
         logger.info(f"💰 Processing successful payment: {payment_id}")
 
-        tg_id: int = payment_data["tg_id"]
-        tariff_key: str = payment_data["tariff"]
+        tg_id: int = payment_data.get("tg_id") or 0
+        tariff_key: str = payment_data.get("tariff", "default")
 
         # ===== 1. Получение / создание пользователя =====
         web_user_id = payment_data.get("_web_user_id")
@@ -431,8 +502,12 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         )
 
         # Sync expiry to vpn_keys for existing keys too
-        if subscription_until and tg_id:
-            sync_expiry(tg_id, subscription_until if subscription_until.tzinfo else subscription_until.replace(tzinfo=timezone.utc))
+        sub_utc = subscription_until if subscription_until.tzinfo else subscription_until.replace(tzinfo=timezone.utc)
+        if subscription_until and tg_id and tg_id != 0:
+            sync_expiry(tg_id, sub_utc)
+        elif subscription_until and web_user_id:
+            from api.db import sync_expiry_by_user_id
+            sync_expiry_by_user_id(web_user_id, sub_utc)
 
         logger.info("💾 VPN config saved to DB")
 
@@ -518,6 +593,35 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 await send_telegram_document(tg_id, client_config.encode(), filename, caption)
 
             logger.info("📤 Config sent to Telegram")
+
+            # Send portal link via email as fallback (in case TG is blocked)
+            try:
+                from api.db import get_user_by_tg_id
+                from api.notifications import send_payment_success_email
+                _tg_user = get_user_by_tg_id(tg_id)
+                if _tg_user and _tg_user.get('email') and portal_url:
+                    send_payment_success_email(
+                        to=_tg_user['email'],
+                        tariff_name=tariff_name,
+                        period=tariff_info.get('period', ''),
+                        portal_url=portal_url,
+                    )
+                    logger.info(f"📧 Portal link emailed to {_tg_user['email']} (TG fallback)")
+                elif _tg_user and not _tg_user.get('email'):
+                    # Ask user for email for fallback access
+                    await send_telegram_notification(
+                        tg_id,
+                        "📧 <b>Укажите email для резервного доступа</b>\n\n"
+                        "Если Telegram будет недоступен, мы отправим "
+                        "ссылку на личный кабинет на вашу почту.\n\n"
+                        "Отправьте email ответным сообщением:",
+                    )
+                    from bot_xui.bot import WAITING_EMAIL
+                    import time as _time
+                    WAITING_EMAIL[tg_id] = _time.time()
+                    logger.info(f"📧 Asked tg_id={tg_id} for email (no email on file)")
+            except Exception:
+                logger.warning("⚠️ Failed to send portal email fallback", exc_info=True)
 
         except Exception:
             logger.exception("⚠️ Failed to send config to Telegram")
@@ -645,7 +749,10 @@ async def yookassa_webhook(request: Request):
     """
     logger.info("YooKassa webhook received")
 
-    # ===== 1. Парсинг данных =====
+    # ===== 1. Проверка IP (ALWAYS enforced — before parsing body) =====
+    verify_yookassa_ip(request)
+
+    # ===== 2. Парсинг данных =====
     try:
         body = await request.body()
         payload = json.loads(body)
@@ -653,7 +760,7 @@ async def yookassa_webhook(request: Request):
         logger.error("Invalid JSON in webhook body")
         return Response(status_code=400)
 
-    # ===== 2. Извлечение данных =====
+    # ===== 3. Извлечение данных =====
     event = payload.get("event")
     obj = payload.get("object", {})
 
@@ -667,9 +774,6 @@ async def yookassa_webhook(request: Request):
     is_web_order = metadata.get("source") == "web"
     web_email = metadata.get("email", "")
     web_token = metadata.get("web_token", "")
-
-    # ===== 3. Проверка IP (ALWAYS enforced) =====
-    verify_yookassa_ip(request)
     
     if not payment_id:
         logger.warning("⚠️ No payment_id in webhook")
@@ -742,12 +846,11 @@ async def yookassa_webhook(request: Request):
             logger.info(f"🔁 Payment already claimed by another request: {payment_id}")
             return Response(status_code=200)
 
-        # Verify paid amount matches tariff price
-        paid_amount = float(payment_data.get("amount") or 0)
-        tariff_info = TARIFFS.get(tariff, {})
-        expected_price = tariff_info.get("price")
-        if expected_price is not None and paid_amount < expected_price:
-            logger.error(f"❌ Amount mismatch: paid={paid_amount}, expected={expected_price}, payment={payment_id}")
+        # Verify paid amount from YooKassa webhook matches what we stored
+        webhook_amount = float(obj.get("amount", {}).get("value", 0))
+        stored_amount = float(payment_data.get("amount") or 0)
+        if stored_amount > 0 and abs(webhook_amount - stored_amount) > 0.01:
+            logger.error(f"❌ Amount mismatch: webhook={webhook_amount}, stored={stored_amount}, payment={payment_id}")
             update_payment_status(payment_id, "pending")  # revert claim
             return Response(status_code=400)
 
@@ -757,6 +860,40 @@ async def yookassa_webhook(request: Request):
             if web_user:
                 tg_id = int(web_user.get('tg_id') or 0)
                 payment_data = {**payment_data, 'tg_id': tg_id, '_web_user_id': web_user['id']}
+
+                # Process web referral if present
+                ref_token = metadata.get("ref")
+                if ref_token:
+                    from api.db import process_web_referral
+                    if process_web_referral(web_user['id'], ref_token):
+                        logger.info(f"Web referral applied on payment: user_id={web_user['id']}, ref={ref_token}")
+
+        # Save payment method for autopay if available
+        pm = obj.get("payment_method", {})
+        if pm.get("saved") and pm.get("id"):
+            from api.db import save_user_payment_method, save_user_payment_method_by_id
+            pm_id = pm["id"]
+            if is_web_order and payment_data.get('_web_user_id'):
+                save_user_payment_method_by_id(
+                    payment_data['_web_user_id'], pm_id, tariff,
+                    vpn_type or "vless",
+                )
+                logger.info(f"Saved payment method {pm_id} for web user_id={payment_data['_web_user_id']}")
+            elif tg_id and int(tg_id) > 0:
+                save_user_payment_method(
+                    int(tg_id), pm_id, tariff,
+                    vpn_type or "vless",
+                )
+                logger.info(f"Saved payment method {pm_id} for tg_id={tg_id}")
+
+        # Consume promo code if used (both web and bot flows)
+        promo_code_str = metadata.get("promo_code")
+        if promo_code_str:
+            from api.db import get_promocode, use_promocode
+            promo = get_promocode(promo_code_str)
+            if promo:
+                use_promocode(promo["id"], int(tg_id or 0))
+                logger.info(f"Promo '{promo_code_str}' consumed for payment {payment_id}")
 
         success = await process_successful_payment(payment_id, payment_data, vpn_type)
 
@@ -770,6 +907,18 @@ async def yookassa_webhook(request: Request):
                     f"Платёж ID: {payment_id}\n\n"
                     f"Мы уже знаем о проблеме, конфиг будет создан автоматически."
                 )
+            # Instant admin alert for payment_no_config
+            from config import ADMIN_TG_ID
+            await send_telegram_notification(
+                ADMIN_TG_ID,
+                f"🚨 <b>payment_no_config</b>\n\n"
+                f"Платёж: {payment_id}\n"
+                f"tg_id: {tg_id}\n"
+                f"Тариф: {tariff}\n"
+                f"VPN тип: {vpn_type}\n"
+                f"Web: {is_web_order}\n\n"
+                f"VPN конфиг не создан. Вебхук вернёт 500 для повтора.",
+            )
             return Response(status_code=500)  # YooKassa повторит запрос
 
         logger.info(f"💾 Payment claimed and processed: {payment_id} -> paid")

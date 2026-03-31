@@ -64,7 +64,7 @@ def get_user_payments(tg_id: int) -> list[dict]:
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT payment_id, tg_id, tariff, amount, status, vpn_issued, created_at
+        SELECT payment_id, tg_id, tariff, amount, status, vpn_issued, is_test, created_at
         FROM payments WHERE tg_id = %s ORDER BY created_at DESC
     """, (tg_id,))
     rows = cur.fetchall()
@@ -77,7 +77,7 @@ def recent_payments(limit: int = 20) -> list[dict]:
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT p.payment_id, p.tg_id, p.tariff, p.amount, p.status, p.created_at,
+        SELECT p.payment_id, p.tg_id, p.tariff, p.amount, p.status, p.is_test, p.created_at,
                u.first_name, u.last_name
         FROM payments p
         LEFT JOIN users u ON p.tg_id = u.tg_id
@@ -153,6 +153,45 @@ def list_winback_log(limit: int = 50) -> list[dict]:
     return rows
 
 
+def winback_effectiveness() -> list[dict]:
+    """Per-scenario winback conversion stats.
+
+    For each scenario returns:
+      - total_sent: how many messages were sent
+      - converted: users who made a payment or activated a test within 7 days
+      - conversion_rate: percentage
+    """
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT
+            w.scenario,
+            COUNT(DISTINCT w.tg_id) AS total_sent,
+            COUNT(DISTINCT CASE
+                WHEN p.id IS NOT NULL OR k.id IS NOT NULL THEN w.tg_id
+            END) AS converted
+        FROM winback_log w
+        LEFT JOIN payments p
+            ON p.tg_id = w.tg_id
+            AND p.status = 'paid'
+            AND p.is_test = 0
+            AND p.created_at BETWEEN w.sent_at AND w.sent_at + INTERVAL 7 DAY
+        LEFT JOIN vpn_keys k
+            ON k.tg_id = w.tg_id
+            AND k.created_at BETWEEN w.sent_at AND w.sent_at + INTERVAL 7 DAY
+        GROUP BY w.scenario
+        ORDER BY converted DESC
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    for r in rows:
+        sent = r['total_sent'] or 0
+        conv = r['converted'] or 0
+        r['conversion_rate'] = round(conv / sent * 100, 1) if sent > 0 else 0
+    return rows
+
+
 def list_promocodes() -> list[dict]:
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
@@ -173,8 +212,8 @@ def payment_stats() -> dict:
     cur.execute("""
         SELECT
             COUNT(*) as total,
-            SUM(CASE WHEN status='paid' THEN 1 ELSE 0 END) as paid,
-            SUM(CASE WHEN status='paid' THEN amount ELSE 0 END) as revenue
+            SUM(CASE WHEN status='paid' AND is_test=0 THEN 1 ELSE 0 END) as paid,
+            SUM(CASE WHEN status='paid' AND is_test=0 THEN amount ELSE 0 END) as revenue
         FROM payments
     """)
     row = cur.fetchone()

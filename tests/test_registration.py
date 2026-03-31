@@ -405,8 +405,9 @@ class TestWebOrderRegistration:
 
     @patch("api.db.create_payment")
     @patch("api.web_api.Payment")
+    @patch("api.notifications.verify_code", return_value=True)
     @patch("api.db._get_pool")
-    def test_order_endpoint_full_flow(self, mock_get_pool, mock_payment_cls, mock_create_payment, client):
+    def test_order_endpoint_full_flow(self, mock_get_pool, mock_verify, mock_payment_cls, mock_create_payment, client):
         """POST /api/web/order: создаёт пользователя + платёж."""
         mock_pool, mock_conn, mock_cursor = _make_mock_pool()
         mock_get_pool.return_value = mock_pool
@@ -421,18 +422,22 @@ class TestWebOrderRegistration:
         resp = client.post("/api/web/order", json={
             "email": "buyer@example.com",
             "tariff_id": "monthly_30d",
+            "code": "123456",
         })
 
         assert resp.status_code == 200
         data = resp.json()
         assert data["payment_id"] == "pay-test-123"
         assert "yookassa" in data["payment_url"]
+        assert "web_token" in data
 
-    def test_order_invalid_tariff(self, client):
+    @patch("api.notifications.verify_code", return_value=True)
+    def test_order_invalid_tariff(self, mock_verify, client):
         """Несуществующий тариф → 400."""
         resp = client.post("/api/web/order", json={
             "email": "test@example.com",
             "tariff_id": "nonexistent_tariff",
+            "code": "123456",
         })
         assert resp.status_code == 400
 
@@ -446,8 +451,9 @@ class TestWebOrderRegistration:
 
     @patch("api.db.create_payment")
     @patch("api.web_api.Payment")
+    @patch("api.notifications.verify_code", return_value=True)
     @patch("api.db._get_pool")
-    def test_order_with_promo_code(self, mock_get_pool, mock_payment_cls, mock_create_payment, client):
+    def test_order_with_promo_code(self, mock_get_pool, mock_verify, mock_payment_cls, mock_create_payment, client):
         """Заказ с промокодом: цена со скидкой."""
         mock_pool, mock_conn, mock_cursor = _make_mock_pool()
         mock_get_pool.return_value = mock_pool
@@ -472,6 +478,7 @@ class TestWebOrderRegistration:
             "email": "promo@example.com",
             "tariff_id": "monthly_30d",
             "promo_code": "SALE50",
+            "code": "123456",
         })
 
         assert resp.status_code == 200
@@ -673,30 +680,30 @@ class TestAuthCodeLifecycle:
 
         assert result is None
 
-    @patch("api.db._get_pool")
-    def test_verify_code_valid(self, mock_get_pool):
-        """Верификация валидного кода."""
-        mock_pool, mock_conn, mock_cursor = _make_mock_pool()
-        mock_get_pool.return_value = mock_pool
-        mock_cursor.fetchone.return_value = {
-            "id": 1, "code": "123456",
-            "destination": "test@example.com",
-        }
+    @patch("api.db.get_db")
+    def test_verify_code_valid(self, mock_get_db):
+        """Верификация валидного кода — atomic UPDATE with rowcount."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 1  # one row updated = valid code
+        mock_conn.cursor.return_value = mock_cursor
+        mock_get_db.return_value = mock_conn
 
         from api.notifications import verify_code
         result = verify_code("test@example.com", "123456")
 
         assert result is True
-        # Code should be marked as used
-        update_call = mock_cursor.execute.call_args_list[-1]
-        assert "UPDATE auth_codes" in update_call[0][0]
+        mock_cursor.execute.assert_called_once()
+        assert "UPDATE auth_codes" in mock_cursor.execute.call_args[0][0]
 
-    @patch("api.db._get_pool")
-    def test_verify_code_invalid(self, mock_get_pool):
+    @patch("api.db.get_db")
+    def test_verify_code_invalid(self, mock_get_db):
         """Неверный код → False."""
-        mock_pool, mock_conn, mock_cursor = _make_mock_pool()
-        mock_get_pool.return_value = mock_pool
-        mock_cursor.fetchone.return_value = None  # code not found
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 0  # no rows updated = invalid code
+        mock_conn.cursor.return_value = mock_cursor
+        mock_get_db.return_value = mock_conn
 
         from api.notifications import verify_code
         result = verify_code("test@example.com", "000000")
@@ -804,20 +811,19 @@ class TestCrossPathEdgeCases:
         resp = client.get("/api/web/status/pay-123")
         assert resp.status_code == 200
         assert resp.json()["status"] == "pending"
-        assert resp.json()["portal_url"] is None
+        assert "portal_url" not in resp.json()
 
     @patch("api.db._get_pool")
-    def test_payment_status_paid_with_portal(self, mock_get_pool, client):
-        """GET /api/web/status/<id> — оплачен, возвращает portal_url."""
+    def test_payment_status_paid(self, mock_get_pool, client):
+        """GET /api/web/status/<id> — оплачен, возвращает только статус (без portal_url)."""
         mock_pool, mock_conn, mock_cursor = _make_mock_pool()
         mock_get_pool.return_value = mock_pool
-        mock_cursor.fetchone.side_effect = [
-            {"payment_id": "pay-123", "status": "paid", "tg_id": 555},
-            {"web_token": "user-tok-abc"},  # get_web_token
-        ]
+        mock_cursor.fetchone.return_value = {
+            "payment_id": "pay-123", "status": "paid", "tg_id": 555,
+        }
 
         resp = client.get("/api/web/status/pay-123")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "paid"
-        assert "user-tok-abc" in data["portal_url"]
+        assert "portal_url" not in data

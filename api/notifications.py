@@ -61,21 +61,22 @@ def create_auth_code(destination: str, channel: str = "email") -> str | None:
 
 
 def verify_code(destination: str, code: str) -> bool:
-    """Check if the code is valid. Marks it as used on success."""
-    row = execute_query(
-        "SELECT id FROM auth_codes "
-        "WHERE destination = %s AND code = %s AND used = 0 AND expires_at > NOW() "
-        "ORDER BY created_at DESC LIMIT 1",
-        (destination, code), fetch='one',
-    )
-    if not row:
-        return False
-
-    execute_query(
-        "UPDATE auth_codes SET used = 1 WHERE id = %s",
-        (row['id'],),
-    )
-    return True
+    """Check if the code is valid. Atomically marks it as used on success."""
+    from api.db import get_db
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            "UPDATE auth_codes SET used = 1 "
+            "WHERE destination = %s AND code = %s AND used = 0 AND expires_at > NOW() "
+            "LIMIT 1",
+            (destination, code),
+        )
+        db.commit()
+        return cursor.rowcount > 0
+    finally:
+        cursor.close()
+        db.close()
 
 
 def cleanup_expired():

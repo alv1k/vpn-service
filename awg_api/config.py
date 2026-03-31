@@ -6,6 +6,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 # API auth
 API_PASSWORD = os.getenv("AMNEZIA_WG_API_PASSWORD", "")
+if not API_PASSWORD:
+    raise RuntimeError("AMNEZIA_WG_API_PASSWORD must be set and non-empty")
 
 # Network
 AWG_INTERFACE = "awg0"

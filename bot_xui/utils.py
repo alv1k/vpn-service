@@ -4,7 +4,7 @@ import subprocess
 from urllib.parse import quote
 import os
 import logging
-from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, VLESS_SID, VLESS_PBK, VLESS_SNI
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_TOTP_SECRET, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, VLESS_SID, VLESS_SID_LIST, VLESS_PBK, VLESS_SNI
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +18,17 @@ class XUIClient:
         self._logged_in = False
 
     def login(self):
-        """Авторизация в 3x-ui"""
+        """Авторизация в 3x-ui (с поддержкой 2FA/TOTP)"""
+        login_data = {
+            "username": self.username,
+            "password": self.password,
+        }
+        if XUI_TOTP_SECRET:
+            import pyotp
+            login_data["twoFactorCode"] = pyotp.TOTP(XUI_TOTP_SECRET).now()
         response = self.session.post(
             f"{self.host}/login",
-            data={
-                "username": self.username,
-                "password": self.password
-            },
+            data=login_data,
             timeout=10,
         )
         data = response.json()
@@ -346,8 +350,13 @@ def generate_vless_link(
     fp: str = "chrome",
     spx: str = "/"
 ) -> str:
+    import random
     from urllib.parse import quote
-    
+
+    # Ротация short ID: если передан один из списка, выбираем случайный
+    if VLESS_SID_LIST and sid in VLESS_SID_LIST:
+        sid = random.choice(VLESS_SID_LIST)
+
     params = (
         f"encryption=none"
         f"&flow=xtls-rprx-vision"
@@ -359,28 +368,17 @@ def generate_vless_link(
         f"&sid={sid}"
         f"&spx={quote(spx, safe='')}"
     )
-    
+
     return f"vless://{client_id}@{domain}:{port}?{params}#{quote(client_name)}"
 
 def get_amneziawg_config(client_email):
-    """Получить конфиг AmneziaWG из контейнера"""
+    """Получить конфиг AmneziaWG (native AWG 2.0)"""
     try:
-        # Найти конфиг клиента в контейнере
-        result = subprocess.run(
-            ['docker', 'exec', os.getenv('AMNEZIA_CONTAINER', 'amneziawg'),
-             'cat', f'/etc/amnezia/amneziawg/wg0.conf'],
-            capture_output=True,
-            text=True
-        )
-        
-        if result.returncode == 0:
-            # Парсим конфиг и находим нужного клиента
-            # Это упрощенная версия - нужно будет доработать
-            return result.stdout
-        
+        conf_path = "/etc/amnezia/amneziawg/awg0.conf"
+        with open(conf_path) as f:
+            return f.read()
     except Exception as e:
         logger.error(f"Error getting AWG config: {e}")
-    
     return None
 
 def format_bytes(bytes_value):

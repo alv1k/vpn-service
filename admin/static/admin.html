@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TIIN VPN Admin</title>
-  <link rel="icon" type="image/png" href="api/admin/favicon.png">
+  <link rel="icon" type="image/png" href="/favicon.png">
   <style>
     :root {
       --bg: #0a0a0a;
@@ -588,12 +588,16 @@
 
     async function api(path, opts = {}) {
       if (!_cookie) {
-        await fetch(`${B}/api/session`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: AWG_PASS }),
-          credentials: 'same-origin',
-        });
+        // Session cookie is set by the server when serving this page
+        // Only attempt POST login if AWG_PASS is explicitly provided (legacy)
+        if (AWG_PASS) {
+          await fetch(`${B}/api/session`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: AWG_PASS }),
+            credentials: 'same-origin',
+          });
+        }
         _cookie = true;
       }
       opts.credentials = 'same-origin';
@@ -1313,7 +1317,7 @@
               <td>${fmtDate(p.created_at)}</td>
               <td>${p.tariff || ''}</td>
               <td>${p.amount} ₽</td>
-              <td><span class="badge ${p.status === 'paid' ? 'paid' : 'pending'}">${p.status}</span></td>
+              <td><span class="badge ${p.status === 'paid' ? 'paid' : 'pending'}">${p.status}</span>${p.is_test ? ' <span class="badge" style="background:var(--orange);color:#000">TEST</span>' : ''}</td>
             </tr>`;
         });
         html += `</table>`;

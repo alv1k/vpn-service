@@ -6,6 +6,7 @@ import logging
 import secrets
 import uuid
 
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -45,16 +46,17 @@ class OrderRequest(BaseModel):
     tariff_id: str
     code: str
     promo_code: str | None = None
+    ref: str | None = None
 
 
 class OrderResponse(BaseModel):
     payment_url: str
     payment_id: str
+    web_token: str
 
 
 class StatusResponse(BaseModel):
     status: str
-    portal_url: str | None = None
 
 
 # ─────────────────────────────────────────────
@@ -111,7 +113,7 @@ async def validate_promo(req: PromoRequest):
         return PromoResponse(valid=False, message="Промокод не найден")
     if not promo["is_active"]:
         return PromoResponse(valid=False, message="Промокод неактивен")
-    if promo["expires_at"] and promo["expires_at"] < __import__("datetime").datetime.now():
+    if promo["expires_at"] and promo["expires_at"] < datetime.now():
         return PromoResponse(valid=False, message="Промокод истёк")
     if promo["max_uses"] and promo["used_count"] >= promo["max_uses"]:
         return PromoResponse(valid=False, message="Промокод исчерпан")
@@ -182,6 +184,8 @@ async def create_order(req: OrderRequest):
     }
     if promo_meta:
         metadata["promo_code"] = promo_meta
+    if req.ref:
+        metadata["ref"] = req.ref
 
     payment = Payment.create(
         {
@@ -191,6 +195,7 @@ async def create_order(req: OrderRequest):
                 "return_url": f"https://344988.snk.wtf/my/{user['web_token']}",
             },
             "capture": True,
+            "save_payment_method": True,
             "description": f"Оплата тарифа {tariff['name']}",
             "metadata": metadata,
         },
@@ -212,6 +217,7 @@ async def create_order(req: OrderRequest):
     return OrderResponse(
         payment_url=payment.confirmation.confirmation_url,
         payment_id=payment.id,
+        web_token=user["web_token"],
     )
 
 
@@ -223,19 +229,117 @@ async def check_status(payment_id: str):
     if not payment:
         raise HTTPException(404, "Платёж не найден")
 
-    status = payment.get("status", "pending")
+    return StatusResponse(status=payment.get("status", "pending"))
 
-    portal_url = None
-    if status == "paid":
-        # Найти web_token по tg_id или email из metadata
-        tg_id = payment.get("tg_id")
-        if tg_id:
-            from api.db import get_web_token
-            token = get_web_token(tg_id)
-            if token:
-                portal_url = f"https://344988.snk.wtf/my/{token}"
 
-    return StatusResponse(status=status, portal_url=portal_url)
+# ─────────────────────────────────────────────
+#  Free test activation (web users)
+# ─────────────────────────────────────────────
+
+class TestActivateRequest(BaseModel):
+    web_token: str
+    ref: str | None = None
+
+
+@web_api_router.post("/activate-test")
+async def activate_test(req: TestActivateRequest):
+    """Activate free 3-day VLESS test for web user."""
+    from datetime import datetime, timedelta, timezone
+    from api.db import (
+        create_vpn_key, update_user_subscription_by_id,
+    )
+    from bot_xui.utils import XUIClient, generate_vless_link
+    from config import (
+        VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
+        VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+    )
+
+    user = get_user_by_web_token(req.web_token)
+    if not user:
+        raise HTTPException(404, "Пользователь не найден")
+
+    # Atomic claim: UPDATE ... WHERE test_vless_activated=0 prevents TOCTOU race
+    from api.db import get_db
+    _db = get_db()
+    _cur = _db.cursor()
+    try:
+        _cur.execute(
+            "UPDATE users SET test_vless_activated = 1 "
+            "WHERE id = %s AND test_vless_activated = 0",
+            (user['id'],),
+        )
+        _db.commit()
+        if _cur.rowcount == 0:
+            raise HTTPException(400, "Тестовый период уже был активирован")
+    finally:
+        _cur.close()
+        _db.close()
+
+    # Calculate expiry: 3 days, rounded to 23:59:59 UTC+9
+    tz_tokyo = timezone(timedelta(hours=9))
+    test_hours = TARIFFS["test_24h"]["hours"]
+    raw_end = datetime.now(timezone.utc) + timedelta(hours=test_hours)
+    end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
+    expiry_ms = int(end_tokyo.timestamp() * 1000)
+    expires_at = end_tokyo.astimezone(timezone.utc)
+
+    # Create VLESS client in XUI
+    import uuid as _uuid
+    client_email = f"web-test-{user['id']}-{_uuid.uuid4().hex[:8]}"
+    client_uuid = str(_uuid.uuid4())
+    inbound_id = int(VLESS_INBOUND_ID)
+
+    xui = XUIClient()
+    success = xui.add_client(
+        inbound_id=inbound_id,
+        email=client_email,
+        tg_id=0,
+        uuid=client_uuid,
+        expiry_time=expiry_ms,
+        total_gb=0,
+        limit_ip=1,
+    )
+    if not success:
+        raise HTTPException(500, "Ошибка создания VPN конфига")
+
+    vless_link = generate_vless_link(
+        client_id=client_uuid,
+        domain=VLESS_DOMAIN,
+        port=VLESS_PORT,
+        path=VLESS_PATH,
+        client_name=client_email,
+        pbk=VLESS_PBK,
+        sid=VLESS_SID,
+        sni=VLESS_SNI,
+        fp="chrome",
+        spx="/",
+    )
+
+    sub_url = xui.get_subscription_url_by_uuid(client_uuid)
+
+    create_vpn_key(
+        tg_id=0, payment_id=None,
+        client_id=client_uuid, client_name=client_email,
+        client_ip=None, client_public_key=None,
+        vless_link=vless_link, expires_at=expires_at, vpn_type="vless",
+        subscription_link=sub_url,
+        user_id=user['id'],
+    )
+
+    # Set subscription_until
+    sub_until = expires_at.replace(tzinfo=None)
+    update_user_subscription_by_id(user['id'], sub_until)
+
+    # test_vless_activated already set atomically above
+
+    # Process referral if present
+    if req.ref:
+        from api.db import process_web_referral
+        if process_web_referral(user['id'], req.ref):
+            logger.info(f"Web referral applied on test activation: user_id={user['id']}, ref={req.ref}")
+
+    logger.info(f"Web test activated: user_id={user['id']}, client={client_email}")
+    return {"ok": True, "message": "Тест активирован на 3 дня"}
 
 
 # ─────────────────────────────────────────────
