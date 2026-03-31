@@ -294,6 +294,9 @@
       input[type=text],
       input[type=search] { max-width: 100%; min-height: 44px; }
 
+      .type-short { display: none; }
+      .type-full { display: inline; }
+
       /* Truncate online name column */
       .col-online-name {
         max-width: 90px;
@@ -305,6 +308,11 @@
       /* Hide less important columns */
       .col-ip, .col-uuid, .col-last-online, .col-limit,
       .col-expires-promo, .col-auth, .col-logins, .col-created { display: none; }
+
+      /* Shorten protocol badge: VLESS→V, AWG→A, SOFTETHER→S */
+      .type-full { display: none; }
+      .type-short { display: inline; }
+      .speed-unit { display: none; }
     }
 
     @media (max-width: 380px) {
@@ -673,13 +681,13 @@
                 <td>
                   <span class="pulse-dot"></span>
                   <span class="badge ${u.type === 'vless' ? 'on' : u.type === 'awg' ? 'paid' : 'pending'}">
-                    ${u.type.toUpperCase()}
+                    <span class="type-full">${u.type.toUpperCase()}</span><span class="type-short">${u.type[0].toUpperCase()}</span>
                   </span>
                 </td>
                 <td>${u.first_name || '—'}</td>
                 <td class="col-online-name">${u.name}</td>
                 <td class="mono">${u.speed_mbps > 0
-                    ? '<span style="color:var(--green)">' + u.speed_mbps + ' Mbps</span>'
+                    ? '<span style="color:var(--green)">' + u.speed_mbps + '<span class="speed-unit"> Mbps</span></span>'
                     : '<span style="color:var(--muted)">—</span>'}</td>
                 <td>${u.ip_count > 1
                     ? '<span style="color:var(--orange)">' + u.ip_count + '</span>'
