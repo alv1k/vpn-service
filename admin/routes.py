@@ -1128,6 +1128,121 @@ def get_admin_page_route():
     return admin_page
 
 
+# ── Test Payment (YooKassa → VLESS sub link) ────────────────────────────────
+
+@router.post("/test-payment")
+async def create_test_payment(request: Request):
+    """Create a YooKassa test payment so admin can verify the full flow:
+    payment → webhook → VLESS sub link registration."""
+    from yookassa import Configuration, Payment as YooPayment
+    from config import (
+        YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
+        YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY, ADMIN_TG_ID,
+    )
+    from api.db import create_payment
+    import uuid
+
+    if not YOO_KASSA_TEST_SHOP_ID or not YOO_KASSA_TEST_SECRET_KEY:
+        return JSONResponse({"error": "YooKassa test credentials not configured"}, status_code=500)
+
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    tariff_id = body.get("tariff_id", "weekly_7d")
+
+    from bot_xui.tariffs import TARIFFS
+    tariff = TARIFFS.get(tariff_id)
+    if not tariff or tariff.get("is_test"):
+        return JSONResponse({"error": f"Invalid tariff: {tariff_id}"}, status_code=400)
+
+    # Temporarily switch to test credentials, then restore production
+    Configuration.account_id = YOO_KASSA_TEST_SHOP_ID
+    Configuration.secret_key = YOO_KASSA_TEST_SECRET_KEY
+
+    try:
+        payment = YooPayment.create(
+            {
+                "amount": {"value": str(tariff["price"]), "currency": "RUB"},
+                "confirmation": {
+                    "type": "redirect",
+                    "return_url": "https://tiinservice.ru/admin",
+                },
+                "capture": True,
+                "description": f"[ADMIN TEST] {tariff['name']}",
+                "metadata": {
+                    "tg_id": str(ADMIN_TG_ID),
+                    "tariff": tariff_id,
+                    "vpn_type": "vless",
+                    "test_mode": "true",
+                },
+            },
+            str(uuid.uuid4()),
+        )
+    except Exception as e:
+        logger.error(f"Test payment creation error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        # Restore production credentials
+        Configuration.account_id = YOO_KASSA_SHOP_ID
+        Configuration.secret_key = YOO_KASSA_SECRET_KEY
+
+    create_payment(
+        payment_id=payment.id,
+        tg_id=ADMIN_TG_ID,
+        tariff=tariff_id,
+        amount=tariff["price"],
+        status="pending",
+        is_test=True,
+    )
+
+    logger.info(f"Admin test payment created: {payment.id}")
+
+    return {
+        "payment_id": payment.id,
+        "payment_url": payment.confirmation.confirmation_url,
+        "tariff": tariff_id,
+        "amount": tariff["price"],
+    }
+
+
+@router.get("/test-payment/{payment_id}/result")
+async def test_payment_result(payment_id: str):
+    """Check whether a test payment was processed and VLESS sub link created."""
+    from api.db import get_payment_by_id, execute_query
+
+    payment = get_payment_by_id(payment_id)
+    if not payment:
+        return JSONResponse({"error": "Payment not found"}, status_code=404)
+
+    result = {
+        "payment_id": payment_id,
+        "status": payment.get("status"),
+        "tariff": payment.get("tariff"),
+        "amount": float(payment.get("amount") or 0),
+        "created_at": _serialize(payment.get("created_at")),
+        "is_test": bool(payment.get("is_test")),
+        "vless_registered": False,
+        "subscription_link": None,
+        "vless_link": None,
+        "expires_at": None,
+    }
+
+    # Check if VPN key was created for this payment
+    vpn_key = execute_query(
+        "SELECT client_name, vless_link, subscription_link, expires_at, vpn_type "
+        "FROM vpn_keys WHERE payment_id = %s LIMIT 1",
+        (payment_id,), fetch='one',
+    )
+
+    if vpn_key:
+        result["vless_registered"] = True
+        result["subscription_link"] = vpn_key.get("subscription_link")
+        result["vless_link"] = vpn_key.get("vless_link")
+        result["expires_at"] = _serialize(vpn_key.get("expires_at"))
+        result["client_name"] = vpn_key.get("client_name")
+        result["vpn_type"] = vpn_key.get("vpn_type")
+
+    return result
+
+
 @router.get("/favicon.png")
 async def favicon():
     path = os.path.join(os.path.dirname(__file__), "static", "favicon.png")

@@ -66,7 +66,7 @@ def test_activate_expired_subscription_starts_from_payment(mock_get_payment, moc
     expired_until = datetime(2026, 3, 5, 10, 0)  # уже истекла
 
     mock_get_payment.return_value = {
-        "tg_id": 123, "tariff": "trial_1d",
+        "tg_id": 123, "tariff": "weekly_7d",
         "created_at": paid_at,
     }
     mock_get_user.return_value = {
@@ -76,7 +76,7 @@ def test_activate_expired_subscription_starts_from_payment(mock_get_payment, moc
     from api.subscriptions import activate_subscription
     result = activate_subscription("pay-123")
 
-    expected = _expected_eod_tokyo(paid_at + timedelta(days=1))
+    expected = _expected_eod_tokyo(paid_at + timedelta(days=7))
     mock_upsert.assert_called_once_with(tg_id=123, subscription_until=expected)
     assert result == expected
 

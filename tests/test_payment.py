@@ -180,7 +180,7 @@ async def test_process_payment_min_price_is_one(mock_disc, mock_test, mock_pay_c
     mock_pay_cls.create.return_value = mock_payment
 
     query = _make_query()
-    await process_payment(query, "trial_1d", "vless")  # 10 RUB * 1% = 0.1 → max(1, 0) = 1
+    await process_payment(query, "weekly_7d", "vless")  # 50 RUB * 1% = 0.5 → max(1, 0) = 1
 
     create_call = mock_pay_cls.create.call_args[0][0]
     assert int(create_call["amount"]["value"]) >= 1
