@@ -335,6 +335,7 @@
         <button onclick="showTab('softether')" id="tab-softether">SoftEther</button>
         <button onclick="showTab('users')" id="tab-users">Users</button>
         <button onclick="showTab('proxy')" id="tab-proxy">MTProxy</button>
+        <button onclick="showTab('testpay')" id="tab-testpay">Test Pay</button>
         <a href="https://344988.snk.wtf:51999/panel-3x-ui/" target="_blank"
            style="padding:8px 16px; border:1px solid var(--border); border-radius:6px; font-size:13px; color:var(--muted); display:inline-flex; align-items:center">
           <span class="nav-link-text">3X-UI Panel </span>↗
@@ -548,6 +549,66 @@
       </div>
     </div>
 
+    <!-- Test Payment -->
+    <div id="s-testpay" class="section">
+      <div class="toolbar">
+        <b>Test YooKassa Payment → VLESS</b>
+        <span style="flex:1"></span>
+      </div>
+      <p style="color:var(--muted);font-size:13px;margin:8px 0">
+        Creates a test payment via YooKassa test mode. After paying, the webhook will create a VLESS sub link.
+        Use this to verify the full payment → VLESS registration pipeline.
+      </p>
+      <div style="display:flex;gap:8px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <select id="tp-tariff" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg)">
+          <option value="weekly_7d">Неделя — 50 ₽</option>
+          <option value="monthly_30d">Месяц — 199 ₽</option>
+          <option value="standard_3m">Стандарт — 499 ₽</option>
+          <option value="annual_365d">Год — 1490 ₽</option>
+        </select>
+        <button class="btn" id="tp-create-btn" onclick="tpCreate()">Create Test Payment</button>
+      </div>
+      <div id="tp-result" style="display:none;margin:12px 0;padding:12px;background:var(--card);border-radius:8px;border:1px solid var(--border)">
+        <div id="tp-status"></div>
+      </div>
+      <div id="tp-check" style="display:none;margin:12px 0">
+        <button class="btn" onclick="tpCheck()">Check VLESS Registration</button>
+        <span id="tp-poll-status" style="color:var(--muted);font-size:12px;margin-left:8px"></span>
+      </div>
+      <div id="tp-vless-result" style="display:none;margin:12px 0;padding:12px;background:var(--card);border-radius:8px;border:1px solid var(--border)">
+        <div id="tp-vless-info"></div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:24px 0">
+
+      <!-- Test Web Order Flow -->
+      <div class="toolbar">
+        <b>Test Web Order (email → code → pay)</b>
+        <span style="flex:1"></span>
+      </div>
+      <p style="color:var(--muted);font-size:13px;margin:8px 0">
+        Tests the tiinservice.ru landing page order flow: send verification code to email, confirm, create payment.
+      </p>
+      <div style="display:flex;gap:8px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <input type="email" id="wo-email" placeholder="Email" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg);min-width:220px">
+        <select id="wo-tariff" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg)">
+          <option value="weekly_7d">Неделя — 50 ₽</option>
+          <option value="monthly_30d">Месяц — 199 ₽</option>
+          <option value="standard_3m">Стандарт — 499 ₽</option>
+          <option value="annual_365d">Год — 1490 ₽</option>
+        </select>
+        <button class="btn" id="wo-send-btn" onclick="woSendCode()">Send Code</button>
+      </div>
+      <div id="wo-code-section" style="display:none;margin:12px 0;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="text" id="wo-code" placeholder="Enter code from email" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg);width:180px">
+        <input type="text" id="wo-promo" placeholder="Promo (optional)" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg);width:160px">
+        <button class="btn" id="wo-order-btn" onclick="woCreateOrder()">Create Order</button>
+      </div>
+      <div id="wo-result" style="display:none;margin:12px 0;padding:12px;background:var(--card);border-radius:8px;border:1px solid var(--border)">
+        <div id="wo-status"></div>
+      </div>
+    </div>
+
     <!-- Users -->
     <div id="s-users" class="section">
       <div class="toolbar">
@@ -625,6 +686,7 @@
       if (id === 'vless') loadVLESS();
       if (id === 'softether') loadSoftEther();
       if (id === 'proxy') loadProxy();
+      if (id === 'testpay') { /* static UI, no load needed */ }
       if (id === 'users') loadUsers();
     }
 
@@ -1269,6 +1331,168 @@
               <td>${fmtBytes(dc.traffic_to_client)}</td>
             </tr>`).join('')
         : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No active connections</td></tr>';
+    }
+
+    // ── Test Payment ──────────────────────────────────────────────────────────
+
+    let _tpPaymentId = null;
+    let _tpPollTimer = null;
+
+    async function tpCreate() {
+      const btn = document.getElementById('tp-create-btn');
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+      const tariff = document.getElementById('tp-tariff').value;
+      try {
+        const res = await api('/api/admin/test-payment', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({tariff_id: tariff}),
+        });
+        if (res.error) {
+          document.getElementById('tp-status').innerHTML = `<span style="color:#f44">Error: ${res.error}</span>`;
+          document.getElementById('tp-result').style.display = 'block';
+          return;
+        }
+        _tpPaymentId = res.payment_id;
+        document.getElementById('tp-status').innerHTML =
+          `<b>Payment created</b><br>` +
+          `ID: <code>${res.payment_id}</code><br>` +
+          `Amount: ${res.amount} RUB<br>` +
+          `<a href="${res.payment_url}" target="_blank" style="color:var(--accent);font-weight:bold">` +
+          `Open YooKassa checkout →</a>`;
+        document.getElementById('tp-result').style.display = 'block';
+        document.getElementById('tp-check').style.display = 'block';
+        document.getElementById('tp-vless-result').style.display = 'none';
+        // Start auto-polling
+        tpStartPoll();
+      } catch(e) {
+        document.getElementById('tp-status').innerHTML = `<span style="color:#f44">Error: ${e.message}</span>`;
+        document.getElementById('tp-result').style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Test Payment';
+      }
+    }
+
+    function tpStartPoll() {
+      if (_tpPollTimer) clearInterval(_tpPollTimer);
+      let attempts = 0;
+      const maxAttempts = 60; // 5 minutes at 5s intervals
+      document.getElementById('tp-poll-status').textContent = 'Auto-polling...';
+      _tpPollTimer = setInterval(async () => {
+        attempts++;
+        if (attempts > maxAttempts) {
+          clearInterval(_tpPollTimer);
+          _tpPollTimer = null;
+          document.getElementById('tp-poll-status').textContent = 'Polling stopped (timeout)';
+          return;
+        }
+        const done = await tpCheck(true);
+        if (done) {
+          clearInterval(_tpPollTimer);
+          _tpPollTimer = null;
+          document.getElementById('tp-poll-status').textContent = '';
+        } else {
+          document.getElementById('tp-poll-status').textContent = `Polling... (${attempts})`;
+        }
+      }, 5000);
+    }
+
+    async function tpCheck(silent) {
+      if (!_tpPaymentId) return false;
+      try {
+        const res = await api(`/api/admin/test-payment/${_tpPaymentId}/result`);
+        const el = document.getElementById('tp-vless-info');
+        const statusColor = res.status === 'paid' ? '#4caf50' : res.status === 'canceled' ? '#f44' : '#ff9800';
+        let html = `<b>Payment Status:</b> <span style="color:${statusColor}">${res.status}</span><br>`;
+        if (res.vless_registered) {
+          html += `<br><span style="color:#4caf50;font-weight:bold">VLESS sub link registered!</span><br>`;
+          html += `<b>Client:</b> ${res.client_name || '—'}<br>`;
+          html += `<b>Expires:</b> ${fmtDate(res.expires_at)}<br>`;
+          if (res.subscription_link) {
+            html += `<b>Sub link:</b> <code style="word-break:break-all;font-size:12px">${res.subscription_link}</code><br>`;
+          }
+          document.getElementById('tp-vless-result').style.display = 'block';
+          el.innerHTML = html;
+          return true;
+        } else {
+          html += `<br><span style="color:var(--muted)">VLESS sub link not yet registered</span>`;
+          document.getElementById('tp-vless-result').style.display = 'block';
+          el.innerHTML = html;
+          return res.status === 'canceled'; // stop polling on cancel
+        }
+      } catch(e) {
+        if (!silent) {
+          document.getElementById('tp-vless-info').innerHTML = `<span style="color:#f44">Error: ${e.message}</span>`;
+          document.getElementById('tp-vless-result').style.display = 'block';
+        }
+        return false;
+      }
+    }
+
+    // ── Test Web Order ────────────────────────────────────────────────────────
+
+    const WEB_API = '/api/web';
+
+    async function woSendCode() {
+      const email = document.getElementById('wo-email').value.trim();
+      if (!email) { alert('Enter email'); return; }
+      const btn = document.getElementById('wo-send-btn');
+      btn.disabled = true; btn.textContent = 'Sending...';
+      try {
+        const r = await fetch(`${WEB_API}/order/send-code`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({email}),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          document.getElementById('wo-code-section').style.display = 'flex';
+          document.getElementById('wo-result').style.display = 'block';
+          document.getElementById('wo-status').innerHTML = `<span style="color:#4caf50">Code sent to <b>${email}</b></span>`;
+          document.getElementById('wo-code').focus();
+        } else {
+          document.getElementById('wo-result').style.display = 'block';
+          document.getElementById('wo-status').innerHTML = `<span style="color:#f44">${d.detail || d.message || 'Error sending code'}</span>`;
+        }
+      } catch(e) {
+        document.getElementById('wo-result').style.display = 'block';
+        document.getElementById('wo-status').innerHTML = `<span style="color:#f44">Error: ${e.message}</span>`;
+      } finally {
+        btn.disabled = false; btn.textContent = 'Send Code';
+      }
+    }
+
+    async function woCreateOrder() {
+      const email = document.getElementById('wo-email').value.trim();
+      const code = document.getElementById('wo-code').value.trim();
+      const tariff = document.getElementById('wo-tariff').value;
+      const promo = document.getElementById('wo-promo').value.trim() || null;
+      if (!email || !code) { alert('Enter email and code'); return; }
+      const btn = document.getElementById('wo-order-btn');
+      btn.disabled = true; btn.textContent = 'Creating...';
+      try {
+        const r = await fetch(`${WEB_API}/order`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({email, tariff_id: tariff, code, promo_code: promo}),
+        });
+        const d = await r.json();
+        if (d.payment_url) {
+          let html = `<span style="color:#4caf50;font-weight:bold">Order created!</span><br>`;
+          html += `Payment ID: <code>${d.payment_id}</code><br>`;
+          html += `Web token: <code>${d.web_token}</code><br>`;
+          html += `<a href="${d.payment_url}" target="_blank" style="color:var(--accent);font-weight:bold">Open YooKassa checkout →</a>`;
+          document.getElementById('wo-status').innerHTML = html;
+        } else {
+          document.getElementById('wo-status').innerHTML = `<span style="color:#f44">${d.detail || d.message || 'Error creating order'}</span>`;
+        }
+      } catch(e) {
+        document.getElementById('wo-status').innerHTML = `<span style="color:#f44">Error: ${e.message}</span>`;
+      } finally {
+        btn.disabled = false; btn.textContent = 'Create Order';
+      }
     }
 
     // ── Users ──────────────────────────────────────────────────────────────────
