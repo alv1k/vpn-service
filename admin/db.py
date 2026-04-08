@@ -11,18 +11,20 @@ def list_users(search: str = None, limit: int = 100) -> list[dict]:
     cur = conn.cursor(dictionary=True)
     if search:
         cur.execute("""
-            SELECT id, tg_id, first_name, last_name, subscription_until,
+            SELECT id, tg_id, COALESCE(NULLIF(first_name,''), NULLIF(old_first_name,'')) AS first_name,
+                   old_first_name, last_name, subscription_until,
                    permanent_discount, referral_count, created_at,
-                   test_awg_activated, test_vless_activated
+                   test_awg_activated, test_vless_activated, web_token
             FROM users
-            WHERE tg_id LIKE %s OR first_name LIKE %s OR last_name LIKE %s
+            WHERE tg_id LIKE %s OR first_name LIKE %s OR last_name LIKE %s OR old_first_name LIKE %s
             ORDER BY created_at DESC LIMIT %s
-        """, (f"%{search}%", f"%{search}%", f"%{search}%", limit))
+        """, (f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%", limit))
     else:
         cur.execute("""
-            SELECT id, tg_id, first_name, last_name, subscription_until,
+            SELECT id, tg_id, COALESCE(NULLIF(first_name,''), NULLIF(old_first_name,'')) AS first_name,
+                   old_first_name, last_name, subscription_until,
                    permanent_discount, referral_count, created_at,
-                   test_awg_activated, test_vless_activated
+                   test_awg_activated, test_vless_activated, web_token
             FROM users ORDER BY created_at DESC LIMIT %s
         """, (limit,))
     rows = cur.fetchall()
@@ -78,7 +80,7 @@ def recent_payments(limit: int = 20) -> list[dict]:
     cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT p.payment_id, p.tg_id, p.tariff, p.amount, p.status, p.is_test, p.created_at,
-               u.first_name, u.last_name
+               COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name, u.last_name
         FROM payments p
         LEFT JOIN users u ON p.tg_id = u.tg_id
         ORDER BY p.created_at DESC LIMIT %s
@@ -97,7 +99,7 @@ def get_expiry_by_client_names(names: list[str]) -> dict[str, dict]:
     cur = conn.cursor(dictionary=True)
     placeholders = ",".join(["%s"] * len(names))
     cur.execute(f"""
-        SELECT k.client_name, u.subscription_until, u.first_name
+        SELECT k.client_name, u.subscription_until, COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name, u.web_token
         FROM vpn_keys k
         JOIN users u ON k.tg_id = u.tg_id
         WHERE k.client_name IN ({placeholders})
@@ -117,6 +119,7 @@ def get_expiry_by_client_names(names: list[str]) -> dict[str, dict]:
         result[r["client_name"]] = {
             "expires": expires,
             "first_name": r.get("first_name") or "",
+            "web_token": r.get("web_token") or "",
         }
     return result
 
@@ -125,7 +128,7 @@ def new_users_today() -> list[dict]:
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT id, tg_id, first_name, last_name, email, created_at
+        SELECT id, tg_id, COALESCE(NULLIF(first_name,''), old_first_name) AS first_name, last_name, email, created_at, web_token
         FROM users
         WHERE DATE(CONVERT_TZ(created_at, '+00:00', '+09:00'))
             = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+09:00'))
@@ -142,9 +145,10 @@ def list_winback_log(limit: int = 50) -> list[dict]:
     cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT w.id, w.tg_id, w.scenario, w.sent_at,
-               u.first_name, u.last_name
+               COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name, u.last_name
         FROM winback_log w
         LEFT JOIN users u ON w.tg_id = u.tg_id
+        WHERE w.sent_at >= NOW() - INTERVAL 6 DAY
         ORDER BY w.sent_at DESC LIMIT %s
     """, (limit,))
     rows = cur.fetchall()
@@ -220,3 +224,142 @@ def payment_stats() -> dict:
     cur.close()
     conn.close()
     return row or {"total": 0, "paid": 0, "revenue": 0}
+
+
+def autopay_failures(limit: int = 50) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT a.tg_id, a.user_id, a.tariff, a.amount, a.payment_id,
+               a.status, a.error_message, a.created_at,
+               COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name
+        FROM autopay_log a
+        LEFT JOIN users u ON a.user_id = u.id
+        ORDER BY a.created_at DESC LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def referral_network(limit: int = 50) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT u.id, u.tg_id,
+               COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
+               u.referred_by, u.created_at,
+               COALESCE(NULLIF(r.first_name,''), r.old_first_name) AS referrer_name,
+               r.tg_id AS referrer_tg_id
+        FROM users u
+        JOIN users r ON u.referred_by = r.id
+        ORDER BY u.created_at DESC LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def protocol_breakdown() -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT k.vpn_type, COUNT(*) AS count
+        FROM vpn_keys k
+        JOIN users u ON (k.tg_id = u.tg_id AND k.tg_id != 0) OR (k.user_id = u.id)
+        WHERE u.subscription_until > NOW()
+        GROUP BY k.vpn_type
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def failed_pending_payments(limit: int = 30) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT p.payment_id, p.tg_id, p.tariff, p.amount, p.status, p.created_at,
+               COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name
+        FROM payments p
+        LEFT JOIN users u ON p.tg_id = u.tg_id
+        WHERE p.status != 'paid'
+        ORDER BY p.created_at DESC LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def permanent_discount_summary() -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT permanent_discount AS discount, COUNT(*) AS user_count
+        FROM users WHERE permanent_discount > 0
+        GROUP BY permanent_discount ORDER BY permanent_discount
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def autopay_summary() -> dict:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT
+            SUM(autopay_enabled = 1) AS enabled,
+            SUM(autopay_enabled = 1 AND payment_method_id IS NOT NULL) AS with_method
+        FROM users
+    """)
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row or {"enabled": 0, "with_method": 0}
+
+
+def promo_usage_details(limit: int = 50) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT pu.id, pu.tg_id, p.code, p.type, p.value, pu.used_at,
+               COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name
+        FROM promocode_usages pu
+        JOIN promocodes p ON pu.promocode_id = p.id
+        LEFT JOIN users u ON pu.tg_id = u.tg_id
+        ORDER BY pu.used_at DESC LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def test_to_paid_by_protocol() -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT
+            CASE
+                WHEN test_vless_activated = 1 AND test_awg_activated = 0 THEN 'vless_only'
+                WHEN test_awg_activated = 1 AND test_vless_activated = 0 THEN 'awg_only'
+                WHEN test_vless_activated = 1 AND test_awg_activated = 1 THEN 'both'
+                ELSE 'none'
+            END AS test_protocol,
+            COUNT(*) AS users,
+            SUM(CASE WHEN EXISTS (
+                SELECT 1 FROM payments p WHERE p.tg_id = users.tg_id AND p.status='paid' AND p.is_test=0 AND p.tg_id != 0
+            ) THEN 1 ELSE 0 END) AS converted
+        FROM users
+        GROUP BY test_protocol
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows

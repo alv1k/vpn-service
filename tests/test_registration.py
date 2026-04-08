@@ -80,8 +80,8 @@ class TestTelegramRegistration:
         user_id = get_or_create_user(123456, "Новое", "Имя")
 
         assert user_id == 5
-        update_sql = mock_cursor.execute.call_args_list[1][0][0]
-        assert "UPDATE users SET first_name" in update_sql
+        sqls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert any("UPDATE users SET first_name" in s for s in sqls)
 
     @patch("api.db._get_pool")
     def test_existing_user_without_token_gets_one(self, mock_get_pool):

@@ -200,6 +200,7 @@
     .badge.off { background: #ef444422; color: var(--red); }
     .badge.paid { background: #22c55e22; color: var(--green); }
     .badge.pending { background: #f59e0b22; color: var(--orange); }
+    .badge.awg { background: #a78bfa22; color: #a78bfa; }
 
     .mono { font-family: monospace; font-size: 12px; }
     .trunc {
@@ -219,6 +220,10 @@
 
     .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; }
     .table-wrap table { min-width: 500px; }
+
+    /* Protocol badge: full name on desktop, single letter on mobile */
+    .type-short { display: none; }
+    .type-full  { display: inline; }
 
     /* Mobile */
     @media (max-width: 600px) {
@@ -294,9 +299,6 @@
       input[type=text],
       input[type=search] { max-width: 100%; min-height: 44px; }
 
-      .type-short { display: none; }
-      .type-full { display: inline; }
-
       /* Truncate online name column */
       .col-online-name {
         max-width: 90px;
@@ -325,7 +327,7 @@
 <body>
   <div class="container">
     <nav>
-      <span class="title">TIIN VPN</span>
+      <span class="title">TIIN VPN</span><a href="https://tiinservice.ru" target="_blank" style="color:var(--muted);font-size:12px;margin-left:8px;text-decoration:none" title="tiinservice.ru">🌐 tiinservice.ru</a>
       <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('91.132.161.112');this.textContent='copied!';setTimeout(()=>this.textContent='91.132.161.112',1000)" title="Click to copy">91.132.161.112</span>
       <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('193.23.211.141');this.textContent='copied!';setTimeout(()=>this.textContent='193.23.211.141',1000)" title="Click to copy">193.23.211.141</span>
       <div class="nav-tabs">
@@ -350,25 +352,11 @@
     <!-- Dashboard -->
     <div id="s-dashboard" class="section active">
       <div class="cards" id="dash-cards"></div>
+      <div class="cards" id="dash-extra-cards"></div>
 
       <h3 class="mb" style="color:var(--muted)">SITE ANALYTICS</h3>
       <div class="cards" id="dash-site-stats"></div>
 
-      <h3 class="mb" style="color:var(--muted)">EMAIL</h3>
-      <div class="cards" id="dash-email-stats"></div>
-      <div class="table-wrap mb">
-        <table>
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Campaign</th>
-              <th>Sent</th>
-              <th>Opened</th>
-            </tr>
-          </thead>
-          <tbody id="dash-email-log"></tbody>
-        </table>
-      </div>
 
       <h3 class="mb" style="color:var(--muted)">
         ONLINE NOW <span id="online-count" style="color:var(--green)"></span>
@@ -407,6 +395,24 @@
         </table>
       </div>
 
+      <h3 class="mb" style="color:var(--muted)">
+        OFFLINE <span id="dash-offline-count" style="color:var(--orange)"></span>
+      </h3>
+      <div class="table-wrap mb">
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>First Name</th>
+              <th>Name</th>
+              <th>Last Seen</th>
+              <th>Expires</th>
+            </tr>
+          </thead>
+          <tbody id="dash-offline"></tbody>
+        </table>
+      </div>
+
       <h3 class="mb" style="color:var(--muted)">PROMOCODES</h3>
       <div class="table-wrap mb">
         <table>
@@ -439,6 +445,66 @@
           <tbody id="dash-winback"></tbody>
         </table>
       </div>
+
+      <details class="mb">
+        <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">RECENT PAYMENTS</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>TG ID</th><th>Name</th><th>Tariff</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
+            <tbody id="dash-recent-payments"></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="mb">
+        <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">FAILED PAYMENTS</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>TG ID</th><th>Name</th><th>Tariff</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
+            <tbody id="dash-failed-payments"></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="mb">
+        <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">AUTOPAY LOG</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>TG ID</th><th>Name</th><th>Tariff</th><th>Amount</th><th>Status</th><th>Error</th><th>Date</th></tr></thead>
+            <tbody id="dash-autopay-log"></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="mb">
+        <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">REFERRAL NETWORK</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>New User</th><th>TG ID</th><th>Referred By</th><th>Referrer TG</th><th>Joined</th></tr></thead>
+            <tbody id="dash-referrals"></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="mb">
+        <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">PROMO USAGE LOG</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>User</th><th>TG ID</th><th>Code</th><th>Type</th><th>Value</th><th>Date</th></tr></thead>
+            <tbody id="dash-promo-usages"></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="mb">
+        <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">TEST CONVERSION BY PROTOCOL</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Test Protocol</th><th>Users</th><th>Converted to Paid</th><th>Rate</th></tr></thead>
+            <tbody id="dash-test-conversion"></tbody>
+          </table>
+        </div>
+      </details>
 
       <h3 class="mb" style="color:var(--muted)">FINANCIALS</h3>
       <div class="cards" id="dash-finance"></div>
@@ -511,11 +577,14 @@
           <thead>
             <tr>
               <th>Username</th>
-              <th class="col-auth">Auth</th>
+              <th>tg_id</th>
+              <th>Server</th>
+              <th>Password</th>
               <th class="col-logins">Logins</th>
               <th>Last Login</th>
               <th>Expires</th>
               <th>Transfer</th>
+              <th>Created</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -642,11 +711,17 @@
 
   <script>
     const B = '/tiin_admin_panel';
+    const PORTAL = 'https://344988.snk.wtf/my/';
     let _cookie = false;
     let _vlessInbounds = [];
     let _vlessClients = [];
     let _onlineUsers = [];
     let _debounceTimers = {};
+
+    function portalLink(token, label) {
+      if (!token) return label || '—';
+      return `<a href="${PORTAL}${token}" target="_blank" style="color:var(--accent);text-decoration:none" title="Open portal">${label || '—'} 🔗</a>`;
+    }
 
     function debounce(fn, ms) {
       return function (...args) {
@@ -742,11 +817,11 @@
               <tr>
                 <td>
                   <span class="pulse-dot"></span>
-                  <span class="badge ${u.type === 'vless' ? 'on' : u.type === 'awg' ? 'paid' : 'pending'}">
+                  <span class="badge ${u.type === 'vless' ? 'on' : u.type === 'awg' ? 'awg' : 'pending'}">
                     <span class="type-full">${u.type.toUpperCase()}</span><span class="type-short">${u.type[0].toUpperCase()}</span>
                   </span>
                 </td>
-                <td>${u.first_name || '—'}</td>
+                <td>${portalLink(u.web_token, u.first_name)}</td>
                 <td class="col-online-name">${u.name}</td>
                 <td class="mono">${u.speed_mbps > 0
                     ? '<span style="color:var(--green)">' + u.speed_mbps + '<span class="speed-unit"> Mbps</span></span>'
@@ -788,6 +863,50 @@
       if (isNaN(d)) return s;
       return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'})
         + ' ' + d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+    }
+
+    // ── Offline Users (dashboard section) ──────────────────────────────────────
+
+    async function loadOffline() {
+      const el = document.getElementById('dash-offline');
+      const countEl = document.getElementById('dash-offline-count');
+      if (!el) return;
+      el.innerHTML = '<tr><td colspan="5" style="color:var(--muted);text-align:center">Loading...</td></tr>';
+      try {
+        const users = await api('/api/admin/offline');
+        if (countEl) countEl.textContent = `(${users.length})`;
+        if (!users.length) {
+          el.innerHTML = '<tr><td colspan="5" style="color:var(--muted);text-align:center">Everyone is online</td></tr>';
+          return;
+        }
+        el.innerHTML = users.map(u => {
+          const lastSeen = u.last_seen
+            ? fmtUTC9_full(u.last_seen)
+            : '<span style="color:var(--muted)">never</span>';
+          return `<tr>
+            <td>
+              <span class="badge ${u.type === 'vless' ? 'on' : u.type === 'awg' ? 'awg' : 'pending'}">
+                <span class="type-full">${u.type.toUpperCase()}</span><span class="type-short">${u.type[0].toUpperCase()}</span>
+              </span>
+            </td>
+            <td>${portalLink(u.web_token, u.first_name)}</td>
+            <td class="col-online-name">${u.name}</td>
+            <td>${lastSeen}</td>
+            <td>${u.expires ? fmtDate(u.expires) : '—'}</td>
+          </tr>`;
+        }).join('');
+      } catch (e) {
+        el.innerHTML = '<tr><td colspan="5" style="color:var(--red)">Error loading offline users</td></tr>';
+      }
+    }
+
+    function fmtUTC9_full(dateStr) {
+      if (!dateStr) return '—';
+      const d = new Date(dateStr + ':00Z');
+      if (isNaN(d)) return dateStr;
+      d.setTime(d.getTime() + 9 * 3600000);
+      return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric', timeZone:'UTC'})
+        + ' ' + d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit', timeZone:'UTC'});
     }
 
     // ── Dashboard ─────────────────────────────────────────────────────────────
@@ -848,6 +967,29 @@
           <div class="sub">${d.payments.paid} paid / ${d.payments.total} total</div>
         </div>`;
 
+      // Extra dashboard cards (protocol mix, autopay, discounts)
+      const proto = d.protocol_breakdown || [];
+      const protoHtml = proto.map(p => `${p.vpn_type}: <b>${p.count}</b>`).join(' / ') || '<span style="color:var(--muted)">N/A</span>';
+      const ap = d.autopay_summary || {};
+      const disc = d.discount_summary || [];
+      const discTotal = disc.reduce((s, x) => s + x.user_count, 0);
+      document.getElementById('dash-extra-cards').innerHTML = `
+        <div class="card">
+          <h3>Protocol Mix</h3>
+          <div class="val" style="font-size:16px">${protoHtml}</div>
+          <div class="sub">active keys by type</div>
+        </div>
+        <div class="card">
+          <h3>Autopay</h3>
+          <div class="val">${ap.enabled || 0}</div>
+          <div class="sub">${ap.with_method || 0} with saved card</div>
+        </div>
+        <div class="card">
+          <h3>Discounts</h3>
+          <div class="val">${discTotal}</div>
+          <div class="sub">${disc.map(x => x.discount + '%: ' + x.user_count).join(', ') || 'none'}</div>
+        </div>`;
+
       // Site analytics
       try {
         const ss = await api('/api/admin/site-stats');
@@ -867,40 +1009,14 @@
             <h3>Connect Clicks</h3>
             <div class="val">${t.click_connect || 0}</div>
             <div class="sub">today: ${td.click_connect || 0}</div>
+          </div>
+          <div class="card">
+            <h3>Codes Sent</h3>
+            <div class="val">${ss.codes_sent || 0}</div>
+            <div class="sub">today: ${ss.codes_sent_today || 0}</div>
           </div>`;
       } catch(e) { console.warn('site-stats:', e) }
 
-      // Email stats
-      try {
-        const es = await api('/api/admin/email-stats');
-        document.getElementById('dash-email-stats').innerHTML = `
-          <div class="card">
-            <h3>Sent</h3>
-            <div class="val">${es.total_sent}</div>
-            <div class="sub">${es.total_opened} opened</div>
-          </div>
-          <div class="card">
-            <h3>Open Rate</h3>
-            <div class="val">${es.total_sent ? Math.round(es.total_opened / es.total_sent * 100) : 0}%</div>
-            <div class="sub">${es.total_opened}/${es.total_sent}</div>
-          </div>
-          <div class="card">
-            <h3>Codes Today</h3>
-            <div class="val">${es.today_codes}</div>
-            <div class="sub">email verifications</div>
-          </div>`;
-        document.getElementById('dash-email-log').innerHTML = es.recent.length
-          ? es.recent.map(r => `
-            <tr>
-              <td>${r.email}</td>
-              <td>${r.campaign || '<span style="color:var(--muted)">—</span>'}</td>
-              <td>${fmtDt(r.created_at)}</td>
-              <td>${r.opened_at
-                ? '<span style="color:var(--green)">' + fmtDt(r.opened_at) + '</span>'
-                : '<span style="color:var(--muted)">не открыто</span>'}</td>
-            </tr>`).join('')
-          : '<tr><td colspan="4" style="color:var(--muted)">Нет данных</td></tr>';
-      } catch(e) { console.warn('email-stats:', e) }
 
       // Online users
       await refreshOnline();
@@ -912,7 +1028,7 @@
         ? newUsers.map(u => `
             <tr>
               <td class="mono">${u.tg_id || '<span style="color:var(--muted)">web</span>'}</td>
-              <td>${u.first_name || u.email || ''} ${u.last_name || ''}</td>
+              <td>${portalLink(u.web_token, (u.first_name || u.email || '') + ' ' + (u.last_name || ''))}</td>
               <td class="mono">↑${u.traffic_up_fmt || '0 B'} ↓${u.traffic_down_fmt || '0 B'}</td>
               <td class="mono">${u.speed_mbps > 0
                 ? '<span style="color:var(--green)">' + u.speed_mbps + ' Mbps</span>'
@@ -920,6 +1036,9 @@
               <td>${fmtDate(u.created_at)}</td>
             </tr>`).join('')
         : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No new users today</td></tr>';
+
+      // Offline users
+      loadOffline();
 
       // Promocodes
       const promos = await api('/api/admin/promocodes');
@@ -984,6 +1103,73 @@
             Прибыль: ${fin.monthly_profit >= 0 ? '+' : ''}${fin.monthly_profit.toLocaleString()} ₽/мес
           </div>
         </div>`;
+
+      // Recent payments (from dashboard data)
+      document.getElementById('dash-recent-payments').innerHTML = (d.recent_payments || []).map(p => {
+        const sc = p.status === 'paid' ? 'paid' : 'pending';
+        return `<tr>
+          <td class="mono">${p.tg_id || '—'}</td>
+          <td>${p.first_name || ''} ${p.last_name || ''}</td>
+          <td>${p.tariff || ''}</td>
+          <td>${p.amount} ₽</td>
+          <td><span class="badge ${sc}">${p.status}</span>${p.is_test ? ' <span class="badge" style="background:var(--orange);color:#000">TEST</span>' : ''}</td>
+          <td>${fmtDate(p.created_at)}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" style="color:var(--muted);text-align:center">No payments</td></tr>';
+
+      // Secondary data (parallel fetch)
+      Promise.all([
+        api('/api/admin/failed-payments?limit=20').catch(() => []),
+        api('/api/admin/autopay-failures?limit=20').catch(() => []),
+        api('/api/admin/referral-network?limit=20').catch(() => []),
+        api('/api/admin/promo-usages?limit=20').catch(() => []),
+        api('/api/admin/test-conversion').catch(() => []),
+      ]).then(([fp, af, refs, pu, tc]) => {
+        // Failed payments
+        document.getElementById('dash-failed-payments').innerHTML = fp.length
+          ? fp.map(p => `<tr>
+              <td class="mono">${p.tg_id || '—'}</td><td>${p.first_name || ''}</td>
+              <td>${p.tariff || ''}</td><td>${p.amount} ₽</td>
+              <td><span class="badge pending">${p.status}</span></td>
+              <td>${fmtDate(p.created_at)}</td></tr>`).join('')
+          : '<tr><td colspan="6" style="color:var(--muted);text-align:center">No failed payments</td></tr>';
+
+        // Autopay log
+        document.getElementById('dash-autopay-log').innerHTML = af.length
+          ? af.map(a => `<tr>
+              <td class="mono">${a.tg_id || '—'}</td><td>${a.first_name || ''}</td>
+              <td>${a.tariff || ''}</td><td>${a.amount} ₽</td>
+              <td><span class="badge ${a.status === 'pending' ? 'pending' : a.status === 'paid' ? 'paid' : 'off'}">${a.status}</span></td>
+              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(a.error_message||'').replace(/"/g,'&quot;')}">${a.error_message || '—'}</td>
+              <td>${fmtDate(a.created_at)}</td></tr>`).join('')
+          : '<tr><td colspan="7" style="color:var(--muted);text-align:center">No autopay log entries</td></tr>';
+
+        // Referral network
+        document.getElementById('dash-referrals').innerHTML = refs.length
+          ? refs.map(r => `<tr>
+              <td>${r.first_name || '—'}</td><td class="mono">${r.tg_id || '—'}</td>
+              <td>${r.referrer_name || '—'}</td><td class="mono">${r.referrer_tg_id || '—'}</td>
+              <td>${fmtDate(r.created_at)}</td></tr>`).join('')
+          : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No referrals</td></tr>';
+
+        // Promo usage log
+        document.getElementById('dash-promo-usages').innerHTML = pu.length
+          ? pu.map(p => `<tr>
+              <td>${p.first_name || '—'}</td><td class="mono">${p.tg_id || '—'}</td>
+              <td><b>${p.code}</b></td><td>${p.type}</td><td>${p.value}${p.type.includes('discount') ? '%' : ' дней'}</td>
+              <td>${fmtDate(p.used_at)}</td></tr>`).join('')
+          : '<tr><td colspan="6" style="color:var(--muted);text-align:center">No promo usage</td></tr>';
+
+        // Test conversion by protocol
+        document.getElementById('dash-test-conversion').innerHTML = tc.length
+          ? tc.map(t => {
+              const rate = t.users > 0 ? (t.converted / t.users * 100).toFixed(1) : '0.0';
+              return `<tr>
+                <td>${t.test_protocol}</td><td>${t.users}</td><td>${t.converted}</td>
+                <td><b>${rate}%</b></td></tr>`;
+            }).join('')
+          : '<tr><td colspan="4" style="color:var(--muted);text-align:center">No data</td></tr>';
+      });
 
       // Monthly breakdown
       if (fin.monthly.length) {
@@ -1140,7 +1326,7 @@
       document.getElementById('vless-clients').innerHTML = clients.map((c, i) => `
         <tr style="cursor:pointer" onclick="showVlessClient(${i})">
           <td>${onlineDot(c.email, 'vless')}${c.email}</td>
-          <td>${c.first_name || '<span style="color:var(--muted)">—</span>'}</td>
+          <td>${portalLink(c.web_token, c.first_name)}</td>
           <td class="mono col-uuid">
             <span class="trunc" title="${c.uuid}">${c.uuid.slice(0, 8)}…</span>
           </td>
@@ -1159,7 +1345,7 @@
       openModal(`
         <h2>${c.email} ${online ? '<span class="pulse-dot"></span>' : ''}</h2>
         <table class="sub-table">
-          <tr><td style="color:var(--muted)">First Name</td><td>${c.first_name || '—'}</td></tr>
+          <tr><td style="color:var(--muted)">First Name</td><td>${portalLink(c.web_token, c.first_name)}</td></tr>
           <tr><td style="color:var(--muted)">TG ID</td><td class="mono">${c.tg_id_db || c.tgId || '—'}</td></tr>
           <tr><td style="color:var(--muted)">UUID</td><td class="mono" style="word-break:break-all">${c.uuid}</td></tr>
           <tr><td style="color:var(--muted)">Sub ID</td><td class="mono">${c.subId || '—'}</td></tr>
@@ -1190,22 +1376,31 @@
         refreshOnline(),
       ]);
 
-      document.getElementById('se-users').innerHTML = users.map(u => `
+      document.getElementById('se-users').innerHTML = users.map(u => {
+        const c = u.config || {};
+        const server = c.host ? `${c.host}:${c.port || 443}` : '—';
+        const pass = c.password || '—';
+        return `
         <tr>
           <td class="mono">${onlineDot(u.username, 'softether')}${u.username}</td>
-          <td class="col-auth">${u.auth || '—'}</td>
+          <td class="mono">${u.tg_id || '—'}</td>
+          <td class="mono" style="font-size:11px">${server}</td>
+          <td class="mono"><span class="se-pass" style="cursor:pointer;filter:blur(4px)" onclick="this.style.filter=this.style.filter?'':'blur(4px)'" title="Click to reveal">${pass}</span></td>
           <td class="col-logins">${u.num_logins || 0}</td>
           <td>${u.last_login || '—'}</td>
           <td>${u.expires || '∞'}</td>
           <td>${fmtBytes(u.transfer_bytes)}</td>
+          <td>${u.created_at ? u.created_at.slice(0, 10) : '—'}</td>
           <td>
             <button class="btn sm" onclick="seShowConfig('${u.username}')">Config</button>
+            ${u.has_vpn_file ? `<button class="btn sm" onclick="seDownloadVpnRemote('${u.username}')">↓vpn</button>` : ''}
             <button class="btn sm" onclick="seSetPassword('${u.username}')">Pass</button>
             <button class="btn sm" onclick="seSetExpiry('${u.username}')">Expiry</button>
             <button class="btn sm red" onclick="seDisable('${u.username}')">Disable</button>
             <button class="btn sm red" onclick="seDelete('${u.username}')">Del</button>
           </td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
     }
 
     async function seShowConfig(username) {
@@ -1244,6 +1439,19 @@
       a.download = username + '.vpn';
       a.click();
       URL.revokeObjectURL(a.href);
+    }
+
+    async function seDownloadVpnRemote(username) {
+      try {
+        const r = await api(`/api/admin/softether/users/${username}/config`);
+        if (r.vpn_file) {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob([r.vpn_file], { type: 'text/plain' }));
+          a.download = username + '.vpn';
+          a.click();
+          URL.revokeObjectURL(a.href);
+        }
+      } catch (e) { alert('Failed to download .vpn file'); }
     }
 
     async function seSetPassword(username) {
@@ -1507,7 +1715,7 @@
         return `
           <tr>
             <td class="mono">${u.tg_id}</td>
-            <td>${u.first_name || ''} ${u.last_name || ''}</td>
+            <td>${portalLink(u.web_token, (u.first_name || '') + ' ' + (u.last_name || ''))}</td>
             <td>${sub ? fmtDate(sub) : '—'}</td>
             <td><span class="badge ${active ? 'on' : 'off'}">${active ? 'active' : 'expired'}</span></td>
             <td>${u.permanent_discount ? u.permanent_discount + '%' : '—'}</td>
@@ -1518,9 +1726,10 @@
     }
 
     async function showUserDetail(tgId) {
-      const [keys, payments] = await Promise.all([
+      const [keys, payments, autopay] = await Promise.all([
         api(`/api/admin/users/${tgId}/keys`),
         api(`/api/admin/users/${tgId}/payments`),
+        api(`/api/admin/users/${tgId}/autopay`).catch(() => ({})),
       ]);
 
       let html = `<h2>User ${tgId}</h2>`;
@@ -1531,7 +1740,7 @@
         keys.forEach(k => {
           html += `
             <tr>
-              <td><span class="badge ${k.vpn_type === 'vless' ? 'on' : 'paid'}">${k.vpn_type}</span></td>
+              <td><span class="badge ${k.vpn_type === 'vless' ? 'on' : k.vpn_type === 'awg' ? 'awg' : 'pending'}">${k.vpn_type}</span></td>
               <td class="mono">${k.client_name || ''}</td>
               <td>${fmtDate(k.expires_at)}</td>
             </tr>`;
@@ -1555,6 +1764,18 @@
         html += `</table>`;
       }
 
+      html += `<h3 class="mt mb" style="color:var(--muted)">AUTOPAY</h3>`;
+      if (autopay && autopay.autopay_enabled) {
+        html += `<table class="sub-table">
+          <tr><td style="color:var(--muted)">Status</td><td><span class="badge on">Enabled</span></td></tr>
+          <tr><td style="color:var(--muted)">Tariff</td><td>${autopay.autopay_tariff || '—'}</td></tr>
+          <tr><td style="color:var(--muted)">VPN Type</td><td>${autopay.autopay_vpn_type || '—'}</td></tr>
+          <tr><td style="color:var(--muted)">Method ID</td><td class="mono">${autopay.payment_method_id ? autopay.payment_method_id.slice(0, 12) + '...' : '—'}</td></tr>
+        </table>`;
+      } else {
+        html += `<p style="color:var(--muted)">Not configured</p>`;
+      }
+
       html += `<button class="btn mt" onclick="closeModal()">Close</button>`;
       openModal(html);
     }
@@ -1564,6 +1785,11 @@
     const AWG_PASS = '{{AWG_PASSWORD}}';
     loadDashboard();
     startOnlineSSE();
+
+    // Auto-refresh dashboard every 30 seconds
+    setInterval(() => {
+      if (document.getElementById('s-dashboard').classList.contains('active')) loadDashboard();
+    }, 30000);
 
     // Auto-refresh dashboard at 00:00 UTC+9
     (function scheduleUtc9Midnight() {

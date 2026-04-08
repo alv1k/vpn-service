@@ -1,0 +1,25 @@
+#!/bin/bash
+# SoftEther vpncmd wrapper — always includes password and timeout
+# Usage: se <command> [args...]
+# Examples:
+#   se UserGet test_debian
+#   se UserList
+#   se SessionList
+#   se UserCreate myuser /GROUP:none /REALNAME:none /NOTE:none
+
+set -euo pipefail
+
+SCRIPT_DIR="/home/alvik/vpn-service"
+source <(grep -E '^SOFTETHER_SERVER_PASSWORD=' "$SCRIPT_DIR/.env")
+source <(grep -E '^SOFTETHER_HUB=' "$SCRIPT_DIR/.env" 2>/dev/null || echo 'SOFTETHER_HUB=VPN')
+
+if [ $# -eq 0 ]; then
+    echo "Usage: se <command> [args...]"
+    echo "Examples: se UserList | se SessionList | se UserGet <name>"
+    exit 1
+fi
+
+timeout 15 /opt/softether/vpncmd 127.0.0.1:5555 /SERVER \
+    /PASSWORD:"$SOFTETHER_SERVER_PASSWORD" \
+    /HUB:"$SOFTETHER_HUB" \
+    /CMD "$@"

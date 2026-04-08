@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 from telegram import Update, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.error import BadRequest, NetworkError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from config import TELEGRAM_BOT_TOKEN, XUI_HOST, XUI_USERNAME, XUI_PASSWORD, REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS, ADMIN_TG_ID, validate_config
@@ -48,7 +49,7 @@ from bot_xui.views    import (
     # show_vless_link,
 )
 from bot_xui.payment     import process_payment
-from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_test_softether, handle_get_awg_config, grant_referral_vpn
+from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_test_softether, handle_get_awg_config, handle_get_softether_config, grant_referral_vpn
 from bot_xui.messaging   import send_message_by_tg_id
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -101,15 +102,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=(
                     f"🎁 Вы перешли по реферальной ссылке!\n"
                     f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дня</b> VPN подписки!\n\n"
-                    f"🔗 Ваша ссылка на подписку:\n"
-                    f"👇 <i>Нажмите чтобы скопировать:</i>\n"
-                    f"┌────────────────────\n"
-                    f"  <code>{newcomer_result['sub_url']}</code>\n"
-                    f"└────────────────────\n\n"
-                    f"📱 Установите приложение из раздела «Инструкция» и вставьте ссылку."
+                    f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
                 ),
                 parse_mode="HTML",
-                reply_markup=make_main_keyboard()
+                reply_markup=make_main_keyboard(tg_id)
             )
         else:
             await update.message.reply_text(
@@ -117,7 +113,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дня</b> подписки!\n"
                 f"Ваш друг тоже получил <b>+{REFERRAL_REWARD_DAYS} дней</b>.",
                 parse_mode="HTML",
-                reply_markup=make_main_keyboard()
+                reply_markup=make_main_keyboard(tg_id)
             )
 
         # Grant VPN to referrer (extend or create)
@@ -157,7 +153,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if tg_id == ADMIN_TG_ID:
                 mode = "🧪 ВКЛ" if is_test_mode() else "✅ ВЫКЛ"
                 text += f"\n\n⚙️ Тестовый режим: <b>{mode}</b> (/testmode)"
-            await update.message.reply_text(text, reply_markup=make_main_keyboard(), parse_mode="HTML")
+            await update.message.reply_text(text, reply_markup=make_main_keyboard(tg_id), parse_mode="HTML")
 
 
 async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,22 +426,17 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=(
                     f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
                     f"Вам подарено <b>+{promo_data['value']} дней</b> VPN подписки!\n\n"
-                    f"🔗 Ваша ссылка на подписку:\n"
-                    f"👇 <i>Нажмите чтобы скопировать:</i>\n"
-                    f"┌────────────────────\n"
-                    f"  <code>{result['sub_url']}</code>\n"
-                    f"└────────────────────\n\n"
-                    f"📱 Установите приложение из раздела «Инструкция» и вставьте ссылку."
+                    f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
                 ),
                 parse_mode="HTML",
-                reply_markup=make_main_keyboard()
+                reply_markup=make_main_keyboard(tg_id)
             )
         else:
             await update.message.reply_text(
                 f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
                 f"Вам начислено <b>+{promo_data['value']} дней</b> VPN подписки.",
                 parse_mode="HTML",
-                reply_markup=make_main_keyboard()
+                reply_markup=make_main_keyboard(tg_id)
             )
 
     elif promo_data['type'] == 'discount':
@@ -459,7 +450,7 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Скидка <b>{promo_data['value']}%</b> будет применена к следующей оплате.\n\n"
             f"Выберите тариф:",
             parse_mode="HTML",
-            reply_markup=make_main_keyboard()
+            reply_markup=make_main_keyboard(tg_id)
         )
 
     elif promo_data['type'] == 'permanent_discount':
@@ -469,7 +460,7 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
             f"Вам установлена постоянная скидка <b>{promo_data['value']}%</b> на все будущие оплаты.",
             parse_mode="HTML",
-            reply_markup=make_main_keyboard()
+            reply_markup=make_main_keyboard(tg_id)
         )
 
 
@@ -687,7 +678,7 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
 
     await update.message.reply_text(
         "✅ Ваше сообщение отправлено! Мы ответим в ближайшее время.",
-        reply_markup=make_main_keyboard(),
+        reply_markup=make_main_keyboard(tg_id),
         parse_mode="HTML",
     )
 
@@ -758,6 +749,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "get_awg_config":
         await handle_get_awg_config(query)
+
+    elif data == "get_softether_config":
+        await handle_get_softether_config(query)
 
     elif data == "test_awg":
         await handle_test_awg(query, xui)
@@ -865,14 +859,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "feedback":
         import time as _time
         WAITING_FEEDBACK[query.from_user.id] = _time.time()
-        await query.edit_message_text(
+        await safe_edit_text(
+            query,
             "✉️ <b>Поддержка</b>\n\n"
             "Напишите ваш вопрос или предложение — мы ответим в ближайшее время.\n\n"
             "👇 Просто отправьте сообщение в чат\n\n"
             "📧 Или напишите на <b>support@tiinservice.ru</b>",
-            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📧 Написать на почту", url="mailto:support@tiinservice.ru")],
                 [InlineKeyboardButton("◀️ Отмена", callback_data="back_to_menu")],
             ])
         )
@@ -1048,6 +1041,19 @@ async def autopay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Ошибки
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    err = context.error
+    if isinstance(err, BadRequest) and "Message is not modified" in str(err):
+        return  # user double-tapped a button, harmless
+    if isinstance(err, NetworkError):
+        logger.warning("Network error: %s", err)
+        return
+    logger.error("Unhandled exception:", exc_info=context.error)
+
+
 # Запуск
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1069,6 +1075,7 @@ def main():
     app.add_handler(CommandHandler("autopay",   autopay_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_feedback_message))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_error_handler(error_handler)
 
     logger.info("Bot started!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

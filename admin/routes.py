@@ -24,7 +24,7 @@ from awg_api.config import (
 
 logger = logging.getLogger("admin")
 
-SESSION_MAX_AGE = 86400  # 24h
+SESSION_MAX_AGE = 604800  # 7 days
 
 
 def _require_admin_session(request: Request):
@@ -35,9 +35,12 @@ def _require_admin_session(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     from datetime import timezone
     created = _sessions[token]
-    if datetime.now(timezone.utc).timestamp() - created > SESSION_MAX_AGE:
+    now = datetime.now(timezone.utc).timestamp()
+    if now - created > SESSION_MAX_AGE:
         del _sessions[token]
         raise HTTPException(status_code=401, detail="Session expired")
+    # Sliding window: refresh session on each request
+    _sessions[token] = now
 
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(_require_admin_session)])
@@ -69,17 +72,26 @@ def _fmt_bytes(b: int) -> str:
 
 
 def _serialize(obj):
-    """Make datetime JSON-serializable."""
+    """Make datetime/Decimal/bytes JSON-serializable."""
+    from decimal import Decimal
     if isinstance(obj, datetime):
         return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == int(obj) else float(obj)
     if isinstance(obj, bytes):
         return obj.decode("utf-8", errors="replace")
     return str(obj)
 
 
-def _clean(rows: list[dict]) -> list[dict]:
-    return [{k: _serialize(v) if isinstance(v, (datetime, bytes)) else v
-             for k, v in row.items()} for row in rows]
+def _clean(obj):
+    from decimal import Decimal
+    if isinstance(obj, list):
+        return [_clean(item) for item in obj]
+    if isinstance(obj, dict):
+        return {k: _clean(v) for k, v in obj.items()}
+    if isinstance(obj, (datetime, Decimal, bytes)):
+        return _serialize(obj)
+    return obj
 
 
 def _calc_speed(name: str, proto: str, total_bytes: int) -> float:
@@ -218,6 +230,7 @@ def _get_online_users() -> list[dict]:
             info = info_map.get(u["name"], {})
             u["expires"] = info.get("expires")
             u["first_name"] = info.get("first_name", "")
+            u["web_token"] = info.get("web_token", "")
     except Exception as e:
         logger.warning(f"Expiry lookup error: {e}")
 
@@ -245,6 +258,130 @@ async def online_stream(request: Request):
             await asyncio.sleep(10)
 
     return EventSourceResponse(event_generator())
+
+
+@router.get("/offline")
+async def offline_users():
+    """Users with active VPN keys who are NOT currently online."""
+    online = _get_online_users()
+    online_names = {u["name"] for u in online}
+
+    offline = []
+
+    # ── VLESS: get clients + last_online directly from x-ui SQLite ──
+    try:
+        import sqlite3 as _sqlite3
+        XUI_DB = "/home/alvik/vpn-service/docker/x-ui-data/x-ui.db"
+        now_ms = int(time.time() * 1000)
+
+        conn = _sqlite3.connect(f"file:{XUI_DB}?mode=ro", uri=True)
+        cur = conn.cursor()
+
+        # last_online per email from client_traffics
+        cur.execute("SELECT email, last_online FROM client_traffics WHERE enable = 1")
+        last_online_map = {row[0]: row[1] for row in cur.fetchall()}
+
+        # active clients from inbound settings JSON
+        cur.execute("SELECT settings FROM inbounds WHERE protocol = 'vless'")
+        for (settings_json,) in cur.fetchall():
+            clients = json.loads(settings_json).get("clients", [])
+            for c in clients:
+                email = c.get("email", "")
+                if not email or email in online_names:
+                    continue
+                if not c.get("enable", True):
+                    continue
+                expiry = c.get("expiryTime", 0)
+                if expiry and 0 < expiry < now_ms:
+                    continue  # expired
+
+                last_online = last_online_map.get(email, 0) or 0
+                last_str = ""
+                if last_online > 0:
+                    try:
+                        last_str = datetime.fromtimestamp(
+                            last_online / 1000, tz=timezone.utc
+                        ).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        pass
+
+                offline.append({
+                    "name": email,
+                    "type": "vless",
+                    "last_seen": last_str,
+                    "last_seen_ts": last_online,
+                })
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Offline VLESS error: {e}")
+
+    # ── AWG: last handshake for all peers ──
+    try:
+        awg_clients = awg_db.list_clients()
+        pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
+        enabled_names = {c["name"] for c in awg_clients if c.get("enabled", True)}
+        result = subprocess.run(
+            ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.strip().split("\n")[1:]:
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            pub_key = parts[0]
+            name = pub_to_name.get(pub_key)
+            if not name or name in online_names or name not in enabled_names:
+                continue
+            last_hs = int(parts[4]) if parts[4] != "0" else 0
+            last_str = ""
+            last_ts = 0
+            if last_hs > 0:
+                last_str = datetime.fromtimestamp(
+                    last_hs, tz=timezone.utc
+                ).strftime("%Y-%m-%d %H:%M")
+                last_ts = last_hs * 1000  # to ms for consistency
+
+            offline.append({
+                "name": name,
+                "type": "awg",
+                "last_seen": last_str,
+                "last_seen_ts": last_ts,
+            })
+    except Exception as e:
+        logger.warning(f"Offline AWG error: {e}")
+
+    # ── SoftEther: all users minus active sessions ──
+    try:
+        from bot_xui.softether import list_users as se_list_users
+        for u in se_list_users():
+            uname = u.get("username", "")
+            if not uname or uname in online_names:
+                continue
+            # SoftEther doesn't expose last-login via list_users easily
+            offline.append({
+                "name": uname,
+                "type": "softether",
+                "last_seen": "",
+                "last_seen_ts": 0,
+            })
+    except Exception as e:
+        logger.warning(f"Offline SoftEther error: {e}")
+
+    # Enrich with first_name and expiry
+    try:
+        names = [u["name"] for u in offline]
+        info_map = admin_db.get_expiry_by_client_names(names)
+        for u in offline:
+            info = info_map.get(u["name"], {})
+            u["expires"] = info.get("expires")
+            u["first_name"] = info.get("first_name", "")
+            u["web_token"] = info.get("web_token", "")
+    except Exception as e:
+        logger.warning(f"Offline expiry lookup error: {e}")
+
+    # Sort: most recently seen first, never-seen at the end
+    offline.sort(key=lambda u: u.get("last_seen_ts", 0), reverse=True)
+
+    return offline
 
 
 @router.get("/finance")
@@ -360,6 +497,11 @@ async def dashboard():
     pay_stats = admin_db.payment_stats()
     recent = admin_db.recent_payments(10)
 
+    # Extra dashboard data
+    protocol_stats = admin_db.protocol_breakdown()
+    discount_stats = admin_db.permanent_discount_summary()
+    autopay_stats = admin_db.autopay_summary()
+
     # SoftEther stats
     se_users = []
     se_running = False
@@ -411,6 +553,9 @@ async def dashboard():
             "revenue": float(pay_stats["revenue"] or 0),
         },
         "recent_payments": _clean(recent),
+        "protocol_breakdown": protocol_stats,
+        "discount_summary": discount_stats,
+        "autopay_summary": autopay_stats,
     }
 
 
@@ -480,6 +625,22 @@ async def xui_inbound_clients(inbound_id: int):
                 else:
                     global_stats[email] = {**cs}
 
+        # Enrich with last_online from SQLite (API doesn't return it)
+        try:
+            import sqlite3 as _sqlite3
+            XUI_DB = "/home/alvik/vpn-service/docker/x-ui-data/x-ui.db"
+            _conn = _sqlite3.connect(f"file:{XUI_DB}?mode=ro", uri=True)
+            _cur = _conn.cursor()
+            _cur.execute("SELECT email, last_online FROM client_traffics")
+            for _email, _lo in _cur.fetchall():
+                if _email in global_stats:
+                    global_stats[_email]["last_online"] = _lo or 0
+                else:
+                    global_stats[_email] = {"last_online": _lo or 0, "up": 0, "down": 0}
+            _conn.close()
+        except Exception as e:
+            logger.warning(f"SQLite last_online enrichment: {e}")
+
         for ib in inbounds:
             if ib["id"] != inbound_id:
                 continue
@@ -490,13 +651,14 @@ async def xui_inbound_clients(inbound_id: int):
             emails = [c.get("email", "") for c in clients]
             name_map: dict[str, str] = {}  # email -> first_name
             tgid_map: dict[str, int] = {}  # email -> tg_id
+            token_map: dict[str, str] = {}  # email -> web_token
             if emails:
                 try:
                     conn = awg_db._get_conn()
                     cur = conn.cursor(dictionary=True)
                     ph = ",".join(["%s"] * len(emails))
                     cur.execute(
-                        f"SELECT k.client_name, u.first_name, u.tg_id "
+                        f"SELECT k.client_name, u.first_name, u.tg_id, u.web_token "
                         f"FROM vpn_keys k JOIN users u ON k.tg_id = u.tg_id "
                         f"WHERE k.client_name IN ({ph})",
                         tuple(emails),
@@ -504,6 +666,7 @@ async def xui_inbound_clients(inbound_id: int):
                     for r in cur.fetchall():
                         name_map[r["client_name"]] = r.get("first_name") or ""
                         tgid_map[r["client_name"]] = r.get("tg_id")
+                        token_map[r["client_name"]] = r.get("web_token") or ""
                     cur.close()
                     conn.close()
                 except Exception as e:
@@ -546,6 +709,7 @@ async def xui_inbound_clients(inbound_id: int):
                     "limitIp": c.get("limitIp", 0),
                     "first_name": name_map.get(email, ""),
                     "tg_id_db": tgid_map.get(email),
+                    "web_token": token_map.get(email, ""),
                 })
             return result
         return JSONResponse({"error": "Inbound not found"}, status_code=404)
@@ -560,7 +724,45 @@ async def xui_inbound_clients(inbound_id: int):
 async def softether_users():
     try:
         from bot_xui.softether import list_users
-        return list_users()
+        users = list_users()
+        # Merge stored configs from vpn_keys
+        try:
+            conn = awg_db._get_conn()
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT client_name, vless_link, vpn_file, tg_id, expires_at, created_at "
+                "FROM vpn_keys WHERE vpn_type = 'softether'"
+            )
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            # Build lookup by client_name (latest entry wins)
+            configs = {}
+            for row in rows:
+                name = row["client_name"]
+                if name not in configs or (row["created_at"] and configs[name]["created_at"] and row["created_at"] > configs[name]["created_at"]):
+                    cfg = {}
+                    if row.get("vless_link"):
+                        try:
+                            cfg = json.loads(row["vless_link"])
+                        except Exception:
+                            cfg = {"raw": row["vless_link"]}
+                    configs[name] = {
+                        "config": cfg,
+                        "vpn_file": bool(row.get("vpn_file")),
+                        "tg_id": row.get("tg_id"),
+                        "db_expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
+                        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                    }
+            for u in users:
+                db = configs.get(u["username"], {})
+                u["config"] = db.get("config")
+                u["has_vpn_file"] = db.get("vpn_file", False)
+                u["tg_id"] = db.get("tg_id")
+                u["created_at"] = db.get("created_at")
+        except Exception as e:
+            logger.warning(f"Failed to merge SE configs from DB: {e}")
+        return users
     except Exception as e:
         logger.error(f"SoftEther users error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -651,9 +853,35 @@ async def softether_set_password(username: str, request: Request):
             return JSONResponse({"error": "password required"}, status_code=400)
         from bot_xui.softether import _run
         _run("UserPasswordSet", username, f"/PASSWORD:{password}")
+        # Sync password to DB (vpn_keys.vless_link JSON + regenerate vpn_file)
+        try:
+            conn = awg_db._get_conn()
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT id, vless_link FROM vpn_keys "
+                "WHERE client_name = %s AND vpn_type = 'softether'",
+                (username,),
+            )
+            for row in cur.fetchall():
+                if row.get("vless_link"):
+                    cfg = json.loads(row["vless_link"])
+                    cfg["password"] = password
+                    new_link = json.dumps(cfg)
+                    # Regenerate .vpn file from scratch instead of string replace
+                    from bot_xui.vpn_factory import _make_softether_vpn_file
+                    vpn_file = _make_softether_vpn_file(username, password).getvalue().decode("utf-8")
+                    cur.execute(
+                        "UPDATE vpn_keys SET vless_link = %s, vpn_file = %s WHERE id = %s",
+                        (new_link, vpn_file, row["id"]),
+                    )
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Failed to sync SE password to DB: {e}")
         return {"status": "password_updated"}
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": "Failed to update password"}, status_code=500)
 
 
 @router.patch("/softether/users/{username}/expiry")
@@ -905,7 +1133,25 @@ async def site_stats():
     )
     today["unique_visitors"] = uv_today["cnt"] if uv_today else 0
 
-    return {"total": stats, "today": today}
+    # Email codes sent
+    codes_total = execute_query(
+        "SELECT COUNT(*) AS cnt FROM auth_codes WHERE channel = 'email'",
+        fetch='one',
+    )
+    codes_today = execute_query(
+        """SELECT COUNT(*) AS cnt FROM auth_codes
+           WHERE channel = 'email'
+           AND DATE(CONVERT_TZ(created_at, '+00:00', '+09:00'))
+             = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+09:00'))""",
+        fetch='one',
+    )
+
+    return {
+        "total": stats,
+        "today": today,
+        "codes_sent": codes_total["cnt"] if codes_total else 0,
+        "codes_sent_today": codes_today["cnt"] if codes_today else 0,
+    }
 
 
 # ── Email Stats ───────────────────────────────────────────────────────────────
@@ -987,6 +1233,41 @@ async def promocodes_list():
     return _clean(rows)
 
 
+# ── Autopay Failures ──────────────────────────────────────────────────────────
+
+@router.get("/autopay-failures")
+async def autopay_failures(limit: int = Query(50)):
+    return _clean(admin_db.autopay_failures(limit=limit))
+
+
+# ── Referral Network ─────────────────────────────────────────────────────────
+
+@router.get("/referral-network")
+async def referral_network(limit: int = Query(50)):
+    return _clean(admin_db.referral_network(limit=limit))
+
+
+# ── Failed Payments ──────────────────────────────────────────────────────────
+
+@router.get("/failed-payments")
+async def failed_payments(limit: int = Query(30)):
+    return _clean(admin_db.failed_pending_payments(limit=limit))
+
+
+# ── Promo Usage Log ──────────────────────────────────────────────────────────
+
+@router.get("/promo-usages")
+async def promo_usages(limit: int = Query(50)):
+    return _clean(admin_db.promo_usage_details(limit=limit))
+
+
+# ── Test to Paid Conversion ──────────────────────────────────────────────────
+
+@router.get("/test-conversion")
+async def test_conversion():
+    return admin_db.test_to_paid_by_protocol()
+
+
 # ── Users ────────────────────────────────────────────────────────────────────
 
 @router.get("/users")
@@ -1005,6 +1286,16 @@ async def user_keys(tg_id: int):
 async def user_payments(tg_id: int):
     rows = admin_db.get_user_payments(tg_id)
     return _clean(rows)
+
+
+@router.get("/users/{tg_id}/autopay")
+async def user_autopay(tg_id: int):
+    from api.db import execute_query
+    row = execute_query(
+        "SELECT autopay_enabled, autopay_tariff, autopay_vpn_type, payment_method_id "
+        "FROM users WHERE tg_id = %s", (tg_id,), fetch='one'
+    )
+    return row or {}
 
 
 @router.get("/funnel")

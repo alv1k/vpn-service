@@ -72,11 +72,11 @@ def test_tariffs_exclude_test(client):
 # ─────────────────────────────────────────────
 
 def test_order_rejects_without_code(client):
-    """Заказ без кода верификации — 400."""
+    """Заказ без верного кода верификации — 400."""
     response = client.post("/api/web/order", json={
         "email": "test@example.com",
         "tariff_id": "monthly_30d",
-        "code": "000000",
+        "code": "999999",
     })
     assert response.status_code == 400
 

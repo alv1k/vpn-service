@@ -150,7 +150,12 @@ PersistentKeepalive = {KEEPALIVE}
 
 
 def reload_interface():
-    """Hot-reload awg0 config without dropping existing connections."""
+    """Hot-reload awg0 config without dropping existing connections.
+
+    After syncconf, verify all enabled peers are present.
+    If any are missing, do a full restart (down+up) instead.
+    """
+    tmp_path = None
     try:
         # Use awg syncconf for zero-downtime reload
         strip_result = subprocess.run(
@@ -163,11 +168,33 @@ def reload_interface():
 
         _run(["awg", "syncconf", AWG_INTERFACE, tmp_path])
         logger.info("Interface reloaded via syncconf")
+
+        # Verify all enabled peers are present
+        expected_peers = {
+            c["public_key"]
+            for c in db.list_clients()
+            if c.get("enabled")
+        }
+        if expected_peers:
+            show = subprocess.run(
+                ["awg", "show", AWG_INTERFACE, "peers"],
+                capture_output=True, text=True, check=False,
+            )
+            active_peers = set(show.stdout.strip().splitlines())
+            missing = expected_peers - active_peers
+            if missing:
+                logger.warning(
+                    "syncconf missed %d peer(s), doing full restart", len(missing)
+                )
+                _run(["awg-quick", "down", AWG_INTERFACE], check=False)
+                _run(["awg-quick", "up", AWG_INTERFACE])
+                logger.info("Interface fully restarted")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to reload interface: {e.stderr}")
         raise
     finally:
-        subprocess.run(["rm", "-f", tmp_path], check=False)
+        if tmp_path:
+            subprocess.run(["rm", "-f", tmp_path], check=False)
 
 
 def interface_up():

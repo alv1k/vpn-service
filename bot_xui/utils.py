@@ -61,7 +61,17 @@ class XUIClient:
         if data.get('success'):
             return data.get('obj', [])
         return []
-    
+
+    def get_vless_reality_inbound_id(self, fallback_id: int = 1) -> int:
+        """Find the first VLESS Reality inbound id dynamically."""
+        for inbound in self.get_inbounds():
+            protocol = inbound.get('protocol', '')
+            stream = inbound.get('streamSettings', '{}')
+            if protocol == 'vless' and 'reality' in stream.lower():
+                return inbound['id']
+        logger.warning(f"No VLESS Reality inbound found, using fallback={fallback_id}")
+        return fallback_id
+
     def get_client_by_email(self, email):
         """Найти клиента по email"""
         inbounds = self.get_inbounds()
@@ -348,7 +358,8 @@ def generate_vless_link(
     sid: str,      # short id
     sni: str,      # например www.samsung.com
     fp: str = "chrome",
-    spx: str = "/"
+    spx: str = "/",
+    remark: str | None = None,
 ) -> str:
     import random
     from urllib.parse import quote
@@ -369,7 +380,8 @@ def generate_vless_link(
         f"&spx={quote(spx, safe='')}"
     )
 
-    return f"vless://{client_id}@{domain}:{port}?{params}#{quote(client_name)}"
+    display_name = remark or client_name
+    return f"vless://{client_id}@{domain}:{port}?{params}#{quote(display_name)}"
 
 def get_amneziawg_config(client_email):
     """Получить конфиг AmneziaWG (native AWG 2.0)"""

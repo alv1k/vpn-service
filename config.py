@@ -55,6 +55,9 @@ VLESS_SID_LIST = [s.strip() for s in _VLESS_SID_RAW.split(",") if s.strip()]
 VLESS_SID = VLESS_SID_LIST[0] if VLESS_SID_LIST else ""
 VLESS_SNI = os.getenv("VLESS_SNI")
 
+# Server location (for display in client apps)
+SERVER_LOCATION = os.getenv("SERVER_LOCATION", "Germany")
+
 # AmneziaWG
 AMNEZIA_CONTAINER = os.getenv("AMNEZIA_CONTAINER")
 
@@ -74,6 +77,11 @@ SMTP_PORT = os.getenv("SMTP_PORT", "587")
 SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 SMTP_FROM = os.getenv("SMTP_FROM")
+
+# MTProto Proxy
+MTPROTO_SERVER = os.getenv("MTPROTO_SERVER", "tiinservice.ru")
+MTPROTO_PORT = os.getenv("MTPROTO_PORT", "8443")
+MTPROTO_SECRET = os.getenv("MTPROTO_SECRET", "")
 
 REFERRAL_REWARD_DAYS = int(os.getenv("REFERRAL_REWARD_DAYS", "3"))
 REFERRAL_NEWCOMER_DAYS = int(os.getenv("REFERRAL_NEWCOMER_DAYS", "3"))

@@ -6,17 +6,55 @@ import base64
 import html as html_mod
 import json as json_mod
 import logging
+import struct
+import zlib
 from datetime import datetime
 from io import BytesIO
 
+
 import qrcode
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
+from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET
+from awg_api.config import SERVER_ENDPOINT as AWG_SERVER_HOST, LISTEN_PORT as AWG_LISTEN_PORT
 
 from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id, is_vless_test_activated_by_id
 
 logger = logging.getLogger(__name__)
 web_router = APIRouter()
+
+
+def _parse_awg_conf(conf_text: str) -> dict:
+    """Parse INI-style AWG .conf into a flat dict."""
+    params = {}
+    for line in conf_text.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("[") or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        params[key.strip()] = value.strip()
+    return params
+
+
+def _ensure_endpoint(conf_text: str) -> str:
+    """Add Endpoint and PersistentKeepalive to conf if missing (wg-easy API omits them)."""
+    if "Endpoint" not in conf_text:
+        endpoint_line = f"Endpoint = {AWG_SERVER_HOST}:{AWG_LISTEN_PORT}"
+        keepalive_line = "PersistentKeepalive = 25"
+        conf_text = conf_text.rstrip() + f"\n{endpoint_line}\n{keepalive_line}\n"
+    return conf_text
+
+
+def _conf_to_vpn_link(conf_text: str) -> str:
+    """Convert AWG .conf text to vpn:// deep link for AmneziaVPN app import.
+
+    Uses raw .conf format with # TIIN VPN comment for server description.
+    AmneziaVPN detects AWG junk fields (Jc/Jmin/etc.) and imports as AmneziaWG.
+    """
+    conf_text = _ensure_endpoint(conf_text)
+    conf_bytes = conf_text.encode("utf-8")
+    encoded = base64.urlsafe_b64encode(conf_bytes).decode().rstrip("=")
+    return f"vpn://{encoded}"
 
 
 def _generate_qr_base64(data: str) -> str:
@@ -117,13 +155,24 @@ async def personal_page(token: str):
     tg_id = user['tg_id']
     sub_until = user.get('subscription_until')
     now = datetime.now()
-    is_active = sub_until and sub_until > now
 
     keys = get_keys_by_tg_id(tg_id) if tg_id else []
     if not keys:
         keys = get_keys_by_user_id(user['id'])
     vless_keys = [k for k in keys if k['vpn_type'] == 'vless' and k.get('subscription_link')]
     active_vless = [k for k in vless_keys if k['expires_at'] and k['expires_at'] > now]
+
+    # AWG keys
+    awg_keys = [k for k in keys if k['vpn_type'] == 'awg' and k.get('client_id')]
+    active_awg = [k for k in awg_keys if k['expires_at'] and k['expires_at'] > now]
+
+    # Если нет платной подписки, берём максимальный срок из активных ключей
+    if not sub_until or sub_until <= now:
+        active_keys = active_vless + active_awg
+        if active_keys:
+            sub_until = max(k['expires_at'] for k in active_keys)
+
+    is_active = sub_until and sub_until > now
 
     # Берём первую активную ссылку подписки
     sub_url = active_vless[0]['subscription_link'] if active_vless else ""
@@ -141,7 +190,87 @@ async def personal_page(token: str):
         email=html_mod.escape(user.get('email') or ''),
         web_token=token,
         test_used=test_used,
+        awg_client_ids=[k['client_id'] for k in active_awg],
     ))
+
+
+@web_router.get("/my/{token}/awg/{client_id}/test")
+async def download_awg_config_test(token: str, client_id: str):
+    """Temporary full-tunnel AWG config for debugging connection issues."""
+    return await download_awg_config(token, client_id, full_tunnel=True)
+
+
+@web_router.get("/my/{token}/awg/{client_id}")
+async def download_awg_config(token: str, client_id: str, full_tunnel: bool = False):
+    """Download AmneziaWG .conf file for the given client_id, if it belongs to the user."""
+    user = get_user_by_web_token(token)
+    if not user:
+        return HTMLResponse(_page_not_found(), status_code=404)
+
+    # Verify client_id belongs to this user and get config from DB
+    tg_id = user.get('tg_id')
+    keys = get_keys_by_tg_id(tg_id) if tg_id else []
+    if not keys:
+        keys = get_keys_by_user_id(user['id'])
+    awg_key = next(
+        (k for k in keys if k['vpn_type'] == 'awg' and k.get('client_id') == client_id),
+        None,
+    )
+    if not awg_key:
+        return HTMLResponse(_page_not_found(), status_code=404)
+
+    conf_text = awg_key.get('vless_link') or ''
+    if not conf_text:
+        return HTMLResponse("<h1>Конфигурация не найдена</h1>", status_code=404)
+
+    if full_tunnel:
+        import re
+        conf_text = re.sub(r'(?m)^AllowedIPs\s*=.*$', 'AllowedIPs = 0.0.0.0/0', conf_text)
+
+    vpn_link = _conf_to_vpn_link(conf_text)
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Открытие AmneziaVPN...</title>
+    <style>body{{font-family:system-ui;background:#0f0f1a;color:#e0e0e0;display:flex;
+    align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center}}
+    a{{color:#a78bfa;font-size:1.1rem}}</style></head><body>
+    <div><p>Открываем AmneziaVPN...</p>
+    <p style="margin-top:1rem;font-size:.85rem;color:#888">
+    Если приложение не открылось — <a href="{html_mod.escape(vpn_link)}">нажмите здесь</a></p></div>
+    <script>window.location={json_mod.dumps(vpn_link)};</script>
+    </body></html>"""
+    return HTMLResponse(html)
+
+
+@web_router.get("/my/{token}/awg/{client_id}/download")
+async def download_awg_conf_file(token: str, client_id: str):
+    """Download AmneziaWG .conf file for manual import."""
+    user = get_user_by_web_token(token)
+    if not user:
+        return HTMLResponse(_page_not_found(), status_code=404)
+
+    tg_id = user.get('tg_id')
+    keys = get_keys_by_tg_id(tg_id) if tg_id else []
+    if not keys:
+        keys = get_keys_by_user_id(user['id'])
+    awg_key = next(
+        (k for k in keys if k['vpn_type'] == 'awg' and k.get('client_id') == client_id),
+        None,
+    )
+    if not awg_key:
+        return HTMLResponse(_page_not_found(), status_code=404)
+
+    conf_text = awg_key.get('vless_link') or ''
+    if not conf_text:
+        return HTMLResponse("<h1>Конфигурация не найдена</h1>", status_code=404)
+
+    conf_text = _ensure_endpoint(conf_text)
+    from starlette.responses import Response
+    return Response(
+        content=conf_text.encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="tiin_vpn.conf"'},
+    )
 
 
 # ─────────────────────────────────────────────
@@ -159,7 +288,7 @@ min-height:100vh;margin:0;background:#0a0a0a;color:#fff}
 </head><body><div class="c"><h1>404</h1><p>Страница не найдена</p></div></body></html>"""
 
 
-def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link="", email="", web_token="", test_used=False):
+def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link="", email="", web_token="", test_used=False, awg_client_ids=None):
     status_color = "#22c55e" if is_active else "#ef4444"
     status_text = "Активна" if is_active else "Неактивна"
     status_dot = "&#9679;"
@@ -250,6 +379,8 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
     <div class="sub">Личный кабинет</div>
 </div>
 
+{_render_wizard(sub_url, qr_b64, happ_routing_link) if sub_url else _render_no_sub(web_token, test_used)}
+
 <div class="card">
     <h2>Подписка</h2>
     <div class="status">
@@ -263,7 +394,28 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
     </a>
 </div>
 
-{_render_wizard(sub_url, qr_b64, happ_routing_link) if sub_url else _render_no_sub(web_token, test_used)}
+{_render_awg_card(awg_client_ids or [], web_token)}
+
+<!-- Telegram Proxy -->
+<div class="card">
+    <h2>&#128640; Прокси для Telegram</h2>
+    <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
+        Бесплатный MTProto-прокси для Telegram. Работает без VPN.
+    </p>
+    <a href="tg://proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}&secret={MTPROTO_SECRET}"
+       class="connect-btn primary" style="text-decoration:none;text-align:center;display:block">
+        &#9889; Подключить прокси
+    </a>
+    <a href="/proxy.html" download="tiinservice_telegram_proxy.html"
+       class="connect-btn secondary" style="text-decoration:none;text-align:center;display:block">
+        &#128229; Скачать файл прокси
+    </a>
+    <p style="color:#666;font-size:.75rem;text-align:center;margin-top:.6rem">
+        Не открывается?
+        <a href="https://t.me/proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}&secret={MTPROTO_SECRET}"
+           style="color:#a78bfa;text-decoration:none">Попробуйте эту ссылку</a>
+    </p>
+</div>
 
 <!-- Support form -->
 <div class="card">
@@ -478,6 +630,35 @@ showStep(1);
 </html>"""
 
 
+def _render_awg_card(client_ids: list, web_token: str) -> str:
+    if not client_ids:
+        return ""
+    buttons = ""
+    for cid in client_ids:
+        esc_token = html_mod.escape(web_token)
+        esc_cid = html_mod.escape(cid)
+        buttons += (
+            f'<a href="/my/{esc_token}/awg/{esc_cid}/download" '
+            f'class="connect-btn primary" '
+            f'style="text-decoration:none;text-align:center;display:block;margin-bottom:.5rem">'
+            f'&#128229; Скачать .conf файл</a>\n'
+        )
+    return f"""
+<!-- AmneziaWG -->
+<div class="card">
+    <h2>&#128272; AmneziaWG</h2>
+    <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
+        Скачайте файл конфигурации и импортируйте в приложение.
+    </p>
+    {buttons}
+    <p style="color:#666;font-size:.75rem;text-align:center;margin-top:.4rem">
+        Установите <a href="https://amnezia.org" target="_blank" style="color:#a78bfa;text-decoration:none">AmneziaVPN</a>,
+        если ещё не установлено.
+    </p>
+</div>
+"""
+
+
 def _render_no_sub(web_token="", test_used=False):
     if not test_used and web_token:
         test_btn = f"""
@@ -529,6 +710,8 @@ def _render_no_sub(web_token="", test_used=False):
 
 def _render_wizard(sub_url, qr_b64, happ_routing_link=""):
     return f"""
+<h2 style="text-align:center;color:#e2e8f0;margin:1.5rem 0 .5rem">🛠 Мастер настройки</h2>
+
 <!-- Step 1: Device -->
 <div class="step" id="step1">
 <div class="card">

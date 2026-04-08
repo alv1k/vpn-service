@@ -128,8 +128,8 @@ async def test_activation_after_vpn_creation_awg(
     # POST responses (login, create client)
     post_resp = MagicMock()
     post_resp.status_code = 200
-    # client_name = f"{tariff}_{tg_id}_{payment_id[:8]}" = "1month_12345_pay-1234"
-    expected_name = "1month_12345_pay-1234"  # pay-12345678[:8] = pay-1234
+    # client_name = f"tiin_{tg_id}" = "tiin_12345"
+    expected_name = "tiin_12345"
     post_resp.json.return_value = {"id": "uuid-1", "name": expected_name}
     post_resp.raise_for_status = MagicMock()
 
@@ -152,8 +152,13 @@ async def test_activation_after_vpn_creation_awg(
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.post.return_value = post_resp
-        # First GET returns client list, second GET returns config
-        mock_client.get = AsyncMock(side_effect=[list_resp, conf_resp])
+        mock_client.delete = AsyncMock()
+        # GETs: 1) dedup check, 2) client list after creation, 3) config
+        dedup_resp = MagicMock()
+        dedup_resp.status_code = 200
+        dedup_resp.json.return_value = []  # no existing client
+        dedup_resp.raise_for_status = MagicMock()
+        mock_client.get = AsyncMock(side_effect=[dedup_resp, list_resp, conf_resp])
         mock_client_cls.return_value = mock_client
 
         result = await process_successful_payment(

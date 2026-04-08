@@ -22,8 +22,9 @@ def _run(*args) -> str:
     cmd = _CMD_BASE + list(args)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     if result.returncode != 0:
-        logger.error(f"vpncmd error: {result.stderr or result.stdout}")
-        raise RuntimeError(f"vpncmd failed: {' '.join(args)}")
+        # Log only the command name, not args (may contain passwords)
+        logger.error(f"vpncmd error: command={args[0] if args else '?'}")
+        raise RuntimeError(f"vpncmd failed: {args[0] if args else '?'}")
     return result.stdout
 
 

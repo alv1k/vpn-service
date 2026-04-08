@@ -135,7 +135,7 @@ def update_amneziawg(ru_networks: list[ipaddress.IPv4Network]):
 
     # Restart native AWG API to pick up new AllowedIPs from .env
     subprocess.run(
-        ["systemctl", "restart", "awg-api"],
+        ["sudo", "systemctl", "restart", "awg-api"],
         check=True, capture_output=True, text=True,
     )
     log.info("Restarted awg-api service with new AllowedIPs")

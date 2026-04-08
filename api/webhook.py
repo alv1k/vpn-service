@@ -16,6 +16,7 @@ from config import (
     VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
     TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI,
     AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD,
+    SERVER_LOCATION, VLESS_INBOUND_ID,
 )
 from api.subscriptions import activate_subscription
 from api.db import (
@@ -234,7 +235,7 @@ async def process_refund(payment_id: str) -> bool:
             return False
 
         tg_id = payment_data.get("tg_id")
-        client_name = get_user_email(tg_id)
+        client_name = get_user_email(tg_id, payment_id=payment_id)
 
         if not client_name:
             logger.error(f"No client_name for refund: {payment_id}")
@@ -290,7 +291,12 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             user_id = None
 
         # ===== 4. Формирование имени VPN клиента =====
-        client_name = f"{tariff_key}_{tg_id or user_id}_{payment_id[:8]}"
+        if tg_id and tg_id != 0:
+            client_name = f"tiin_{tg_id}"
+        elif web_user_id:
+            client_name = f"tiin_web_{web_user_id}"
+        else:
+            client_name = f"tiin_{payment_id[:8]}"
 
         client_id = None
         client_ip = None
@@ -317,14 +323,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             # Генерируем UUID для клиента
             client_id = str(uuid.uuid4())
             
-            # Получаем inbound
-            inbounds = xui.get_inbounds()
-            if not inbounds:
-                raise RuntimeError("3x-ui inbound not found")
-            
-            if len(inbounds) < 3:
-                raise RuntimeError(f"Expected at least 3 inbounds, got {len(inbounds)}")
-            inbound_id = inbounds[2]['id']
+            inbound_id = xui.get_vless_reality_inbound_id(fallback_id=int(VLESS_INBOUND_ID))
             
             # Время истечения — 23:59:59 Tokyo последнего дня
             duration_days = TARIFFS[tariff_key].get('days', 30)
@@ -350,17 +349,31 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
                 )
             else:
-                # Web user without tg_id — always create new client
-                logger.info(f"Web user (no tg_id), creating new VLESS client")
-                success = xui.add_client(
-                    inbound_id=inbound_id,
-                    email=client_name,
-                    tg_id=0,
-                    uuid=client_id,
-                    expiry_time=expiry_time,
-                    total_gb=0,
-                    limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
-                )
+                # Web user without tg_id — check for existing client by email
+                existing_web = xui.get_client_by_email(client_name)
+                if existing_web:
+                    client_id = existing_web['client']['id']
+                    logger.info(f"Existing web client found, reusing uuid: {client_id}")
+                    # Extend expiry
+                    import time as _time
+                    now_ms = int(_time.time() * 1000)
+                    duration_ms = expiry_time - now_ms
+                    success = xui.extend_client_expiry(
+                        existing_web['inbound_id'],
+                        existing_web['client'],
+                        duration_ms,
+                    )
+                else:
+                    logger.info(f"Web user (no tg_id), creating new VLESS client")
+                    success = xui.add_client(
+                        inbound_id=inbound_id,
+                        email=client_name,
+                        tg_id=0,
+                        uuid=client_id,
+                        expiry_time=expiry_time,
+                        total_gb=0,
+                        limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
+                    )
             
             if not success:
                 raise RuntimeError("Failed to create VLESS client")
@@ -372,11 +385,12 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 port=VLESS_PORT,
                 path=VLESS_PATH,
                 client_name=client_name,
-                pbk=VLESS_PBK,       # из .env
-                sid=VLESS_SID,       # из .env
-                sni=VLESS_SNI,       # из .env
+                pbk=VLESS_PBK,
+                sid=VLESS_SID,
+                sni=VLESS_SNI,
                 fp="chrome",
-                spx="/"
+                spx="/",
+                remark=f"🇩🇪 {SERVER_LOCATION} | VLESS",
             )
             
             # Получаем subscription URL
@@ -418,14 +432,26 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 )
                 r.raise_for_status()
 
-                # 5.2 Create client
+                # 5.2 Delete existing client with same name (dedup on retry)
+                r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
+                r.raise_for_status()
+                for c in r.json():
+                    if c.get("name") == client_name:
+                        old_id = c.get("id")
+                        logger.info(f"Deleting old AWG client {old_id} ({client_name})")
+                        await client.delete(
+                            f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{old_id}",
+                        )
+                        break
+
+                # 5.3 Create client
                 r = await client.post(
                     f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
                     json={"name": client_name},
                 )
                 r.raise_for_status()
 
-                # 5.3 Получение client_id
+                # 5.4 Получение client_id
                 r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
                 r.raise_for_status()
 
@@ -460,6 +486,17 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             _u = get_user_by_id(web_user_id)
             subscription_until = _u.get('subscription_until') if _u else None
         logger.info("✅ Subscription activated")
+
+        # ===== 6.1. Mark test period as activated =====
+        tariff_info = TARIFFS.get(tariff_key, {})
+        if tariff_info.get("is_test"):
+            from api.db import set_vless_test_activated, set_vless_test_activated_by_id
+            if tg_id and tg_id != 0:
+                set_vless_test_activated(tg_id)
+                logger.info(f"Marked test_vless_activated for tg_id={tg_id}")
+            elif web_user_id:
+                set_vless_test_activated_by_id(web_user_id)
+                logger.info(f"Marked test_vless_activated for user_id={web_user_id}")
 
         # ===== 6.5. Sync expiry across all stores =====
         # For VLESS: 3x-ui expiry was calculated from now(), but activate_subscription
