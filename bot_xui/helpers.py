@@ -5,6 +5,7 @@ import io
 import logging
 from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +23,13 @@ def make_back_keyboard(label: str = "◀️ В меню", data: str = "back_to_m
 
 
 MTPROTO_PROXY_LINK = (
-    "tg://proxy?server=tiinservice.ru&port=8443"
-    "&secret=7tZhp-UUviXSuUagLCZgx8UzNDQ5ODguc25rLnd0Zg"
+    f"tg://proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}"
+    f"&secret={MTPROTO_SECRET}"
 )
 
 MTPROTO_HTTPS_LINK = (
-    "https://t.me/proxy?server=tiinservice.ru&port=8443"
-    "&secret=7tZhp-UUviXSuUagLCZgx8UzNDQ5ODguc25rLnd0Zg"
+    f"https://t.me/proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}"
+    f"&secret={MTPROTO_SECRET}"
 )
 
 
@@ -70,10 +71,13 @@ def make_proxy_file() -> io.BytesIO:
     return buf
 
 
-def make_main_keyboard() -> InlineKeyboardMarkup:
+def make_main_keyboard(tg_id: int | None = None) -> InlineKeyboardMarkup:
     """Клавиатура главного меню."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎁 Попробовать бесплатно", callback_data="test_protocol")],
+    from api.db import is_vless_test_activated, is_awg_test_activated
+    rows = []
+    if tg_id is None or (not is_vless_test_activated(tg_id) and not is_awg_test_activated(tg_id)):
+        rows.append([InlineKeyboardButton("🎁 Попробовать бесплатно", callback_data="test_protocol")])
+    rows += [
         [
             InlineKeyboardButton("🔑 Мои конфиги", callback_data="my_configs"),
             InlineKeyboardButton("💎 Тарифы", callback_data="tariffs"),
@@ -90,14 +94,19 @@ def make_main_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service"),
             InlineKeyboardButton("🔗 Прокси TG", callback_data="proxy_file"),
         ],
-    ])
+    ]
+    return InlineKeyboardMarkup(rows)
 
 MAIN_MENU_TEXT = (
     "⚡️ <b>тииҥ VPN</b>\n\n"
-    "🔒 Безопасный  ·  🚀 Быстрый  ·  🌍 Без ограничений\n\n"
-    f'🔗 <a href="{MTPROTO_PROXY_LINK}">Подключить прокси для Telegram</a>'
-    " — доступ к боту без VPN\n\n"
-    "Выберите действие:"
+    "Быстрый и надёжный VPN для доступа к любым сайтам.\n"
+    "YouTube, Instagram, ChatGPT и всё остальное — без ограничений.\n\n"
+    "▸ Подключение за 1 минуту\n"
+    "▸ Работает на телефонах, ПК и планшетах\n"
+    "▸ До 10 устройств на одной подписке\n"
+    "▸ От 199 ₽/мес\n\n"
+    f'🔗 <a href="{MTPROTO_PROXY_LINK}">Прокси для Telegram</a>'
+    " — доступ к боту без VPN"
 )
 
 

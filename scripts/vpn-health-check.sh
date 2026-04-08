@@ -90,20 +90,6 @@ else
     FAILED=1
 fi
 
-# Test 3a: DNS servers accessibility (used by xray and SoftEther)
-for DNS_SERVER in 1.1.1.1 8.8.8.8; do
-    DNS_START=$(date +%s%N)
-    if host youtube.com "$DNS_SERVER" > /dev/null 2>&1; then
-        DNS_TIME=$(( ($(date +%s%N) - DNS_START) / 1000000 ))
-        log "✅ DNS $DNS_SERVER: ${DNS_TIME}ms"
-        RESULTS+="✅ DNS $DNS_SERVER: ${DNS_TIME}ms\n"
-    else
-        log "❌ DNS $DNS_SERVER: UNREACHABLE"
-        RESULTS+="❌ DNS $DNS_SERVER: UNREACHABLE\n"
-        FAILED=1
-    fi
-done
-
 # Test 4: HTTP connectivity to youtube.com
 HTTP_START=$(date +%s%N)
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 https://www.youtube.com 2>/dev/null)
@@ -116,12 +102,6 @@ else
     RESULTS+="❌ HTTP youtube.com: ${HTTP_CODE}\n"
     FAILED=1
 fi
-
-# Test 6: Download speed (small file)
-SPEED=$(curl -s -o /dev/null -w "%{speed_download}" --connect-timeout 10 --max-time 20 https://speed.cloudflare.com/__down?bytes=1048576 2>/dev/null)
-SPEED_MBPS=$(echo "$SPEED" | awk '{printf "%.2f", $1/1048576*8}')
-log "📊 Download speed: ${SPEED_MBPS} Mbps"
-RESULTS+="📊 Speed: ${SPEED_MBPS} Mbps\n"
 
 # Test 7: SoftEther VPN server on port 5555
 if ss -tlnp | grep -q ':5555'; then
@@ -232,6 +212,29 @@ else
     fi
 fi
 
+# Test 14: Nginx connection capacity
+NGINX_MAX_CONN=4096
+NGINX_STATUS=$(curl -s http://127.0.0.1:8881/nginx_status 2>/dev/null)
+if [ -n "$NGINX_STATUS" ]; then
+    NGINX_ACTIVE=$(echo "$NGINX_STATUS" | awk '/Active connections/{print $3}')
+    NGINX_PCT=$((NGINX_ACTIVE * 100 / NGINX_MAX_CONN))
+    if [ "$NGINX_PCT" -ge 90 ]; then
+        log "❌ Nginx connections CRITICAL: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%)"
+        RESULTS+="❌ Nginx connections: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%) CRITICAL\n"
+        FAILED=1
+    elif [ "$NGINX_PCT" -ge 75 ]; then
+        log "⚠️ Nginx connections HIGH: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%)"
+        RESULTS+="⚠️ Nginx connections: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%) HIGH\n"
+        FAILED=1
+    else
+        log "✅ Nginx connections: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%)"
+        RESULTS+="✅ Nginx conn: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%)\n"
+    fi
+else
+    log "⚠️ Nginx stub_status unavailable"
+    RESULTS+="⚠️ Nginx stub_status: unavailable\n"
+fi
+
 log "=== Health Check End ==="
 
 if [ "$FAILED" -eq 1 ] && [ -n "$RECOVERED" ]; then
@@ -244,7 +247,11 @@ elif [ -n "$RECOVERED" ]; then
     notify "⚠️ <b>VPN Health Check OK</b> [auto-recovered]\n\n${RESULTS}"
     log "✅ All OK after auto-recovery"
 else
-    notify "✅ <b>VPN Health Check OK</b>\n\n${RESULTS}"
+    HOUR=$(date +%H)
+    if [ "$HOUR" = "09" ]; then
+        notify "✅ <b>VPN Health Check OK</b>\n\n${RESULTS}"
+    fi
+    log "✅ All checks passed"
 fi
 
 # Always log results

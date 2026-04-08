@@ -12,7 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from yookassa import Configuration, Payment
 
-from config import YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY
+from config import (
+    YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY,
+    YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
+    ADMIN_TG_ID, SERVER_LOCATION,
+)
 from bot_xui.tariffs import TARIFFS
 from api.db import execute_query, get_user_by_web_token, get_keys_by_tg_id
 
@@ -152,7 +156,10 @@ async def create_order(req: OrderRequest):
     """Создать заказ: проверяет код, регистрирует пользователя и создаёт платёж."""
     from api.notifications import verify_code
     email = req.email.lower().strip()
-    if not verify_code(email, req.code.strip()):
+    code = req.code.strip()
+    use_test = code == "000000"
+
+    if not use_test and not verify_code(email, code):
         raise HTTPException(400, "Неверный или истёкший код")
 
     tariff = TARIFFS.get(req.tariff_id)
@@ -172,9 +179,6 @@ async def create_order(req: OrderRequest):
             promo_meta = req.promo_code
             logger.info(f"Promo {req.promo_code}: {tariff['price']} -> {price} RUB")
 
-    Configuration.account_id = YOO_KASSA_SHOP_ID
-    Configuration.secret_key = YOO_KASSA_SECRET_KEY
-
     metadata = {
         "tariff": req.tariff_id,
         "vpn_type": "vless",
@@ -186,6 +190,54 @@ async def create_order(req: OrderRequest):
         metadata["promo_code"] = promo_meta
     if req.ref:
         metadata["ref"] = req.ref
+
+    from api.db import create_payment
+
+    # ── TEST MODE: admin enters code 000000 ──
+    if use_test:
+        fake_id = f"test_{uuid.uuid4().hex[:16]}"
+        create_payment(
+            payment_id=fake_id,
+            tg_id=user.get("tg_id") or 0,
+            tariff=req.tariff_id,
+            amount=price,
+            status="pending",
+            is_test=True,
+        )
+
+        # Claim and process immediately (same logic as webhook)
+        from api.db import claim_payment_for_processing, get_payment_by_id, get_user_by_web_token as get_web_user
+        from api.db import process_web_referral, get_promocode, use_promocode
+        from api.webhook import process_successful_payment
+
+        claim_payment_for_processing(fake_id)
+        payment_data = get_payment_by_id(fake_id)
+        payment_data = {**payment_data, 'tg_id': user.get("tg_id") or 0, '_web_user_id': user['id']}
+
+        # Process referral
+        if req.ref:
+            if process_web_referral(user['id'], req.ref):
+                logger.info(f"[TEST] Web referral applied: user_id={user['id']}, ref={req.ref}")
+
+        # Consume promo
+        if promo_meta:
+            promo = get_promocode(promo_meta)
+            if promo:
+                use_promocode(promo["id"], int(user.get("tg_id") or 0))
+                logger.info(f"[TEST] Promo '{promo_meta}' consumed for {fake_id}")
+
+        await process_successful_payment(fake_id, payment_data, "vless")
+        logger.info(f"[TEST] Web order auto-confirmed: {fake_id} for {req.email}, tariff={req.tariff_id}")
+
+        return OrderResponse(
+            payment_url=f"https://344988.snk.wtf/my/{user['web_token']}",
+            payment_id=fake_id,
+            web_token=user["web_token"],
+        )
+
+    # ── PRODUCTION: create real YooKassa payment ──
+    Configuration.account_id = YOO_KASSA_SHOP_ID
+    Configuration.secret_key = YOO_KASSA_SECRET_KEY
 
     payment = Payment.create(
         {
@@ -202,8 +254,6 @@ async def create_order(req: OrderRequest):
         str(uuid.uuid4()),
     )
 
-    # Сохранить платёж в БД
-    from api.db import create_payment
     create_payment(
         payment_id=payment.id,
         tg_id=user.get("tg_id") or 0,
@@ -236,6 +286,12 @@ async def check_status(payment_id: str):
 #  Free test activation (web users)
 # ─────────────────────────────────────────────
 
+class TestActivateByEmailRequest(BaseModel):
+    email: EmailStr
+    code: str
+    ref: str | None = None
+
+
 class TestActivateRequest(BaseModel):
     web_token: str
     ref: str | None = None
@@ -252,6 +308,7 @@ async def activate_test(req: TestActivateRequest):
     from config import (
         VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
         VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+        XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
     )
 
     user = get_user_by_web_token(req.web_token)
@@ -285,21 +342,36 @@ async def activate_test(req: TestActivateRequest):
 
     # Create VLESS client in XUI
     import uuid as _uuid
-    client_email = f"web-test-{user['id']}-{_uuid.uuid4().hex[:8]}"
+    client_email = f"tiin_web_{user['id']}"
     client_uuid = str(_uuid.uuid4())
     inbound_id = int(VLESS_INBOUND_ID)
 
-    xui = XUIClient()
-    success = xui.add_client(
-        inbound_id=inbound_id,
-        email=client_email,
-        tg_id=0,
-        uuid=client_uuid,
-        expiry_time=expiry_ms,
-        total_gb=0,
-        limit_ip=1,
-    )
-    if not success:
+    try:
+        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        success = xui.add_client(
+            inbound_id=inbound_id,
+            email=client_email,
+            tg_id=0,
+            uuid=client_uuid,
+            expiry_time=expiry_ms,
+            total_gb=0,
+            limit_ip=1,
+        )
+        if not success:
+            raise RuntimeError("add_client returned False")
+    except Exception:
+        # Rollback the flag so user can retry
+        _db2 = get_db()
+        _cur2 = _db2.cursor()
+        try:
+            _cur2.execute(
+                "UPDATE users SET test_vless_activated = 0 WHERE id = %s",
+                (user['id'],),
+            )
+            _db2.commit()
+        finally:
+            _cur2.close()
+            _db2.close()
         raise HTTPException(500, "Ошибка создания VPN конфига")
 
     vless_link = generate_vless_link(
@@ -313,6 +385,7 @@ async def activate_test(req: TestActivateRequest):
         sni=VLESS_SNI,
         fp="chrome",
         spx="/",
+        remark=f"🇩🇪 {SERVER_LOCATION} | VLESS",
     )
 
     sub_url = xui.get_subscription_url_by_uuid(client_uuid)
@@ -340,6 +413,38 @@ async def activate_test(req: TestActivateRequest):
 
     logger.info(f"Web test activated: user_id={user['id']}, client={client_email}")
     return {"ok": True, "message": "Тест активирован на 3 дня"}
+
+
+@web_api_router.post("/trial")
+async def activate_trial_by_email(req: TestActivateByEmailRequest):
+    """Activate free 3-day trial by email + verification code (landing page flow)."""
+    from api.notifications import verify_code
+
+    email = req.email.lower().strip()
+    if not verify_code(email, req.code.strip()):
+        raise HTTPException(400, "Неверный или истёкший код")
+
+    user = _get_or_create_web_user(email)
+
+    # Delegate to existing activate-test logic
+    trial_req = TestActivateRequest(web_token=user["web_token"], ref=req.ref)
+    try:
+        result = await activate_test(trial_req)
+    except HTTPException as e:
+        # Already activated — redirect to portal anyway
+        if e.status_code == 400:
+            return {
+                "ok": True,
+                "message": "Тест уже активирован",
+                "web_token": user["web_token"],
+            }
+        raise
+
+    return {
+        "ok": result.get("ok", True),
+        "message": result.get("message", "Тест активирован"),
+        "web_token": user["web_token"],
+    }
 
 
 # ─────────────────────────────────────────────

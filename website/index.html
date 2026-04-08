@@ -72,6 +72,26 @@ background:#7c3aed;color:#fff;border-radius:10px;font-weight:600;display:inline-
 .l-proxy-dl{font-size:.8rem;color:#888;text-decoration:none}
 .l-proxy-dl:hover{color:#a78bfa}
 
+/* Trial banner */
+.l-trial{max-width:600px;margin:0 auto;background:linear-gradient(135deg,#1a1030 0%,#161616 100%);
+border:1px solid rgba(124,58,237,.3);border-radius:16px;padding:2rem 1.5rem;text-align:center}
+.l-trial-badge{display:inline-block;background:rgba(34,197,94,.15);color:#22c55e;font-size:.7rem;
+font-weight:700;padding:.3rem .8rem;border-radius:10px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:1rem}
+.l-trial h3{color:#fff;font-size:1.2rem;font-weight:700;margin-bottom:.4rem}
+.l-trial p{color:#888;font-size:.9rem;line-height:1.5;margin-bottom:1.2rem}
+.l-trial-features{display:flex;justify-content:center;gap:1.5rem;margin-bottom:1.2rem;flex-wrap:wrap}
+.l-trial-feat{font-size:.8rem;color:#a78bfa}
+.l-trial-form{max-width:340px;margin:0 auto}
+.l-trial-form input{width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
+padding:.7rem .8rem;color:#fff;font-size:.9rem;outline:none;transition:border-color .15s;margin-bottom:.5rem}
+.l-trial-form input:focus{border-color:#7c3aed}
+.l-trial-form input::placeholder{color:#555}
+.l-trial-btn{display:block;width:100%;padding:.8rem;background:#22c55e;color:#fff;border:none;
+border-radius:10px;font-size:.95rem;font-weight:600;cursor:pointer;transition:all .15s}
+.l-trial-btn:hover{background:#16a34a}
+.l-trial-btn:disabled{background:#333;color:#666;cursor:not-allowed}
+.l-trial-msg{font-size:.8rem;margin-top:.4rem;min-height:1.1em;color:#ef4444}
+
 /* Tariffs */
 .l-tariffs{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;
 max-width:700px;margin:0 auto 1.5rem}
@@ -198,7 +218,7 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
     <div class="nav-logo">TIIN</div>
     <div class="nav-links">
         <a href="/login" class="nav-link">Войти</a>
-        <a href="#tariffs" class="nav-cta" onclick="scrollTo('#tariffs')">Подключить</a>
+        <a href="#trial" class="nav-cta" onclick="scrollTo('#trial')">Подключить</a>
     </div>
 </nav>
 
@@ -207,7 +227,7 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
     <h1 class="l-hero-title">Свободный интернет<br><span class="l-hero-accent">без границ</span></h1>
     <p class="l-hero-desc">Быстрый и стабильный доступ к любым сайтам и сервисам. Современные протоколы, которые невозможно заблокировать.</p>
     <div class="l-hero-actions">
-        <a href="#tariffs" class="pay-btn l-hero-btn" style="max-width:220px" onclick="scrollTo('#tariffs')">Подключить VPN</a>        
+        <a href="#trial" class="pay-btn l-hero-btn" style="max-width:220px" onclick="scrollTo('#trial')">Подключить VPN</a>
     </div>
     <div class="l-hero-actions" style="margin-top: 1rem">
         <a href="https://t.me/tiin_service_bot?start=web" class="tg-btn l-hero-btn" style="max-width:220px">
@@ -239,7 +259,7 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
 <section class="l-section">
     <h2 class="l-section-title">Как это работает</h2>
     <div class="l-steps">
-        <div class="l-step"><div class="l-step-num">1</div><div class="l-step-body"><h3>Выберите тариф</h3><p>От 3 дней до 1 года. Чем дольше — тем дешевле.</p></div></div>
+        <div class="l-step"><div class="l-step-num">1</div><div class="l-step-body"><h3>Выберите тариф</h3><p>Попробуйте бесплатно 3 дня или выберите платный тариф до 1 года.</p></div></div>
         <div class="l-step"><div class="l-step-num">2</div><div class="l-step-body"><h3>Оплатите картой</h3><p>Быстрая оплата через ЮKassa. Без комиссий и скрытых платежей.</p></div></div>
         <div class="l-step"><div class="l-step-num">3</div><div class="l-step-body"><h3>Подключайтесь</h3><p>Получите личный кабинет с конфигом. Установите приложение и нажмите «Подключить».</p></div></div>
     </div>
@@ -255,6 +275,34 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
         <div style="display:flex;flex-direction:column;gap:.5rem;align-items:center">
             <a href="tg://proxy?server=tiinservice.ru&port=8443&secret=7tZhp-UUviXSuUagLCZgx8UzNDQ5ODguc25rLnd0Zg" class="l-proxy-btn" id="proxyBtn">Подключить прокси</a>
             <a href="/proxy.html" class="l-proxy-dl">&#128206; Скачать файл</a>
+        </div>
+    </div>
+</section>
+
+<section class="l-section" id="trial">
+    <div class="l-trial">
+        <div class="l-trial-badge">Бесплатно</div>
+        <h3>Попробуйте VPN — 3 дня без оплаты</h3>
+        <p>Убедитесь в скорости и качестве. Без привязки карты, без автопродления.</p>
+        <div class="l-trial-features">
+            <span class="l-trial-feat">VLESS Reality</span>
+            <span class="l-trial-feat">1 устройство</span>
+            <span class="l-trial-feat">72 часа</span>
+        </div>
+        <div class="l-trial-form">
+            <input type="email" id="trialEmail" placeholder="Ваш email" autocomplete="email">
+            <div id="trialCodeSection" style="display:none">
+                <div style="color:#888;font-size:.82rem;text-align:center;margin-bottom:.4rem">
+                    Код отправлен на <b id="trialCodeEmail" style="color:#a78bfa"></b>
+                </div>
+                <input type="text" id="trialCode" placeholder="Код из письма" maxlength="6"
+                       style="text-align:center;letter-spacing:4px;font-size:1rem" autocomplete="one-time-code">
+            </div>
+            <button class="l-trial-btn" id="trialBtn" disabled>Активировать тест</button>
+            <div id="trialChangeEmail" style="display:none;text-align:center;margin-top:.4rem">
+                <a href="javascript:trialReset()" style="color:#888;font-size:.8rem;text-decoration:none">Изменить email</a>
+            </div>
+            <div class="l-trial-msg" id="trialMsg"></div>
         </div>
     </div>
 </section>
@@ -424,6 +472,7 @@ var faqData = [
     { q: 'Как начать пользоваться?', a: 'Выберите тариф, оплатите, и вы получите ссылку на личный кабинет с инструкциями по подключению. Настройка занимает 2 минуты.' },
     { q: 'Какие устройства поддерживаются?', a: 'iPhone, Android, Windows, macOS, Linux. На каждом тарифе до 10 устройств одновременно.' },
     { q: 'Это безопасно?', a: 'Да. Мы используем современные протоколы шифрования (VLESS Reality, AmneziaWG). Трафик невозможно прочитать или заблокировать.' },
+    { q: 'Есть ли бесплатный пробный период?', a: 'Да! Вы можете активировать бесплатный тест на 3 дня — без привязки карты и автопродления. Просто введите email в форме выше.' },
     { q: 'Что если не заработает?', a: 'Напишите нам в Telegram-бот — поможем настроить. Если совсем не подойдёт, вернём деньги.' },
     { q: 'Вы храните логи?', a: 'Нет. Мы не ведём журналов активности и не отслеживаем, какие сайты вы посещаете.' }
 ];
@@ -526,6 +575,10 @@ function resetCode() {
 document.getElementById('emailInput').addEventListener('input', function() {
     if (codeStage) resetCode();
     checkForm();
+});
+
+document.getElementById('codeInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); document.getElementById('payBtn').click(); }
 });
 
 document.getElementById('payBtn').addEventListener('click', function() {
@@ -683,6 +736,80 @@ document.getElementById('supBtn').addEventListener('click', function() {
             }
         })
         .catch(function() { alert('Ошибка соединения'); btn.textContent = 'Отправить сообщение'; btn.disabled = false; });
+    }
+});
+
+// ── Trial activation ──
+var trialCodeStage = false;
+
+function trialReset() {
+    trialCodeStage = false;
+    document.getElementById('trialCodeSection').style.display = 'none';
+    document.getElementById('trialChangeEmail').style.display = 'none';
+    document.getElementById('trialCode').value = '';
+    document.getElementById('trialEmail').disabled = false;
+    document.getElementById('trialBtn').textContent = 'Активировать тест';
+    document.getElementById('trialMsg').textContent = '';
+    trialCheckForm();
+}
+
+function trialCheckForm() {
+    var email = document.getElementById('trialEmail').value.trim();
+    document.getElementById('trialBtn').disabled = !email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);
+}
+
+document.getElementById('trialEmail').addEventListener('input', function() {
+    if (trialCodeStage) trialReset();
+    trialCheckForm();
+});
+
+document.getElementById('trialCode').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); document.getElementById('trialBtn').click(); }
+});
+
+document.getElementById('trialBtn').addEventListener('click', function() {
+    var email = document.getElementById('trialEmail').value.trim();
+    if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) return;
+    var btn = document.getElementById('trialBtn');
+    var msgEl = document.getElementById('trialMsg');
+    msgEl.textContent = '';
+
+    if (!trialCodeStage) {
+        btn.disabled = true; btn.textContent = 'Отправка кода...';
+        fetch(API + '/order/send-code', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email }) })
+        .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
+        .then(function(res) {
+            if (res.data.ok) {
+                trialCodeStage = true;
+                document.getElementById('trialCodeEmail').textContent = email;
+                document.getElementById('trialCodeSection').style.display = 'block';
+                document.getElementById('trialChangeEmail').style.display = 'block';
+                document.getElementById('trialEmail').disabled = true;
+                btn.textContent = 'Подтвердить и активировать'; btn.disabled = false;
+                document.getElementById('trialCode').focus();
+            } else {
+                msgEl.textContent = res.data.detail || res.data.message || 'Ошибка отправки кода';
+                btn.textContent = 'Активировать тест'; btn.disabled = false;
+            }
+        })
+        .catch(function() { msgEl.textContent = 'Ошибка соединения'; btn.textContent = 'Активировать тест'; btn.disabled = false; });
+    } else {
+        var code = document.getElementById('trialCode').value.trim();
+        if (!code) { msgEl.textContent = 'Введите код из письма'; return; }
+        btn.disabled = true; btn.textContent = 'Активация...';
+        fetch(API + '/trial', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, code: code, ref: getRef() }) })
+        .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
+        .then(function(res) {
+            if (res.data.ok && res.data.web_token) {
+                window.location.href = '/my/' + res.data.web_token;
+            } else {
+                msgEl.textContent = res.data.detail || res.data.message || 'Ошибка активации';
+                btn.textContent = 'Подтвердить и активировать'; btn.disabled = false;
+            }
+        })
+        .catch(function() { msgEl.textContent = 'Ошибка соединения'; btn.textContent = 'Подтвердить и активировать'; btn.disabled = false; });
     }
 });
 </script>

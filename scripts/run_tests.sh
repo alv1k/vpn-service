@@ -37,6 +37,16 @@ TEST_SUITES=(
     "tests/test_web_portal.py|Web-Portal"
     "tests/test_web_referrals.py|Web-Referrals"
     "tests/test_session.py|Session"
+    "tests/test_trial_activation.py|Trial-Activation"
+    "tests/test_security.py|Security"
+    "tests/test_autopay.py|Autopay"
+    "tests/test_vpn_factory.py|VPN-Factory"
+    "tests/test_refund.py|Refund"
+    "tests/test_create_order.py|Create-Order"
+    "tests/test_messaging.py|Messaging"
+    "tests/test_views.py|Views"
+    "tests/test_sharing_monitor.py|Sharing-Monitor"
+    "tests/test_bot_handler.py|Bot-Handler"
 )
 
 ALL_OK=1

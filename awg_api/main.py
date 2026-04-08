@@ -25,7 +25,7 @@ logger = logging.getLogger("awg_api")
 # In-memory session store
 _sessions: dict[str, float] = {}  # token -> created_at timestamp
 
-SESSION_MAX_AGE = 86400  # 24h
+SESSION_MAX_AGE = 604800  # 7 days
 _MAX_SESSIONS = 100
 
 
@@ -48,9 +48,12 @@ def _check_session_from_request(request: Request):
     if not token or token not in _sessions:
         raise HTTPException(status_code=401, detail="Unauthorized")
     created = _sessions[token]
-    if datetime.now(timezone.utc).timestamp() - created > SESSION_MAX_AGE:
+    now = datetime.now(timezone.utc).timestamp()
+    if now - created > SESSION_MAX_AGE:
         del _sessions[token]
         raise HTTPException(status_code=401, detail="Session expired")
+    # Sliding window: refresh session on each request
+    _sessions[token] = now
 
 
 def _client_to_json(c: dict) -> dict:
@@ -127,7 +130,7 @@ async def login(request: Request, response: Response):
 
     response.set_cookie(
         key="connect.sid", value=token,
-        httponly=True, secure=True, samesite="lax", max_age=SESSION_MAX_AGE,
+        httponly=True, secure=False, samesite="lax", max_age=SESSION_MAX_AGE,
     )
     return {"success": True}
 

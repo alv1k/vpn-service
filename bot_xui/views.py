@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def show_main_menu(query):
-    await safe_edit_text(query, MAIN_MENU_TEXT, reply_markup=make_main_keyboard())
+    tg_id = query.from_user.id
+    await safe_edit_text(query, MAIN_MENU_TEXT, reply_markup=make_main_keyboard(tg_id))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -251,24 +252,50 @@ async def show_configs(query, xui=None):
             keyboard.append(row)
             row = []
 
+    # Additional protocol buttons for active subscribers
+    if active_keys:
+        has_awg = any(k['vpn_type'] == 'awg' for k in active_keys)
+        has_se  = any(k['vpn_type'] == 'softether' for k in active_keys)
+        extra_row = []
+        if not has_awg:
+            extra_row.append(InlineKeyboardButton("➕ AmneziaWG", callback_data="get_awg_config"))
+        if not has_se:
+            extra_row.append(InlineKeyboardButton("➕ SoftEther", callback_data="get_softether_config"))
+        if extra_row:
+            keyboard.append(extra_row)
+
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")])
 
     await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _show_no_configs(query):
-    text = (
-        "🔑 <b>У вас пока нет конфигов</b>\n\n"
-        "Выберите тариф или попробуйте бесплатно — "
-        "конфиг будет создан автоматически."
-    )
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup([
+    tg_id = query.from_user.id
+    from api.db import is_vless_test_activated, is_awg_test_activated
+    test_used = is_vless_test_activated(tg_id) or is_awg_test_activated(tg_id)
+    if test_used:
+        text = (
+            "🔑 <b>У вас пока нет активных конфигов</b>\n\n"
+            "Выберите тариф — конфиг будет создан автоматически."
+        )
+        buttons = [
+            [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
+        ]
+    else:
+        text = (
+            "🔑 <b>У вас пока нет конфигов</b>\n\n"
+            "Выберите тариф или попробуйте бесплатно — "
+            "конфиг будет создан автоматически."
+        )
+        buttons = [
             [InlineKeyboardButton("🎁 Попробовать бесплатно", callback_data="test_protocol")],
             [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
-        ]),
+        ]
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML",
     )
 
@@ -331,6 +358,31 @@ async def show_single_config(query, client_name: str, xui):
                 parse_mode="HTML",
                 reply_markup=back_markup,
             )
+        return
+
+    # AWG — отправить .conf файл
+    if key["vpn_type"] == "awg":
+        conf_text = key.get("vless_link") or ""
+        if not conf_text:
+            await query.answer("❌ Конфиг не найден", show_alert=True)
+            return
+
+        caption = (
+            f"📱 <b>{key['client_name']}</b>  {status[0]} {status[1]}\n"
+            f"⏱ До: {convert_to_local(expires_at)}\n\n"
+            f"💡 <i>Импортируйте файл в AmneziaVPN</i>"
+        )
+
+        conf_bio = BytesIO(conf_text.encode("utf-8"))
+        conf_bio.name = f"{key['client_name']}.conf"
+
+        await query.message.delete()
+        await query.message.chat.send_document(
+            document=conf_bio,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=back_markup,
+        )
         return
 
     # VLESS — QR + ссылка подписки

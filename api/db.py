@@ -118,6 +118,12 @@ def get_or_create_user(tg_id: int, first_name: str | None = None, last_name: str
     import secrets
     user = get_user_by_tg_id(tg_id)
     if user:
+        old_name = user.get('first_name')
+        if old_name and old_name not in ('', '-') and old_name != first_name:
+            execute_query(
+                "UPDATE users SET old_first_name = %s WHERE tg_id = %s",
+                (old_name, tg_id)
+            )
         execute_query(
             "UPDATE users SET first_name = %s, last_name = %s WHERE tg_id = %s",
             (first_name, last_name, tg_id)
@@ -613,18 +619,6 @@ def create_vpn_key(
             (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
         VALUES
             (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            payment_id        = VALUES(payment_id),
-            client_id         = VALUES(client_id),
-            client_name       = VALUES(client_name),
-            client_ip         = VALUES(client_ip),
-            client_public_key = VALUES(client_public_key),
-            vless_link        = VALUES(vless_link),
-            expires_at        = VALUES(expires_at),
-            vpn_type          = VALUES(vpn_type),
-            subscription_link = VALUES(subscription_link),
-            vpn_file          = VALUES(vpn_file),
-            user_id           = VALUES(user_id)
         """,
         (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
     )
@@ -654,10 +648,20 @@ def get_used_client_ips() -> set[str]:
     return {r['client_ip'] for r in rows}
 
 
-def get_user_email(tg_id: int) -> str | None:
-    """Получить client_name (email) пользователя из vpn_keys"""
+def get_user_email(tg_id: int, payment_id: str | None = None) -> str | None:
+    """Получить client_name (email) пользователя из vpn_keys.
+    Если передан payment_id — ищем по нему (точное совпадение).
+    Иначе — последний активный ключ.
+    """
+    if payment_id:
+        row = execute_query(
+            "SELECT client_name FROM vpn_keys WHERE payment_id = %s",
+            (payment_id,), fetch='one'
+        )
+        if row:
+            return row['client_name']
     row = execute_query(
-        "SELECT client_name FROM vpn_keys WHERE tg_id = %s",
+        "SELECT client_name FROM vpn_keys WHERE tg_id = %s ORDER BY expires_at DESC LIMIT 1",
         (tg_id,), fetch='one'
     )
     return row['client_name'] if row else None

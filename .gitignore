@@ -8,6 +8,8 @@ YOO_KASSA_SECRET_KEY.txt
 docker/amneziawg/config/
 docker/amneziawg/amneziawg-data/
 docker/x-ui-data/*.db
+docker/x-ui-data/*.db-shm
+docker/x-ui-data/*.db-wal
 mysql_data/
 redis_data/
 
@@ -55,6 +57,16 @@ Thumbs.db
 *.tmp
 tmp/
 temp/
+
+# SQLite databases
+*.db
+
+# Backup files
+*.bak
+backups-moved/
+
+# Built website assets
+website_dist/
 
 # Docker compose только в docker/amneziawg/
 /docker-compose.yml
