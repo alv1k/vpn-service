@@ -242,35 +242,294 @@ All settings loaded from `.env` via `config.py`:
 
 ## Requirements
 
-- Ubuntu 22.04+ (VPS, min 2 vCPU / 4 GB RAM)
-- Domain with DNS configured
-- Telegram Bot Token
+- Ubuntu 22.04+ (VPS, min 2 vCPU / 4 GB RAM / 20 GB SSD)
+- Static public IP address
+- Domain with DNS A-record pointing to the server
+- Telegram Bot Token (from @BotFather)
 - YooKassa merchant account
-- AmneziaWG kernel module
+- Brevo SMTP account (for email notifications)
 
 ## Installation
 
-```bash
-# Clone and install
-git clone <repo> ~/vpn-service
-cd ~/vpn-service
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+### 1. System Preparation
 
-# Configure
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git docker.io docker-compose python3 python3-pip python3-venv \
+  nginx certbot python3-certbot-nginx apache2-utils curl wget ufw
+
+# Enable IP forwarding (required for VPN)
+echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+```
+
+### 2. Clone and Install Dependencies
+
+```bash
+cd ~
+git clone <repo-url> vpn-service
+cd vpn-service
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Configure Environment
+
+```bash
 cp .env.example .env
 nano .env
-
-# Start infrastructure
-docker compose up -d
-
-# Set up SSL
-sudo bash scripts/setup-ssl.sh yourdomain.com
-
-# Start services
-sudo systemctl start bot api
-sudo systemctl enable bot api
 ```
+
+Fill in all required variables (see [Configuration](#configuration) section).
+
+### 4. Docker Services
+
+```bash
+sudo usermod -aG docker $USER
+sudo systemctl enable docker && sudo systemctl start docker
+docker compose up -d
+```
+
+This starts MySQL 8.0, 3x-UI (VLESS/Xray), phpMyAdmin, and AmneziaWG containers.
+
+### 5. AmneziaWG Kernel Module
+
+```bash
+cd amneziawg-linux-kernel-module
+make build
+sudo make install
+sudo modprobe amneziawg
+```
+
+Create AWG interface config at `/etc/amnezia/amneziawg/awg0.conf` with server keys and obfuscation parameters (Jc, Jmin, Jmax, H1-H4, S1, S2).
+
+### 6. SoftEther VPN (Optional)
+
+```bash
+# Install SoftEther to /opt/softether/
+# Download and compile from https://www.softether-download.com
+cd /opt/softether
+sudo ./vpnserver start
+./vpncmd  # Configure server password and VPN hub
+```
+
+### 7. SSL Certificates
+
+```bash
+sudo certbot --nginx -d yourdomain.com
+sudo systemctl enable certbot.timer
+```
+
+### 8. Nginx Configuration
+
+Configure reverse proxy in `/etc/nginx/sites-available/vpn-service`:
+
+| Route | Backend | Notes |
+|-------|---------|-------|
+| `/` | `127.0.0.1:8000` | Web portal + webhook API |
+| `/tiin_admin_panel/` | `127.0.0.1:51821` | Admin panel (HTTP auth) |
+| `/phpmyadmin/` | `127.0.0.1:8080` | DB admin (HTTP auth) |
+| `/webhook/yookassa` | `127.0.0.1:8000` | Payment webhook (IP-restricted) |
+
+```bash
+# Create admin panel HTTP auth
+sudo htpasswd -c /etc/nginx/.htpasswd_admin admin
+
+sudo ln -s /etc/nginx/sites-available/vpn-service /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 9. Systemd Services
+
+Create service files in `/etc/systemd/system/`:
+
+**bot.service** — Telegram bot:
+```ini
+[Unit]
+Description=Telegram Bot (tiin service)
+After=network.target
+
+[Service]
+User=alvik
+WorkingDirectory=/home/alvik/vpn-service/bot_xui
+Environment="PATH=/home/alvik/vpn-service/venv/bin"
+ExecStart=/home/alvik/vpn-service/venv/bin/python3 bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**api.service** — FastAPI webhook + web portal:
+```ini
+[Unit]
+Description=FastAPI tiin service api
+After=network.target
+
+[Service]
+User=alvik
+Group=alvik
+WorkingDirectory=/home/alvik/vpn-service
+Environment="PATH=/home/alvik/vpn-service/venv/bin"
+ExecStart=/home/alvik/vpn-service/venv/bin/python -m uvicorn api.webhook:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**awg-interface.service** — AmneziaWG network interface:
+```ini
+[Unit]
+Description=AmneziaWG Interface awg0
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/awg-quick up awg0
+ExecStop=/usr/bin/awg-quick down awg0
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**awg-api.service** — AmneziaWG management API:
+```ini
+[Unit]
+Description=AmneziaWG 2.0 API Service
+After=network.target mysql.service awg-interface.service
+
+[Service]
+User=root
+WorkingDirectory=/home/alvik/vpn-service
+Environment="PATH=/home/alvik/vpn-service/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+EnvironmentFile=/home/alvik/vpn-service/.env
+ExecStart=/home/alvik/vpn-service/venv/bin/uvicorn awg_api.main:app --host 127.0.0.1 --port 51821
+Restart=always
+RestartSec=5
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/home/alvik/vpn-service/logs /tmp /etc/amnezia/amneziawg
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start all services:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable bot api awg-interface awg-api
+sudo systemctl start awg-interface awg-api bot api
+```
+
+### 10. Firewall (UFW)
+
+```bash
+sudo ufw allow 22/tcp       # SSH
+sudo ufw allow 80/tcp       # HTTP (redirect to HTTPS)
+sudo ufw allow 443/tcp      # HTTPS
+sudo ufw allow 51888/udp    # AmneziaWG
+sudo ufw allow 51999/tcp    # X-UI panel
+sudo ufw allow 992/tcp      # SoftEther main
+sudo ufw allow 5556/tcp     # SoftEther alternate
+sudo ufw allow 500/udp      # IPsec IKE
+sudo ufw allow 4500/udp     # IPsec NAT-T
+sudo ufw allow 1701/udp     # L2TP
+sudo ufw allow 8443/tcp     # MTProto proxy
+sudo ufw enable
+```
+
+### 11. Cron Jobs
+
+```bash
+crontab -e
+```
+
+```cron
+# Database backup — daily 21:00
+0 21 * * *   /home/alvik/scripts/backup.sh >> /home/alvik/logs/backup.log 2>&1
+
+# Test suite — daily 21:00
+0 21 * * *   /home/alvik/vpn-service/scripts/run_tests.sh >> /home/alvik/vpn-service/logs/tests.log 2>&1
+
+# VPN health check — every 3 hours
+0 */3 * * *  /home/alvik/vpn-service/scripts/vpn-health-check.sh >> /home/alvik/vpn-service/logs/vpn-health.log 2>&1
+
+# AWG client expiry check — every 30 minutes
+*/30 * * * * /home/alvik/vpn-service/venv/bin/python3 /home/alvik/vpn-service/scripts/awg_expiry_check.py >> /home/alvik/vpn-service/logs/awg_expiry.log 2>&1
+
+# Update Russian IP/domain routes — Mondays 04:00
+0 4 * * 1    /usr/bin/python3 /home/alvik/vpn-service/scripts/update_ru_routes.py >> /home/alvik/vpn-service/logs/ru_routes_update.log 2>&1
+
+# Winback campaign — daily 03:00
+0 3 * * *    /home/alvik/vpn-service/venv/bin/python3 /home/alvik/vpn-service/scripts/win_back_users.py --send >> /home/alvik/vpn-service/logs/winback.log 2>&1
+
+# Channel posts — every 2 days at 12:00
+0 12 */2 * * cd /home/alvik/vpn-service && venv/bin/python3 scripts/channel_post.py >> logs/channel_posts.log 2>&1
+```
+
+### 12. Verify Installation
+
+```bash
+# Check all services are running
+systemctl status bot api awg-api awg-interface
+docker compose ps
+
+# Check ports
+ss -tlnp | grep -E "(443|8000|51821)"
+ss -ulnp | grep 51888
+
+# Check AWG interface
+awg show awg0
+
+# Test API
+curl -s http://127.0.0.1:8000/docs
+
+# Test bot
+journalctl -u bot -f
+```
+
+## Ports Summary
+
+| Port | Protocol | Service | Access |
+|------|----------|---------|--------|
+| 22 | TCP | SSH | Public |
+| 80 | TCP | HTTP (redirect) | Public |
+| 443 | TCP | HTTPS (Nginx) | Public |
+| 992 | TCP | SoftEther | Public |
+| 5556 | TCP | SoftEther alt | Public |
+| 500/4500 | UDP | IPsec | Public |
+| 1701 | UDP | L2TP | Public |
+| 8443 | TCP | MTProto proxy | Public |
+| 51888 | UDP | AmneziaWG | Public |
+| 51999 | TCP | X-UI panel | Public |
+| 3306 | TCP | MySQL | localhost |
+| 8000 | TCP | FastAPI | localhost |
+| 8080 | TCP | phpMyAdmin | localhost |
+| 51821 | TCP | AWG API | localhost |
+
+## Key Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `.env` | All environment variables |
+| `config.py` | Python config loader |
+| `docker-compose.yml` | Docker services |
+| `/etc/systemd/system/bot.service` | Bot systemd unit |
+| `/etc/systemd/system/api.service` | API systemd unit |
+| `/etc/systemd/system/awg-api.service` | AWG API systemd unit |
+| `/etc/systemd/system/awg-interface.service` | AWG interface unit |
+| `/etc/amnezia/amneziawg/awg0.conf` | AWG interface config |
+| `/etc/nginx/sites-available/vpn-service` | Nginx reverse proxy |
+| `/etc/letsencrypt/live/{domain}/` | SSL certificates |
 
 ## Operations
 
@@ -289,6 +548,9 @@ docker compose logs -f x-ui
 # Tests
 pytest tests/
 bash scripts/run_tests.sh   # Run tests + send report to admin via Telegram
+
+# Backup
+bash ~/scripts/backup.sh
 ```
 
 ## Tech Stack
