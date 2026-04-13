@@ -4,8 +4,9 @@
 import io
 import logging
 from datetime import datetime, timedelta
+from urllib.parse import quote
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET
+from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET, BOT_USERNAME, REFERRAL_REWARD_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,19 @@ def convert_to_local(dt: datetime, offset_hours: int = 9) -> str:
     if dt is None:
         return "∞"
     return (dt + timedelta(hours=offset_hours)).strftime("%d.%m.%Y")
+
+
+PUBLIC_BASE_URL = "https://344988.snk.wtf"
+
+
+def get_user_sub_url(tg_id: int) -> str:
+    """Прокси-URL подписки для пользователя: /sub/{web_token}.
+    Пустая строка, если web_token не выдан."""
+    from api.db import get_web_token
+    token = get_web_token(tg_id)
+    if not token:
+        return ""
+    return f"{PUBLIC_BASE_URL}/sub/{token}"
 
 
 def make_back_keyboard(label: str = "◀️ В меню", data: str = "back_to_menu") -> InlineKeyboardMarkup:
@@ -73,40 +87,32 @@ def make_proxy_file() -> io.BytesIO:
 
 def make_main_keyboard(tg_id: int | None = None) -> InlineKeyboardMarkup:
     """Клавиатура главного меню."""
-    from api.db import is_vless_test_activated, is_awg_test_activated
-    rows = []
-    if tg_id is None or (not is_vless_test_activated(tg_id) and not is_awg_test_activated(tg_id)):
-        rows.append([InlineKeyboardButton("🎁 Попробовать бесплатно", callback_data="test_protocol")])
-    rows += [
+    rows = [
         [
             InlineKeyboardButton("🔑 Мои конфиги", callback_data="my_configs"),
             InlineKeyboardButton("💎 Тарифы", callback_data="tariffs"),
         ],
         [
-            InlineKeyboardButton("📖 Инструкция", callback_data="instructions"),
-            InlineKeyboardButton("🌐 Кабинет", callback_data="web_portal"),
-        ],
-        [
-            InlineKeyboardButton("👥 Пригласить друга", callback_data="referral"),
             InlineKeyboardButton("✉️ Поддержка", callback_data="feedback"),
+            InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service"),
         ],
         [
-            InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service"),
             InlineKeyboardButton("🔗 Прокси TG", callback_data="proxy_file"),
         ],
     ]
+    if tg_id is not None:
+        ref_url = f"https://t.me/{BOT_USERNAME}?start={tg_id}"
+        share_text = (
+            f"⚡️ тииҥ VPN — быстрый и стабильный VPN.\n"
+            f"Переходи по ссылке и получи +{REFERRAL_REWARD_DAYS} дня подписки в подарок 🎁\n"
+            f"{ref_url}"
+        )
     return InlineKeyboardMarkup(rows)
 
 MAIN_MENU_TEXT = (
-    "⚡️ <b>тииҥ VPN</b>\n\n"
-    "Быстрый и надёжный VPN для доступа к любым сайтам.\n"
-    "YouTube, Instagram, ChatGPT и всё остальное — без ограничений.\n\n"
-    "▸ Подключение за 1 минуту\n"
-    "▸ Работает на телефонах, ПК и планшетах\n"
-    "▸ До 10 устройств на одной подписке\n"
-    "▸ От 199 ₽/мес\n\n"
-    f'🔗 <a href="{MTPROTO_PROXY_LINK}">Прокси для Telegram</a>'
-    " — доступ к боту без VPN"
+    "⚡️ <b> тииҥ VPN 🐿</b>\n\n"
+    "Твой тестовый период закончился 🙂\n"
+    "Чтобы продолжить пользоваться VPN — выбери подходящий тариф 👇\n"
 )
 
 

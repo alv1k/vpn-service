@@ -103,7 +103,8 @@ class TestButtonHandler:
 
         await button_handler(update, context)
 
-        mock_show.assert_called_once_with(query)
+        mock_show.assert_called_once()
+        assert mock_show.call_args[0][0] == query
 
     @pytest.mark.asyncio
     @patch("bot_xui.bot.show_instructions", new_callable=AsyncMock)
@@ -115,18 +116,6 @@ class TestButtonHandler:
         await button_handler(update, context)
 
         mock_show.assert_called_once_with(query)
-
-    @pytest.mark.asyncio
-    @patch("bot_xui.bot.handle_test_vless", new_callable=AsyncMock)
-    async def test_test_protocol_goes_to_vless(self, mock_handler):
-        """test_protocol shortcut goes straight to VLESS."""
-        from bot_xui.bot import button_handler
-        update, query = _make_update("test_protocol")
-        context = MagicMock()
-
-        await button_handler(update, context)
-
-        mock_handler.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_test_protocol_choose_shows_options(self):
@@ -235,3 +224,104 @@ class TestButtonHandler:
             await button_handler(update, context)
             text = mock_edit.call_args[0][1]
             assert "Split tunneling" in text or "Happ" in text
+
+
+# ═════════════════════════════════════════════
+#  send_start_screen
+# ═════════════════════════════════════════════
+
+class TestSendStartScreen:
+
+    def setup_method(self):
+        """Reset cached file_id between tests."""
+        from bot_xui import bot
+        bot._START_IMAGE_FILE_ID = None
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_text_when_image_missing(self):
+        """If image file does not exist, falls back to send_message with text."""
+        from bot_xui import bot
+        from pathlib import Path
+
+        chat = MagicMock()
+        chat.send_message = AsyncMock()
+        chat.send_photo = AsyncMock()
+
+        with patch.object(bot, "START_IMAGE_PATH", Path("/nonexistent/missing.png")):
+            await bot.send_start_screen(chat, "menu text", reply_markup=None)
+
+        chat.send_message.assert_called_once()
+        chat.send_photo.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_text_when_caption_too_long(self):
+        """Caption > 1024 chars → falls back to text-only message."""
+        from bot_xui import bot
+
+        chat = MagicMock()
+        chat.send_message = AsyncMock()
+        chat.send_photo = AsyncMock()
+
+        long_text = "x" * 1100  # > 1024 limit
+        # Real path exists; failure is caption length, not file
+        await bot.send_start_screen(chat, long_text, reply_markup=None)
+
+        chat.send_message.assert_called_once()
+        chat.send_photo.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_first_send_reads_disk_and_caches_file_id(self):
+        """First send reads PNG from disk and caches the returned file_id."""
+        from bot_xui import bot
+
+        # Mock the returned message with a photo file_id
+        photo_obj = MagicMock()
+        photo_obj.file_id = "cached-file-id-1"
+        sent_msg = MagicMock()
+        sent_msg.photo = [photo_obj]
+
+        chat = MagicMock()
+        chat.send_photo = AsyncMock(return_value=sent_msg)
+        chat.send_message = AsyncMock()
+
+        await bot.send_start_screen(chat, "short menu", reply_markup=None)
+
+        chat.send_photo.assert_called_once()
+        # Cache populated
+        assert bot._START_IMAGE_FILE_ID == "cached-file-id-1"
+
+    @pytest.mark.asyncio
+    async def test_second_send_uses_cached_file_id(self):
+        """When _START_IMAGE_FILE_ID is set, subsequent sends pass it instead of bytes."""
+        from bot_xui import bot
+        bot._START_IMAGE_FILE_ID = "preset-id-99"
+
+        photo_obj = MagicMock()
+        photo_obj.file_id = "preset-id-99"
+        sent_msg = MagicMock()
+        sent_msg.photo = [photo_obj]
+
+        chat = MagicMock()
+        chat.send_photo = AsyncMock(return_value=sent_msg)
+        chat.send_message = AsyncMock()
+
+        await bot.send_start_screen(chat, "short menu", reply_markup=None)
+
+        # Photo arg should be the cached id string, not a file handle
+        chat.send_photo.assert_called_once()
+        assert chat.send_photo.call_args[1]["photo"] == "preset-id-99"
+
+    @pytest.mark.asyncio
+    async def test_telegram_error_falls_back_to_text(self):
+        """If Telegram raises during send_photo, falls back to send_message."""
+        from bot_xui import bot
+        bot._START_IMAGE_FILE_ID = "cached-id"
+
+        chat = MagicMock()
+        chat.send_photo = AsyncMock(side_effect=RuntimeError("Telegram timeout"))
+        chat.send_message = AsyncMock()
+
+        await bot.send_start_screen(chat, "short menu", reply_markup=None)
+
+        chat.send_photo.assert_called_once()
+        chat.send_message.assert_called_once()

@@ -149,13 +149,16 @@ def get_traffic_from_panel(xui):
             if len(parts) < 7:
                 continue
             pub_key = parts[0]
+            handshake_ts = int(parts[4]) if parts[4].isdigit() else 0
             rx_bytes = int(parts[5]) if parts[5].isdigit() else 0
             tx_bytes = int(parts[6]) if parts[6].isdigit() else 0
             name = pub_to_name.get(pub_key)
             if name:
                 tg_id = name_to_tg.get(name)
                 if tg_id:
-                    _add_traffic(traffic, tg_id, rx_bytes, tx_bytes)
+                    # awg handshake is unix seconds; _add_traffic expects ms (matches VLESS lastOnline)
+                    last_online_ms = handshake_ts * 1000 if handshake_ts else 0
+                    _add_traffic(traffic, tg_id, rx_bytes, tx_bytes, last_online=last_online_ms)
     except Exception as e:
         log.warning(f"AWG traffic error: {e}")
 

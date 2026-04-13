@@ -48,8 +48,8 @@ def test_sub_url_empty_is_json_encoded(mock_get_user, mock_keys, mock_keys_uid, 
 @patch("api.web_portal.get_keys_by_user_id", return_value=[])
 @patch("api.web_portal.get_keys_by_tg_id")
 @patch("api.web_portal.get_user_by_web_token")
-def test_sub_url_with_value_is_json_string(mock_get_user, mock_keys, mock_keys_uid, mock_test, client):
-    """SUB_URL with a real link should be properly JSON-quoted."""
+def test_sub_url_uses_proxy_endpoint(mock_get_user, mock_keys, mock_keys_uid, mock_test, client):
+    """SUB_URL is built from the web token + /sub/ proxy path, not raw XUI URL."""
     from datetime import datetime, timedelta
     future = datetime.now() + timedelta(days=30)
 
@@ -59,7 +59,7 @@ def test_sub_url_with_value_is_json_string(mock_get_user, mock_keys, mock_keys_u
     }
     mock_keys.return_value = [{
         "vpn_type": "vless",
-        "subscription_link": "https://example.com/sub/abc",
+        "subscription_link": "https://xui.example.com/sub/abc",
         "expires_at": future,
     }]
 
@@ -67,35 +67,10 @@ def test_sub_url_with_value_is_json_string(mock_get_user, mock_keys, mock_keys_u
 
     assert response.status_code == 200
     html = response.text
-    assert 'const SUB_URL = "https://example.com/sub/abc"' in html
-
-
-@patch("api.web_portal.is_vless_test_activated_by_id", return_value=True)
-@patch("api.web_portal.get_keys_by_user_id", return_value=[])
-@patch("api.web_portal.get_keys_by_tg_id")
-@patch("api.web_portal.get_user_by_web_token")
-def test_sub_url_injection_is_prevented(mock_get_user, mock_keys, mock_keys_uid, mock_test, client):
-    """A sub_url containing quotes should be safely JSON-encoded."""
-    from datetime import datetime, timedelta
-    future = datetime.now() + timedelta(days=30)
-
-    mock_get_user.return_value = {
-        "id": 3, "tg_id": 101, "first_name": "User",
-        "subscription_until": future, "email": None,
-    }
-    mock_keys.return_value = [{
-        "vpn_type": "vless",
-        "subscription_link": 'http://evil";alert(1)//',
-        "expires_at": future,
-    }]
-
-    response = client.get("/my/token-inject")
-
-    assert response.status_code == 200
-    html = response.text
-    # The quote should be escaped by json.dumps
-    assert 'alert(1)' in html  # the text is there
-    assert 'const SUB_URL = "http://evil";alert' not in html  # but not as executable JS
+    # New behavior: sub URL is our proxy endpoint with the token
+    assert 'const SUB_URL = "https://344988.snk.wtf/sub/token-with-sub"' in html
+    # Raw XUI URL must NOT leak to the user
+    assert "xui.example.com" not in html
 
 
 @patch("api.web_portal.get_user_by_web_token", return_value=None)

@@ -714,7 +714,7 @@ def get_users_expiring_in_days(days: int) -> list[dict]:
     """Возвращает пользователей, у которых подписка истекает ровно через `days` дней."""
     return execute_query(
         """
-        SELECT tg_id, email, subscription_until, autopay_enabled, payment_method_id
+        SELECT tg_id, email, subscription_until, autopay_enabled, payment_method_id, autopay_tariff
         FROM users
         WHERE DATE(subscription_until) = DATE(NOW() + INTERVAL %s DAY)
         """,
