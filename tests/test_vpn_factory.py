@@ -356,3 +356,107 @@ class TestCreateSoftEtherConfig:
             create_softether_config(tg_id=800)
 
         mock_se.delete_user.assert_called_once()
+
+
+# ═════════════════════════════════════════════
+#  ensure_test_subscription
+# ═════════════════════════════════════════════
+
+class TestEnsureTestSubscription:
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=True)
+    async def test_already_activated_returns_none(self, mock_is_act):
+        """If test is already activated, returns None and skips creation."""
+        from bot_xui.vpn_factory import ensure_test_subscription
+        result = await ensure_test_subscription(tg_id=111, xui=MagicMock())
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.set_vless_test_activated")
+    @patch("bot_xui.vpn_factory.create_vpn_key")
+    @patch("bot_xui.vpn_factory.create_vless_config")
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
+    async def test_creates_and_marks_activated(self, mock_is_act, mock_create,
+                                                mock_key, mock_set_act):
+        """Creates config, stores key, marks activated, returns config dict."""
+        from bot_xui.vpn_factory import ensure_test_subscription
+        mock_create.return_value = {
+            "client_email": "tiin_222", "client_uuid": "uuid-x",
+            "vless_link": "vless://test", "expires_at": datetime.now(timezone.utc),
+        }
+        xui = MagicMock()
+        xui.get_client_subscription_url.return_value = "https://sub/222"
+
+        result = await ensure_test_subscription(tg_id=222, xui=xui)
+
+        assert result is not None
+        assert result["client_email"] == "tiin_222"
+        assert result["sub_url"] == "https://sub/222"
+        mock_key.assert_called_once()
+        mock_set_act.assert_called_once_with(222)
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.create_vless_config", side_effect=RuntimeError("XUI down"))
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
+    async def test_creation_error_returns_none(self, mock_is_act, mock_create):
+        """Errors during creation are swallowed; function returns None."""
+        from bot_xui.vpn_factory import ensure_test_subscription
+        result = await ensure_test_subscription(tg_id=333, xui=MagicMock())
+        assert result is None
+
+
+# ═════════════════════════════════════════════
+#  auto_grant_test_and_notify
+# ═════════════════════════════════════════════
+
+class TestAutoGrantTestAndNotify:
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=True)
+    async def test_skips_if_test_already_used(self, mock_is_act):
+        """Returns False without doing anything if test already activated."""
+        from bot_xui.vpn_factory import auto_grant_test_and_notify
+        reply = AsyncMock()
+        result = await auto_grant_test_and_notify(tg_id=1, xui=MagicMock(), reply_photo_func=reply)
+        assert result is False
+        reply.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
+    async def test_skips_if_active_keys_exist(self, mock_is_act, mock_keys):
+        """Returns False without doing anything if user has active keys."""
+        from bot_xui.vpn_factory import auto_grant_test_and_notify
+        mock_keys.return_value = [
+            {"expires_at": datetime.utcnow() + timedelta(days=5)},
+        ]
+        reply = AsyncMock()
+        result = await auto_grant_test_and_notify(tg_id=2, xui=MagicMock(), reply_photo_func=reply)
+        assert result is False
+        reply.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.get_web_token", return_value="tok")
+    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.vpn_factory.ensure_test_subscription")
+    @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
+    async def test_grants_and_notifies(self, mock_is_act, mock_keys,
+                                        mock_ensure, mock_qr, mock_token):
+        """Happy path: grants test config and sends QR via reply_photo_func."""
+        from bot_xui.vpn_factory import auto_grant_test_and_notify
+        mock_ensure.return_value = {
+            "client_email": "tiin_3", "client_uuid": "uuid-3",
+            "vless_link": "vless://test", "expires_at": datetime.now(timezone.utc),
+            "sub_url": "https://sub/3",
+        }
+        reply = AsyncMock()
+
+        result = await auto_grant_test_and_notify(tg_id=3, xui=MagicMock(), reply_photo_func=reply)
+
+        assert result is True
+        mock_ensure.assert_called_once()
+        reply.assert_called_once()
+        call_kwargs = reply.call_args[1]
+        assert "Тестовый VLESS активирован" in call_kwargs["caption"]

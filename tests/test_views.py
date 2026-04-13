@@ -15,20 +15,21 @@ sys.modules.setdefault("yookassa", MagicMock())
 class TestShowMainMenu:
 
     @pytest.mark.asyncio
-    @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
+    @patch("bot_xui.bot.send_start_screen", new_callable=AsyncMock)
     @patch("bot_xui.views.make_main_keyboard")
-    async def test_calls_edit_with_menu(self, mock_keyboard, mock_edit):
+    async def test_calls_edit_with_menu(self, mock_keyboard, mock_send):
         """Shows main menu text with keyboard."""
         from bot_xui.views import show_main_menu
 
         mock_keyboard.return_value = MagicMock()
         query = MagicMock()
         query.from_user.id = 111
+        query.message.delete = AsyncMock()
 
         await show_main_menu(query)
 
         mock_keyboard.assert_called_once_with(111)
-        mock_edit.assert_called_once()
+        mock_send.assert_called_once()
 
 
 # ═════════════════════════════════════════════
@@ -271,7 +272,7 @@ class TestShowConfigs:
 
         mock_edit.assert_called_once()
         text = mock_edit.call_args[0][1]
-        assert "tiin_100" in text
+        assert "VLESS" in text
 
     @pytest.mark.asyncio
     @patch("bot_xui.views._show_no_configs", new_callable=AsyncMock)
@@ -320,27 +321,8 @@ class TestShowConfigs:
 class TestShowNoConfigs:
 
     @pytest.mark.asyncio
-    @patch("api.db.is_awg_test_activated", return_value=False)
-    @patch("api.db.is_vless_test_activated", return_value=False)
-    async def test_new_user_sees_free_trial(self, mock_vless, mock_awg):
-        """New user (no tests used) sees 'try for free' button."""
-        from bot_xui.views import _show_no_configs
-
-        query = MagicMock()
-        query.from_user.id = 100
-        query.edit_message_text = AsyncMock()
-
-        await _show_no_configs(query)
-
-        markup = query.edit_message_text.call_args[1]["reply_markup"]
-        all_callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
-        assert "test_protocol" in all_callbacks
-
-    @pytest.mark.asyncio
-    @patch("api.db.is_awg_test_activated", return_value=False)
-    @patch("api.db.is_vless_test_activated", return_value=True)
-    async def test_test_used_user_sees_tariffs_only(self, mock_vless, mock_awg):
-        """User who used test sees 'choose tariff' but no free trial button."""
+    async def test_shows_tariffs_only(self):
+        """No-configs screen shows 'choose tariff' and no free-trial button (tests are auto-issued)."""
         from bot_xui.views import _show_no_configs
 
         query = MagicMock()
@@ -353,3 +335,142 @@ class TestShowNoConfigs:
         all_callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
         assert "test_protocol" not in all_callbacks
         assert "tariffs" in all_callbacks
+
+
+# ═════════════════════════════════════════════
+#  _pretty_config_label
+# ═════════════════════════════════════════════
+
+class TestPrettyConfigLabel:
+    """Pure-function tests for _pretty_config_label."""
+
+    def test_test_vless_no_payment(self):
+        """Test VLESS (tiin_<id>, no payment_id) labeled as 'VLESS — Тестовый'."""
+        from bot_xui.views import _pretty_config_label
+        key = {"vpn_type": "vless", "client_name": "tiin_42", "payment_id": None}
+        emoji, label = _pretty_config_label(key)
+        assert emoji == "🟢"
+        assert label == "VLESS — Тестовый"
+
+    @patch("bot_xui.views.get_payment_by_id")
+    def test_paid_vless_uses_tariff_name(self, mock_payment):
+        """Paid VLESS shows tariff name from payment lookup."""
+        from bot_xui.views import _pretty_config_label
+        mock_payment.return_value = {"tariff": "monthly_30d"}
+        key = {"vpn_type": "vless", "client_name": "vl_42_abc", "payment_id": "pay-1"}
+        emoji, label = _pretty_config_label(key)
+        assert emoji == "🟢"
+        assert "VLESS" in label
+        assert "Месяц" in label  # name of monthly_30d tariff
+
+    @patch("bot_xui.views.get_payment_by_id")
+    def test_short_uses_period(self, mock_payment):
+        """short=True prefers period over name (compact for buttons)."""
+        from bot_xui.views import _pretty_config_label
+        mock_payment.return_value = {"tariff": "weekly_7d"}
+        key = {"vpn_type": "vless", "client_name": "x", "payment_id": "p"}
+        _, label_long = _pretty_config_label(key, short=False)
+        _, label_short = _pretty_config_label(key, short=True)
+        # short uses period "7 дней", long uses full name "Неделя — 7 дней"
+        assert "7" in label_short
+
+    def test_softether_protocol(self):
+        """SoftEther vpn_type returns hardware emoji."""
+        from bot_xui.views import _pretty_config_label
+        key = {"vpn_type": "softether", "client_name": "se_1", "payment_id": None}
+        emoji, label = _pretty_config_label(key)
+        assert emoji == "🖥"
+        assert "SoftEther" in label
+
+    def test_awg_protocol(self):
+        """AWG vpn_type returns mobile emoji."""
+        from bot_xui.views import _pretty_config_label
+        key = {"vpn_type": "awg", "client_name": "awg_1", "payment_id": None}
+        emoji, label = _pretty_config_label(key)
+        assert emoji == "📱"
+        assert "AmneziaWG" in label
+
+    def test_unknown_protocol_fallback(self):
+        """Unknown vpn_type falls back to upper-cased name with key emoji."""
+        from bot_xui.views import _pretty_config_label
+        key = {"vpn_type": "wireguard", "client_name": "x", "payment_id": None}
+        emoji, label = _pretty_config_label(key)
+        assert emoji == "🔑"
+        assert "WIREGUARD" in label
+
+
+# ═════════════════════════════════════════════
+#  build_main_menu_text
+# ═════════════════════════════════════════════
+
+class TestBuildMainMenuText:
+
+    @patch("bot_xui.views.get_keys_by_tg_id", return_value=[])
+    def test_no_keys_returns_main_menu_text(self, mock_keys):
+        """Empty keys list falls back to MAIN_MENU_TEXT."""
+        from bot_xui.views import build_main_menu_text
+        from bot_xui.helpers import MAIN_MENU_TEXT
+        text = build_main_menu_text(tg_id=100)
+        assert text == MAIN_MENU_TEXT
+
+    @patch("bot_xui.views.get_referral_count", return_value=0)
+    @patch("bot_xui.views.get_web_token", return_value=None)
+    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info-block", False))
+    @patch("bot_xui.views.get_keys_by_tg_id")
+    def test_active_key_shows_expires(self, mock_keys, mock_sub, mock_token, mock_ref):
+        """Active key shows '⏱ Истекает' label."""
+        from bot_xui.views import build_main_menu_text
+        future = datetime.utcnow() + timedelta(days=30)
+        mock_keys.return_value = [
+            {"client_name": "x", "vpn_type": "vless", "expires_at": future, "payment_id": "p1"},
+        ]
+        text = build_main_menu_text(tg_id=100)
+        assert "Истекает" in text
+        assert "Истекла" not in text
+        assert "sub-info-block" in text
+
+    @patch("bot_xui.views.get_referral_count", return_value=0)
+    @patch("bot_xui.views.get_web_token", return_value=None)
+    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info-block", False))
+    @patch("bot_xui.views.get_keys_by_tg_id")
+    def test_expired_key_shows_expired_label(self, mock_keys, mock_sub, mock_token, mock_ref):
+        """Expired key shows '⏱ Истекла' + 'Подписка истекла' hint."""
+        from bot_xui.views import build_main_menu_text
+        past = datetime.utcnow() - timedelta(days=1)
+        mock_keys.return_value = [
+            {"client_name": "x", "vpn_type": "vless", "expires_at": past, "payment_id": "p1"},
+        ]
+        text = build_main_menu_text(tg_id=100)
+        assert "Истекла" in text
+        assert "Подписка истекла" in text
+
+    @patch("bot_xui.views.get_referral_count", return_value=0)
+    @patch("bot_xui.views.get_web_token", return_value="tok123")
+    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info", False))
+    @patch("bot_xui.views.get_keys_by_tg_id")
+    def test_web_token_renders_guide_link(self, mock_keys, mock_sub, mock_token, mock_ref):
+        """If web_token exists, '🪄 Гид по подключению' link is shown."""
+        from bot_xui.views import build_main_menu_text
+        mock_keys.return_value = [
+            {"client_name": "x", "vpn_type": "vless",
+             "expires_at": datetime.utcnow() + timedelta(days=10), "payment_id": "p1"},
+        ]
+        text = build_main_menu_text(tg_id=100)
+        assert "Гид по подключению" in text
+        assert "tok123" in text
+
+    @patch("bot_xui.views.get_referral_count", return_value=0)
+    @patch("bot_xui.views.get_web_token", return_value=None)
+    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info", False))
+    @patch("bot_xui.views.get_keys_by_tg_id")
+    def test_block_order_sub_then_guide_then_referral(self, mock_keys, mock_sub, mock_token, mock_ref):
+        """sub-info appears before referral block (and guide if present)."""
+        from bot_xui.views import build_main_menu_text
+        mock_keys.return_value = [
+            {"client_name": "x", "vpn_type": "vless",
+             "expires_at": datetime.utcnow() + timedelta(days=10), "payment_id": "p1"},
+        ]
+        text = build_main_menu_text(tg_id=100)
+        sub_pos = text.find("sub-info")
+        ref_pos = text.find("Бонус за друзей")
+        assert sub_pos < ref_pos

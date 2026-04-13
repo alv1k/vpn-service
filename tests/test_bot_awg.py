@@ -96,7 +96,7 @@ class TestShowConfigsAWG:
         mock_edit.assert_called_once()
         text = mock_edit.call_args[0][1]
         assert "📱" in text
-        assert "awg_123456" in text
+        assert "AmneziaWG" in text
 
     @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
@@ -111,8 +111,8 @@ class TestShowConfigsAWG:
         await show_configs(query)
 
         text = mock_edit.call_args[0][1]
-        assert "awg_123456" in text
-        assert "tiin_123456" in text
+        assert "AmneziaWG" in text
+        assert "VLESS" in text
 
     @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")

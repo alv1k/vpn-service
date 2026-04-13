@@ -173,7 +173,7 @@ def main():
                     f"⚠️ <b>AWG шаринг конфига</b>\n\n"
                     f"Клиент: <b>{name}</b>\n"
                     f"Уникальных IP за {WINDOW_HOURS}ч: <b>{unique_ips}</b>\n"
-                    f"IP: <code>{ip_list}</code>"
+                    f"IP: <pre>{ip_list}</pre>"
                 )
                 data["alerted"] = True
 

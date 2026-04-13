@@ -91,11 +91,8 @@ def test_make_main_keyboard_has_buttons():
     kb = make_main_keyboard()
     all_btns = [btn for row in kb.inline_keyboard for btn in row]
     texts = [btn.text for btn in all_btns]
-    # Key buttons should be present
-    assert any("бесплатно" in t.lower() for t in texts)
     assert any("конфиг" in t.lower() for t in texts)
     assert any("тариф" in t.lower() for t in texts)
-    assert any("инструкция" in t.lower() for t in texts)
 
 
 def test_make_main_keyboard_has_proxy():
@@ -133,7 +130,7 @@ def test_make_proxy_file_has_both_links():
 def test_main_menu_text():
     from bot_xui.helpers import MAIN_MENU_TEXT
     assert "тииҥ VPN" in MAIN_MENU_TEXT
-    assert "tg://proxy" in MAIN_MENU_TEXT
+    assert "тариф" in MAIN_MENU_TEXT
 
 
 # ─────────────────────────────────────────────

@@ -9,20 +9,95 @@ import qrcode
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot_xui.tariffs import TARIFFS
-from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated, get_permanent_discount, update_vless_link
-from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text
-from config import ADMIN_TG_ID
+from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated, get_permanent_discount, update_vless_link, get_web_token, get_user_by_tg_id, get_payment_by_id, get_referral_count
+from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, get_user_sub_url
+from bot_xui.test_mode import is_test_mode
+from config import ADMIN_TG_ID, REFERRAL_REWARD_DAYS, BOT_USERNAME
 
 logger = logging.getLogger(__name__)
+
+_MONTHS_RU = [
+    "", "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+
+def _format_date_long(dt: datetime, offset_hours: int = 9) -> str:
+    """'25 сентября 2026 г.' — человекочитаемая дата."""
+    if dt is None:
+        return "∞"
+    from datetime import timedelta
+    local = dt + timedelta(hours=offset_hours)
+    return f"{local.day} {_MONTHS_RU[local.month]} {local.year} г."
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Главное меню
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def show_main_menu(query):
+def build_main_menu_text(tg_id: int) -> str:
+    keys = get_keys_by_tg_id(tg_id)
+
+    # Защитный fallback: ключей нет вообще (например, не сработала авто-выдача).
+    if not keys:
+        return MAIN_MENU_TEXT
+
+    # Берём самый «свежий» ключ, предпочитая ключи с payment_id (для тарифа).
+    keys_with_payment = [k for k in keys if k.get("payment_id")]
+    key = max(
+        keys_with_payment or keys,
+        key=lambda k: k.get("expires_at") or datetime.min,
+    )
+
+    sub_info, is_test = _build_subscription_info(tg_id, key)
+    is_active = bool(key.get("expires_at") and key["expires_at"] > datetime.utcnow())
+    expiry_label = "⏱ Истекает" if is_active else "⏱ Истекла"
+
+    ref_count = get_referral_count(tg_id)
+    ref_days = ref_count * REFERRAL_REWARD_DAYS
+
+    text = (
+        f"⚡️ <b> тииҥ VPN 🐿</b>\n\n"
+        f"{sub_info}\n"
+        f"{expiry_label} {_format_date_long(key.get('expires_at'))}\n\n"
+    )
+
+    token = get_web_token(tg_id)
+    if token:
+        text += f'🪄 <a href="https://344988.snk.wtf/my/{token}">Гид по подключению</a>\n\n'
+
+    text += (
+        f"<blockquote>👥 Бонус за друзей: +{ref_days} дн.</blockquote>\n"
+        f"Воспользуйся реферальной ссылкой:\n➡️➡️➡️ <code>https://t.me/{BOT_USERNAME}?start={tg_id}</code> ⬅️"
+    )
+
+    if is_active and is_test:
+        text += "\n\n⚡ <b>Можно приобрести тариф ☺</b> Жми «Тарифы»"
+    elif not is_active:
+        text += "\n\n⚡ <b>Подписка истекла.</b> Выбери новый тариф 👇"
+
+    if tg_id == ADMIN_TG_ID:
+        mode = "🧪 ВКЛ" if is_test_mode() else "✅ ВЫКЛ"
+        text += f"\n\n⚙️ Тестовый режим: <b>{mode}</b> (/testmode)"
+
+    return text
+
+
+async def show_main_menu(query, xui=None):
     tg_id = query.from_user.id
-    await safe_edit_text(query, MAIN_MENU_TEXT, reply_markup=make_main_keyboard(tg_id))
+    if xui is not None:
+        from bot_xui.vpn_factory import auto_grant_test_and_notify
+        await auto_grant_test_and_notify(tg_id, xui, query.message.reply_photo)
+
+    text = build_main_menu_text(tg_id)
+    markup = make_main_keyboard(tg_id)
+
+    # Удаляем старое сообщение и шлём новое с картинкой через bot.send_start_screen
+    from bot_xui.bot import send_start_screen
+    try:
+        await query.message.delete()
+    except Exception as e:
+        logger.warning(f"show_main_menu delete failed: {e}")
+    await send_start_screen(query.message.chat, text, markup)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -205,6 +280,40 @@ def _refresh_vless_links(tg_id: int, xui):
         logger.error(f"Failed to refresh vless links for {tg_id}: {e}")
 
 
+_PROTOCOL_LABELS = {
+    "softether": ("🖥", "SoftEther"),
+    "vless":     ("🟢", "VLESS"),
+    "awg":       ("📱", "AmneziaWG"),
+}
+
+
+def _pretty_config_label(key: dict, short: bool = False) -> tuple[str, str]:
+    """
+    Возвращает (emoji, человекочитаемое название) для VPN-ключа.
+    short=True — компактная версия (period вместо полного названия тарифа) для inline-кнопок.
+    """
+    vpn_type = (key.get("vpn_type") or "").lower()
+    emoji, protocol = _PROTOCOL_LABELS.get(vpn_type, ("🔑", vpn_type.upper() or "VPN"))
+
+    # Тестовый VLESS (client_name = tiin_<tg_id>) — нет payment_id
+    if vpn_type == "vless" and (key.get("client_name") or "").startswith("tiin_") and not key.get("payment_id"):
+        return emoji, f"{protocol} — Тестовый"
+
+    tariff_name = ""
+    period = ""
+    payment_id = key.get("payment_id")
+    if payment_id:
+        payment = get_payment_by_id(payment_id)
+        if payment:
+            tariff = TARIFFS.get(payment.get("tariff", ""))
+            if tariff:
+                tariff_name = tariff.get("name", "")
+                period = tariff.get("period", "")
+
+    suffix = (period or tariff_name) if short else (tariff_name or period)
+    return emoji, f"{protocol} — {suffix}" if suffix else protocol
+
+
 async def show_configs(query, xui=None):
     tg_id = query.from_user.id
 
@@ -230,24 +339,22 @@ async def show_configs(query, xui=None):
 
     text = "🔑 <b>Ваши конфиги</b>\n\n"
     if active_keys:
+        rows = []
         for key in active_keys:
-            if key["vpn_type"] == "softether":
-                emoji = "🖥"
-            elif "vless" in key["vpn_type"]:
-                emoji = "🟢"
-            else:
-                emoji = "📱"
-            text += f"{emoji} <b>{key['client_name']}</b>  ·  до {convert_to_local(key['expires_at'])}\n"
+            emoji, label = _pretty_config_label(key)
+            date = convert_to_local(key['expires_at'])
+            rows.append((emoji, label, date))
+        max_label = max(len(label) for _, label, _ in rows)
+        lines = [f"{emoji} {label:<{max_label}}  ·  до {date}" for emoji, label, date in rows]
+        text += "<pre>" + "\n".join(lines) + "</pre>\n"
 
     text += "\n<i>Нажмите, чтобы показать данные подключения:</i>"
 
     keyboard: list = []
     row: list = []
     for i, key in enumerate(active_keys):
-        short = key["client_name"][:15] + ("…" if len(key["client_name"]) > 15 else "")
-        cfg   = key.get("vless_link") or ""
-        emoji = "🔗" if "vless" in cfg else ("🛡" if "trojan" in cfg else "📱")
-        row.append(InlineKeyboardButton(f"{emoji} {short}", callback_data=f"show_key_{key['client_name']}"))
+        emoji, label = _pretty_config_label(key, short=True)
+        row.append(InlineKeyboardButton(f"{emoji} {label}", callback_data=f"show_key_{key['client_name']}"))
         if len(row) == 2 or i == len(active_keys) - 1:
             keyboard.append(row)
             row = []
@@ -270,29 +377,14 @@ async def show_configs(query, xui=None):
 
 
 async def _show_no_configs(query):
-    tg_id = query.from_user.id
-    from api.db import is_vless_test_activated, is_awg_test_activated
-    test_used = is_vless_test_activated(tg_id) or is_awg_test_activated(tg_id)
-    if test_used:
-        text = (
-            "🔑 <b>У вас пока нет активных конфигов</b>\n\n"
-            "Выберите тариф — конфиг будет создан автоматически."
-        )
-        buttons = [
-            [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
-        ]
-    else:
-        text = (
-            "🔑 <b>У вас пока нет конфигов</b>\n\n"
-            "Выберите тариф или попробуйте бесплатно — "
-            "конфиг будет создан автоматически."
-        )
-        buttons = [
-            [InlineKeyboardButton("🎁 Попробовать бесплатно", callback_data="test_protocol")],
-            [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
-        ]
+    text = (
+        "🔑 <b>У вас пока нет активных конфигов</b>\n\n"
+        "Выберите тариф — конфиг будет создан автоматически."
+    )
+    buttons = [
+        [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
+    ]
     await query.edit_message_text(
         text,
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -303,6 +395,48 @@ async def _show_no_configs(query):
 # ──────────────────────────────────────────────────────────────────────────────
 # Один конфиг с QR
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _build_subscription_info(tg_id: int, key: dict) -> tuple[str, bool]:
+    """Строит блок информации о подписке: имя, тариф, устройства, трафик.
+    Возвращает (text, is_test)."""
+    user = get_user_by_tg_id(tg_id)
+    first_name = (user or {}).get("first_name") or ""
+
+    # Определяем тариф через payment_id (fallback: другие ключи пользователя)
+    tariff_name = ""
+    device_limit = 10
+    is_test = False
+    payment_id = key.get("payment_id")
+    if not payment_id:
+        # Ищем payment_id среди других активных ключей
+        all_keys = get_keys_by_tg_id(tg_id)
+        for k in all_keys:
+            if k.get("payment_id"):
+                payment_id = k["payment_id"]
+                break
+    if payment_id:
+        payment = get_payment_by_id(payment_id)
+        if payment:
+            tariff_key = payment.get("tariff", "")
+            tariff = TARIFFS.get(tariff_key)
+            if tariff:
+                tariff_name = tariff["name"]
+                device_limit = tariff.get("device_limit", 10)
+                is_test = tariff.get("is_test", False)
+
+    lines = []
+    if first_name:
+        lines.append(f"Привет, <b>{first_name} 💫</b>\n")
+
+    quote_lines = []
+    if tariff_name:
+        quote_lines.append(f"📦 Тариф: {tariff_name}")
+    quote_lines.append(f"📱 Устройств: до {device_limit}")
+    quote_lines.append(f"📊 Трафик: {'10 ГБ' if is_test else '♾ Безлимит'}")
+    lines.append("<blockquote>" + "\n".join(quote_lines) + "</blockquote>")
+
+    return "\n".join(lines), is_test
+
 
 async def show_single_config(query, client_name: str, xui):
     tg_id = query.from_user.id
@@ -316,10 +450,14 @@ async def show_single_config(query, client_name: str, xui):
     expires_at = key["expires_at"]
     is_active  = not expires_at or expires_at > datetime.utcnow()
     status     = ("✅", "Активен") if is_active else ("❌", "Истек")
+    sub_info, is_test_tariff = _build_subscription_info(tg_id, key)
+    pretty_emoji, pretty_label = _pretty_config_label(key)
 
-    back_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 К списку", callback_data="my_configs")]
-    ])
+    back_buttons = []
+    if is_test_tariff:
+        back_buttons.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])
+    back_buttons.append([InlineKeyboardButton("🔙 К списку", callback_data="my_configs")])
+    back_markup = InlineKeyboardMarkup(back_buttons)
 
     # SoftEther — текстовое сообщение без QR
     if key["vpn_type"] == "softether":
@@ -330,14 +468,15 @@ async def show_single_config(query, client_name: str, xui):
             creds = {}
 
         caption = (
-            f"🖥 <b>{key['client_name']}</b>  {status[0]} {status[1]}\n"
+            f"{sub_info}\n\n"
+            f"{pretty_emoji} <b>{pretty_label}</b>  {status[0]} {status[1]}\n"
             f"⏱ До: {convert_to_local(expires_at)}\n\n"
             f"<b>Данные для подключения:</b>\n\n"
-            f"Сервер: <code>{creds.get('host', '')}</code>\n"
-            f"Порт: <code>{creds.get('port', '')}</code>\n"
-            f"Hub: <code>{creds.get('hub', '')}</code>\n"
-            f"Логин: <code>{creds.get('username', '')}</code>\n"
-            f"Пароль: <code>{creds.get('password', '')}</code>\n"
+            f"Сервер: <pre>{creds.get('host', '')}</pre>\n"
+            f"Порт: <pre>{creds.get('port', '')}</pre>\n"
+            f"Hub: <pre>{creds.get('hub', '')}</pre>\n"
+            f"Логин: <pre>{creds.get('username', '')}</pre>\n"
+            f"Пароль: <pre>{creds.get('password', '')}</pre>\n"
         )
         await query.message.delete()
 
@@ -368,7 +507,8 @@ async def show_single_config(query, client_name: str, xui):
             return
 
         caption = (
-            f"📱 <b>{key['client_name']}</b>  {status[0]} {status[1]}\n"
+            f"{sub_info}\n\n"
+            f"{pretty_emoji} <b>{pretty_label}</b>  {status[0]} {status[1]}\n"
             f"⏱ До: {convert_to_local(expires_at)}\n\n"
             f"💡 <i>Импортируйте файл в AmneziaVPN</i>"
         )
@@ -385,8 +525,8 @@ async def show_single_config(query, client_name: str, xui):
         )
         return
 
-    # VLESS — QR + ссылка подписки
-    sub_url = key.get("subscription_link") or ""
+    # VLESS — QR + ссылка подписки (через прокси-эндпоинт, который переписывает remark)
+    sub_url = get_user_sub_url(tg_id) or key.get("subscription_link") or ""
 
     bio = BytesIO()
     bio.name = "qr.png"
@@ -397,18 +537,21 @@ async def show_single_config(query, client_name: str, xui):
     bio.seek(0)
 
     caption = (
-        f"🟢 <b>{key['client_name']}</b>  {status[0]} {status[1]}\n"
+        f"{sub_info}\n\n"
+        f"{pretty_emoji} <b>{pretty_label}</b>  {status[0]} {status[1]}\n"
         f"⏱ До: {convert_to_local(expires_at)}\n\n"
-        f"🔗 <b>Ссылка подписки</b> (нажмите, чтобы скопировать):\n\n"
-        f"<code>{sub_url}</code>\n\n"
+        f"📎 <b>Ссылка подписки</b> (нажмите, чтобы скопировать):\n\n"
+        f"➡️➡️➡️<code>{sub_url}</code>⬅️\n\n"
         f"💡 <i>Скопируйте ссылку или отсканируйте QR-код в приложении</i>"
     )
 
     HAPP_ROUTING_URL = "https://344988.snk.wtf:2096/ruleset/happ-routing-rules.json"
     keyboard = [
         [InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")],
-        [InlineKeyboardButton("🔙 К списку", callback_data="my_configs")],
     ]
+    if is_test_tariff:
+        keyboard.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])
+    keyboard.append([InlineKeyboardButton("🔙 К списку", callback_data="my_configs")])
 
     await query.message.delete()
     await query.message.chat.send_photo(
@@ -446,7 +589,7 @@ async def show_single_config(query, client_name: str, xui):
 #         f"🔗 <b>VLESS ссылка — {key['client_name']}</b>\n\n"
 #         f"👇 <i>Нажмите чтобы скопировать:</i>\n"
 #         f"┌────────────────────\n"
-#         f"  <code>{vless_link}</code>\n"
+#         f"  <pre>{vless_link}</pre>\n"
 #         f"└────────────────────\n\n"
 #         f"<i>Используйте если подписка не работает.\n"
 #         f"Ссылка не обновляется автоматически.</i>"

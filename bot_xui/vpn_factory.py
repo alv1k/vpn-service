@@ -501,6 +501,64 @@ async def handle_test_vless(query, xui: XUIClient):
         )
 
 
+async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
+    """
+    Создаёт тестовый VLESS-конфиг, если пользователь ещё не активировал тест.
+    Возвращает dict с данными конфига (client_email, client_uuid, vless_link,
+    expires_at, sub_url) или None, если тест уже активирован либо возникла ошибка.
+    """
+    if is_vless_test_activated(tg_id):
+        return None
+    try:
+        data = await create_vless_config(tg_id, xui)
+        sub_url = xui.get_client_subscription_url(tg_id)
+        create_vpn_key(
+            tg_id=tg_id, payment_id=None,
+            client_id=data["client_uuid"], client_name=data["client_email"],
+            client_ip=None, client_public_key=None,
+            vless_link=data["vless_link"], expires_at=data["expires_at"], vpn_type="vless",
+            subscription_link=sub_url,
+        )
+        set_vless_test_activated(tg_id)
+        logger.info(f"Auto-granted test VLESS for tg_id={tg_id}")
+        return {**data, "sub_url": sub_url}
+    except Exception as e:
+        logger.error(f"Auto-grant test VLESS failed for {tg_id}: {e}")
+        return None
+
+
+async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_func) -> bool:
+    """
+    Если у пользователя нет активных ключей и тест ещё не активирован,
+    автоматически создаёт тестовый VLESS-конфиг и отправляет сообщение с QR.
+    Возвращает True, если тест был выдан, иначе False.
+    """
+    if is_vless_test_activated(tg_id):
+        return False
+    keys = get_keys_by_tg_id(tg_id)
+    active_keys = [k for k in keys if k.get("expires_at") and k["expires_at"] > datetime.utcnow()]
+    if active_keys:
+        return False
+    result = await ensure_test_subscription(tg_id, xui)
+    if not result:
+        return False
+    bio = make_qr_bytes(result["sub_url"])
+    try:
+        await reply_photo_func(
+            photo=bio,
+            caption=(
+                f"🎁 <b>Тестовый VLESS активирован</b>\n\n"
+                f"👤 ID: {result['client_email']}\n"
+                f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
+                f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
+            ),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send auto-test notification: {e}")
+    return True
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # SoftEther
 # ──────────────────────────────────────────────────────────────────────────────

@@ -124,9 +124,11 @@ app.add_middleware(
 from api.web_portal import web_router
 from api.web_api import web_api_router
 from api.web_auth import auth_router
+from api.sub_proxy import sub_router
 app.include_router(web_router)
 app.include_router(web_api_router)
 app.include_router(auth_router)
+app.include_router(sub_router)
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
@@ -303,6 +305,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         client_public_key = None
         bio = None
         sub_url = None
+        user_sub_url = None
         se_data = {}
 
         # ===== 5. Создание конфига в зависимости от типа VPN =====
@@ -393,18 +396,27 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 remark=f"🇩🇪 {SERVER_LOCATION} | VLESS",
             )
             
-            # Получаем subscription URL
+            # Получаем subscription URL (XUI) — храним в БД как источник для прокси
             if tg_id and tg_id != 0:
                 sub_url = xui.get_client_subscription_url(tg_id)
             else:
                 sub_url = xui.get_subscription_url_by_uuid(client_id)
 
-            # Создаем QR код
+            # Пользователю показываем прокси-URL, который переписывает remark
+            from api.db import get_web_token
+            if tg_id and tg_id != 0:
+                _wt = get_web_token(tg_id)
+                user_sub_url = f"https://344988.snk.wtf/sub/{_wt}" if _wt else sub_url
+            else:
+                # для веб-заказов web_token добавим позже при отдаче email-писем
+                user_sub_url = sub_url
+
+            # Создаем QR код из прокси-URL
             qr = qrcode.QRCode(version=1, box_size=10, border=5)
-            qr.add_data(sub_url)
+            qr.add_data(user_sub_url)
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white")
-            
+
             bio = BytesIO()
             img.save(bio, 'PNG')
             bio.seek(0)            
@@ -418,6 +430,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             client_name = se_data["username"]
             client_config = se_data["config"]
             sub_url = None
+            user_sub_url = None
             bio = None
 
         else:
@@ -589,12 +602,12 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 # Ссылка на подписку + кнопки
                 message = (
                     f"🔗 <b>Ваша ссылка:</b>\n"
-                    f"<code>{sub_url}</code>\n\n"
+                    f"<code>{user_sub_url or sub_url}</code>\n\n"
                     f"📱 Скопируйте и вставьте в приложение"
                 )
                 buttons = []
                 if portal_url:
-                    buttons.append([{"text": "📖 Мастер подключения", "url": portal_url}])
+                    buttons.append([{"text": "🪄 Гид по подключению", "url": portal_url}])
                 buttons.append([{"text": "📲 Happ: настроить маршрутизацию", "url": "https://344988.snk.wtf/happ-routing"}])
                 buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
                 await send_telegram_notification(tg_id, message, buttons)
@@ -610,7 +623,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 )
                 se_buttons = []
                 if portal_url:
-                    se_buttons.append([{"text": "📖 Мастер подключения", "url": portal_url}])
+                    se_buttons.append([{"text": "🪄 Гид по подключению", "url": portal_url}])
                 se_buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
                 await send_telegram_notification(tg_id, message, se_buttons)
 
@@ -625,7 +638,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     f"📱 Импортируйте файл в AmneziaVPN"
                 )
                 if portal_url:
-                    caption += f'\n\n<a href="{portal_url}">📖 Мастер подключения</a>'
+                    caption += f'\n\n<a href="{portal_url}">🪄 Гид по подключению</a>'
 
                 await send_telegram_document(tg_id, client_config.encode(), filename, caption)
 

@@ -12,6 +12,10 @@ import sys
 import io
 import pytz
 import qrcode
+from pathlib import Path
+
+START_IMAGE_PATH = Path(__file__).parent / "assets" / "start command.png"
+_START_IMAGE_FILE_ID: str | None = None
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -46,6 +50,7 @@ from bot_xui.helpers  import make_main_keyboard, MAIN_MENU_TEXT, MTPROTO_PROXY_L
 from bot_xui.views    import (
     show_main_menu, show_tariffs, show_configs,
     show_single_config, show_instructions, show_renew_tariffs,
+    build_main_menu_text,
     # show_vless_link,
 )
 from bot_xui.payment     import process_payment
@@ -60,6 +65,35 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+
+
+async def send_start_screen(chat, text: str, reply_markup=None) -> None:
+    """
+    Шлёт фото `start command.png` с подписью `text` в чат.
+    Кэширует file_id после первой отправки, чтобы не читать с диска повторно.
+    Падает на чистый текст, если файла нет, caption > 1024 или Telegram отказал.
+    """
+    global _START_IMAGE_FILE_ID
+    if not START_IMAGE_PATH.exists() or len(text) > 1024:
+        await chat.send_message(text, reply_markup=reply_markup, parse_mode="HTML")
+        return
+    try:
+        if _START_IMAGE_FILE_ID:
+            sent = await chat.send_photo(
+                photo=_START_IMAGE_FILE_ID, caption=text,
+                reply_markup=reply_markup, parse_mode="HTML",
+            )
+        else:
+            with open(START_IMAGE_PATH, "rb") as f:
+                sent = await chat.send_photo(
+                    photo=f, caption=text,
+                    reply_markup=reply_markup, parse_mode="HTML",
+                )
+            if sent.photo:
+                _START_IMAGE_FILE_ID = sent.photo[-1].file_id
+    except Exception as e:
+        logger.warning(f"send_start_screen photo failed, falling back to text: {e}")
+        await chat.send_message(text, reply_markup=reply_markup, parse_mode="HTML")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -144,16 +178,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
         else:
-            text = MAIN_MENU_TEXT
-            # Personal web page link
-            from api.db import get_web_token
-            token = get_web_token(tg_id)
-            if token:
-                text += f'\n\n🌐 <a href="https://344988.snk.wtf/my/{token}">Личный кабинет</a> — работает без Telegram'
-            if tg_id == ADMIN_TG_ID:
-                mode = "🧪 ВКЛ" if is_test_mode() else "✅ ВЫКЛ"
-                text += f"\n\n⚙️ Тестовый режим: <b>{mode}</b> (/testmode)"
-            await update.message.reply_text(text, reply_markup=make_main_keyboard(tg_id), parse_mode="HTML")
+            from bot_xui.vpn_factory import auto_grant_test_and_notify
+            await auto_grant_test_and_notify(tg_id, xui, update.message.reply_photo)
+            await send_start_screen(update.message.chat, build_main_menu_text(tg_id), make_main_keyboard(tg_id))
 
 
 async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -284,7 +311,7 @@ async def testmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🧪 <b>Тестовый режим ВКЛЮЧЁН</b>\n\n"
             "Теперь твои платежи идут через тестовый магазин ЮKassa.\n"
             "Деньги не списываются.\n\n"
-            "Тестовая карта: <code>1111 1111 1111 1026</code>\n"
+            "Тестовая карта: <pre>1111 1111 1111 1026</pre>\n"
             "Срок: любой будущий, CVC: любые 3 цифры\n\n"
             "Обычные пользователи платят через боевой магазин как обычно.\n\n"
             "Для отключения: /testmode"
@@ -474,8 +501,8 @@ async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args or len(args) < 3:
         await update.message.reply_text(
             "Использование:\n"
-            "<code>/addpromo CODE days 7</code>\n"
-            "<code>/addpromo CODE discount 50 100 2026-04-01</code>\n\n"
+            "<pre>/addpromo CODE days 7</pre>\n"
+            "<pre>/addpromo CODE discount 50 100 2026-04-01</pre>\n\n"
             "Параметры: КОД тип значение [макс_использований] [дата_истечения]",
             parse_mode="HTML"
         )
@@ -484,7 +511,7 @@ async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     code = args[0]
     promo_type = args[1]
     if promo_type not in ('days', 'discount', 'permanent_discount'):
-        await update.message.reply_text("❌ Тип должен быть <code>days</code>, <code>discount</code> или <code>permanent_discount</code>", parse_mode="HTML")
+        await update.message.reply_text("❌ Тип должен быть <pre>days</pre>, <pre>discount</pre> или <pre>permanent_discount</pre>", parse_mode="HTML")
         return
 
     try:
@@ -550,7 +577,7 @@ async def promos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uses = f"{p['used_count']}/{p['max_uses']}" if p['max_uses'] else f"{p['used_count']}/∞"
         exp = p['expires_at'].strftime("%d.%m.%Y") if p['expires_at'] else "∞"
         text += (
-            f"<code>{p['code']}</code> — {p['type']} <b>{p['value']}</b>"
+            f"<pre>{p['code']}</pre> — {p['type']} <b>{p['value']}</b>"
             f" | исп: {uses} | до: {exp}\n"
         )
 
@@ -702,7 +729,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_tariffs(query)
 
     elif data == "back_to_menu":
-        await show_main_menu(query)
+        await show_main_menu(query, xui)
 
     elif data == "instructions":
         await show_instructions(query)
@@ -725,10 +752,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await safe_edit_text(query, "❌ Ошибка. Попробуйте позже.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]))
-
-    elif data == "test_protocol":
-        # Skip protocol selection — go straight to VLESS (most popular)
-        await handle_test_vless(query, xui)
 
     elif data == "test_protocol_choose":
         # Explicit protocol choice (from instructions or menu)
@@ -902,6 +925,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
+    elif data == "autopay_manage":
+        from api.db import execute_query
+        tg_id = query.from_user.id
+        user = execute_query(
+            "SELECT autopay_enabled, payment_method_id, autopay_tariff FROM users WHERE tg_id = %s",
+            (tg_id,), fetch='one',
+        )
+        if not user or not user.get('payment_method_id'):
+            await query.edit_message_text("❌ Карта не привязана", parse_mode="HTML")
+            return
+        enabled = user['autopay_enabled']
+        tariff_id = user.get('autopay_tariff') or 'monthly_30d'
+        tariff = TARIFFS.get(tariff_id, {})
+        toggle_text = "Выключить" if enabled else "Включить"
+        toggle_data = "autopay_off" if enabled else "autopay_on"
+        await query.edit_message_text(
+            f"🔄 <b>Автопродление</b>\n\n"
+            f"Статус: {'✅ Включено' if enabled else '❌ Выключено'}\n"
+            f"Тариф: {tariff.get('name', tariff_id)}\n"
+            f"💳 Карта сохранена\n\n"
+            f"При автопродлении списание происходит за 1 день до окончания подписки.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{'🔴' if enabled else '🟢'} {toggle_text}", callback_data=toggle_data)],
+                [InlineKeyboardButton("🗑 Отвязать карту", callback_data="autopay_remove_card")],
+            ]),
+        )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Интервалы
@@ -921,33 +972,59 @@ async def notify_expiring_subscriptions(bot):
             tg_id = user['tg_id']
             email = user.get('email')
             until = user['subscription_until'].strftime("%d.%m.%Y")
-
-            if days == 0:
-                msg = (
-                    f"🔴 <b>Подписка истекает сегодня!</b>\n\n"
-                    f"📅 Окончание: <b>{until}</b>\n\n"
-                    f"Продлите сейчас, чтобы не потерять доступ."
-                )
-            else:
-                msg = (
-                    f"{icon} <b>Подписка истекает через {label}</b>\n\n"
-                    f"📅 Окончание: <b>{until}</b>\n\n"
-                    f"Продлите, чтобы не потерять доступ."
-                )
+            has_autopay = user.get('autopay_enabled') and user.get('payment_method_id')
 
             # Telegram notification (if user has tg_id)
             if tg_id:
-                autopay_note = ""
-                if user.get('autopay_enabled') and user.get('payment_method_id'):
-                    autopay_note = "\n\n🔄 <i>Автопродление включено — списание произойдёт автоматически.</i>"
+                if has_autopay:
+                    # Autopay user — inform about upcoming charge, no manual CTA
+                    tariff_id = user.get('autopay_tariff') or 'monthly_30d'
+                    tariff = TARIFFS.get(tariff_id, {})
+                    tariff_name = tariff.get('name', tariff_id)
+                    price = tariff.get('price', '?')
+
+                    if days == 0:
+                        msg = (
+                            f"🔄 <b>Сегодня автоматически продлим подписку</b>\n\n"
+                            f"📦 Тариф: {tariff_name}\n"
+                            f"💰 Сумма: {price} ₽\n\n"
+                            f"<i>Отменить автопродление: /autopay</i>"
+                        )
+                    else:
+                        msg = (
+                            f"🔄 <b>Через {label} автоматически продлим подписку</b>\n\n"
+                            f"📦 Тариф: {tariff_name}\n"
+                            f"💰 Сумма: {price} ₽\n"
+                            f"📅 Окончание: <b>{until}</b>\n\n"
+                            f"<i>Отменить автопродление: /autopay</i>"
+                        )
+                    reply_markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⚙️ Управление автопродлением", callback_data="autopay_manage")]
+                    ])
+                else:
+                    # No autopay — standard renewal reminder
+                    if days == 0:
+                        msg = (
+                            f"🔴 <b>Подписка истекает сегодня!</b>\n\n"
+                            f"📅 Окончание: <b>{until}</b>\n\n"
+                            f"Продлите сейчас, чтобы не потерять доступ."
+                        )
+                    else:
+                        msg = (
+                            f"{icon} <b>Подписка истекает через {label}</b>\n\n"
+                            f"📅 Окончание: <b>{until}</b>\n\n"
+                            f"Продлите, чтобы не потерять доступ."
+                        )
+                    reply_markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Продлить", callback_data="tariffs")]
+                    ])
+
                 try:
                     await bot.send_message(
                         chat_id=tg_id,
-                        text=msg + autopay_note,
+                        text=msg,
                         parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🔄 Продлить", callback_data="tariffs")]
-                        ])
+                        reply_markup=reply_markup,
                     )
                     logger.info(f"[NOTIFY] Sent expiry warning ({days}d) to tg:{tg_id}")
                 except Exception as e:

@@ -174,11 +174,20 @@ async def personal_page(token: str):
 
     is_active = sub_until and sub_until > now
 
-    # Берём первую активную ссылку подписки
-    sub_url = active_vless[0]['subscription_link'] if active_vless else ""
+    # Используем собственный прокси-эндпоинт, который переписывает remark
+    # в человекочитаемый формат (🐿 TIIN — осталось N дней)
+    sub_url = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
     qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
 
     test_used = is_vless_test_activated_by_id(user['id'])
+
+    # AmneziaWG доступен через мастер настройки, если есть активный AWG-ключ
+    awg_link = ""
+    awg_download_link = ""
+    if active_awg:
+        first_awg_id = active_awg[0]['client_id']
+        awg_link = f"/my/{token}/awg/{first_awg_id}"
+        awg_download_link = f"/my/{token}/awg/{first_awg_id}/download"
 
     return HTMLResponse(_render_page(
         name=html_mod.escape(user.get('first_name') or 'Пользователь'),
@@ -190,7 +199,8 @@ async def personal_page(token: str):
         email=html_mod.escape(user.get('email') or ''),
         web_token=token,
         test_used=test_used,
-        awg_client_ids=[k['client_id'] for k in active_awg],
+        awg_link=awg_link,
+        awg_download_link=awg_download_link,
     ))
 
 
@@ -288,7 +298,7 @@ min-height:100vh;margin:0;background:#0a0a0a;color:#fff}
 </head><body><div class="c"><h1>404</h1><p>Страница не найдена</p></div></body></html>"""
 
 
-def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link="", email="", web_token="", test_used=False, awg_client_ids=None):
+def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link="", email="", web_token="", test_used=False, awg_link="", awg_download_link=""):
     status_color = "#22c55e" if is_active else "#ef4444"
     status_text = "Активна" if is_active else "Неактивна"
     status_dot = "&#9679;"
@@ -379,7 +389,7 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
     <div class="sub">Личный кабинет</div>
 </div>
 
-{_render_wizard(sub_url, qr_b64, happ_routing_link) if sub_url else _render_no_sub(web_token, test_used)}
+{_render_wizard(sub_url, qr_b64, happ_routing_link, awg_link, awg_download_link) if sub_url else _render_no_sub(web_token, test_used)}
 
 <div class="card">
     <h2>Подписка</h2>
@@ -393,8 +403,6 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
         🔄 Продлить подписку
     </a>
 </div>
-
-{_render_awg_card(awg_client_ids or [], web_token)}
 
 <!-- Telegram Proxy -->
 <div class="card">
@@ -474,6 +482,9 @@ function copyLink() {{
 var selectedDevice = '';
 var selectedApp = null;
 
+const AWG_LINK = {json_mod.dumps(awg_link)};
+const AWG_DOWNLOAD_LINK = {json_mod.dumps(awg_download_link)};
+
 const APPS = {{
     android: [
         {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://play.google.com/store/apps/details?id=com.happproxy&hl=ru', scheme: 'happ://add/' }},
@@ -494,6 +505,20 @@ const APPS = {{
     ]
 }};
 
+// AmneziaVPN добавляется только если есть активный AWG-ключ
+if (AWG_LINK) {{
+    var amneziaApp = {{
+        name: 'AmneziaVPN',
+        desc: 'Обходит DPI-блокировки',
+        icon: '🛡',
+        store: 'https://amnezia.org/downloads',
+        useAwgLink: true
+    }};
+    ['android', 'ios', 'windows', 'macos'].forEach(function(d) {{
+        APPS[d].push(amneziaApp);
+    }});
+}}
+
 function selectDevice(device) {{
     selectedDevice = device;
     var list = document.getElementById('appList');
@@ -512,7 +537,23 @@ function selectApp(index) {{
     selectedApp = APPS[selectedDevice][index];
     document.getElementById('chosenAppName').textContent = selectedApp.name;
     document.getElementById('downloadLink').href = selectedApp.store;
-    document.getElementById('autoConnectBtn').href = selectedApp.scheme + SUB_URL;
+
+    var vlessExtras = document.getElementById('vlessExtras');
+    var awgExtras = document.getElementById('awgExtras');
+    var routingBtn = document.getElementById('routingStepBtn');
+
+    if (selectedApp.useAwgLink) {{
+        document.getElementById('autoConnectBtn').href = AWG_LINK;
+        document.getElementById('awgDownloadBtn').href = AWG_DOWNLOAD_LINK;
+        vlessExtras.style.display = 'none';
+        awgExtras.style.display = 'block';
+        routingBtn.style.display = 'none';
+    }} else {{
+        document.getElementById('autoConnectBtn').href = selectedApp.scheme + SUB_URL;
+        vlessExtras.style.display = 'block';
+        awgExtras.style.display = 'none';
+        routingBtn.style.display = 'block';
+    }}
     showStep(3);
 }}
 
@@ -630,35 +671,6 @@ showStep(1);
 </html>"""
 
 
-def _render_awg_card(client_ids: list, web_token: str) -> str:
-    if not client_ids:
-        return ""
-    buttons = ""
-    for cid in client_ids:
-        esc_token = html_mod.escape(web_token)
-        esc_cid = html_mod.escape(cid)
-        buttons += (
-            f'<a href="/my/{esc_token}/awg/{esc_cid}/download" '
-            f'class="connect-btn primary" '
-            f'style="text-decoration:none;text-align:center;display:block;margin-bottom:.5rem">'
-            f'&#128229; Скачать .conf файл</a>\n'
-        )
-    return f"""
-<!-- AmneziaWG -->
-<div class="card">
-    <h2>&#128272; AmneziaWG</h2>
-    <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
-        Скачайте файл конфигурации и импортируйте в приложение.
-    </p>
-    {buttons}
-    <p style="color:#666;font-size:.75rem;text-align:center;margin-top:.4rem">
-        Установите <a href="https://amnezia.org" target="_blank" style="color:#a78bfa;text-decoration:none">AmneziaVPN</a>,
-        если ещё не установлено.
-    </p>
-</div>
-"""
-
-
 def _render_no_sub(web_token="", test_used=False):
     if not test_used and web_token:
         test_btn = f"""
@@ -708,7 +720,7 @@ def _render_no_sub(web_token="", test_used=False):
 </div>"""
 
 
-def _render_wizard(sub_url, qr_b64, happ_routing_link=""):
+def _render_wizard(sub_url, qr_b64, happ_routing_link="", awg_link="", awg_download_link=""):
     return f"""
 <h2 style="text-align:center;color:#e2e8f0;margin:1.5rem 0 .5rem">🛠 Мастер настройки</h2>
 
@@ -759,15 +771,25 @@ def _render_wizard(sub_url, qr_b64, happ_routing_link=""):
     <p class="note" style="margin-top:1.2rem">2. Нажмите для автоматической настройки:</p>
     <a id="autoConnectBtn" href="#" class="connect-btn primary">Подключить VPN</a>
 
-    <p class="note" style="margin-top:1.2rem">Или добавьте вручную — скопируйте ссылку:</p>
-    <div class="sub-link" onclick="copyLink()">{html_mod.escape(sub_url)}</div>
+    <!-- VLESS-only manual import -->
+    <div id="vlessExtras">
+        <p class="note" style="margin-top:1.2rem">Или добавьте вручную — скопируйте ссылку:</p>
+        <div class="sub-link" onclick="copyLink()">{html_mod.escape(sub_url)}</div>
 
-    <div class="qr-wrap">
-        <img src="data:image/png;base64,{qr_b64}" alt="QR">
+        <div class="qr-wrap">
+            <img src="data:image/png;base64,{qr_b64}" alt="QR">
+        </div>
+        <p class="note">Отсканируйте QR-код камерой или из приложения</p>
     </div>
-    <p class="note">Отсканируйте QR-код камерой или из приложения</p>
 
-    <a href="javascript:showStep(4)" class="connect-btn secondary">Настроить маршрутизацию &rarr;</a>
+    <!-- AmneziaVPN-only manual import -->
+    <div id="awgExtras" style="display:none">
+        <p class="note" style="margin-top:1.2rem">Или скачайте файл конфигурации и импортируйте вручную:</p>
+        <a id="awgDownloadBtn" href="#" class="connect-btn secondary">&#128229; Скачать .conf файл</a>
+        <p class="note" style="margin-top:.6rem">Маршрутизация уже настроена в конфиге — российские сайты пойдут напрямую.</p>
+    </div>
+
+    <a href="javascript:showStep(4)" class="connect-btn secondary" id="routingStepBtn">Настроить маршрутизацию &rarr;</a>
     <div class="back-link"><a href="javascript:goBack(2)">&larr; Назад</a></div>
 </div>
 </div>
