@@ -10,6 +10,30 @@
 body{font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e5e5e5;
 min-height:100vh;-webkit-font-smoothing:antialiased}
 
+/* Inputs */
+input {
+    background-color: #1a1a1a;
+    color: #ffffff;
+    border: 1px solid #444;
+}
+input:focus,
+input:hover,
+input:active,
+input:disabled,
+input:read-only,
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+    background-color: #1a1a1a;
+}
+/* autofill in Chrome */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px #1a1a1a inset !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
 /* Nav */
 .nav{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.5rem;max-width:960px;margin:0 auto}
 .nav-logo{font-size:1.4rem;font-weight:800;color:#fff;letter-spacing:.08em}
@@ -90,7 +114,7 @@ padding:.7rem .8rem;color:#fff;font-size:.9rem;outline:none;transition:border-co
 border-radius:10px;font-size:.95rem;font-weight:600;cursor:pointer;transition:all .15s}
 .l-trial-btn:hover{background:#16a34a}
 .l-trial-btn:disabled{background:#333;color:#666;cursor:not-allowed}
-.l-trial-msg{font-size:.8rem;margin-top:.4rem;min-height:1.1em;color:#ef4444}
+.l-trial-msg{font-size:.8rem;margin:.4rem;min-height:1.1em;color:#ef4444}
 
 /* Tariffs */
 .l-tariffs{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;
@@ -127,6 +151,16 @@ padding:.6rem .8rem;color:#fff;font-size:.85rem;outline:none;text-transform:uppe
 .promo-btn{width:100%;background:none;border:1px solid #444;border-radius:8px;padding:.6rem 1rem;
 color:#aaa;font-size:.8rem;cursor:pointer;transition:all .15s}
 .promo-btn:hover{border-color:#7c3aed;color:#7c3aed}
+.promo-btn:hover:not(:disabled) {
+    border-color: #7c3aed;
+    color: #7c3aed;
+}
+.promo-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    border-color: #444;
+    color: #aaa;
+}
 .promo-msg{font-size:.8rem;margin-top:.3rem;min-height:1.1em}
 .promo-msg.ok{color:#22c55e}.promo-msg.err{color:#ef4444}
 
@@ -217,7 +251,7 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
 <nav class="nav">
     <div class="nav-logo">TIIN</div>
     <div class="nav-links">
-        <a href="/login" class="nav-link">Войти</a>
+        <!-- <a href="/login" class="nav-link">Войти</a> -->
         <a href="#trial" class="nav-cta" onclick="scrollTo('#trial')">Подключить</a>
     </div>
 </nav>
@@ -291,6 +325,9 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
         </div>
         <div class="l-trial-form">
             <input type="email" id="trialEmail" placeholder="Ваш email" autocomplete="email">
+            <input type="email" id="trialEmailRepeat" placeholder="Повторите email" autocomplete="email">
+        </div>
+        <div class="error" id="trialEmailError">Введите корректный email</div>
             <div id="trialCodeSection" style="display:none">
                 <div style="color:#888;font-size:.82rem;text-align:center;margin-bottom:.4rem">
                     Код отправлен на <b id="trialCodeEmail" style="color:#a78bfa"></b>
@@ -298,7 +335,7 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
                 <input type="text" id="trialCode" placeholder="Код из письма" maxlength="6"
                        style="text-align:center;letter-spacing:4px;font-size:1rem" autocomplete="one-time-code">
             </div>
-            <button class="l-trial-btn" id="trialBtn" disabled>Активировать тест</button>
+            <button class="l-trial-btn" id="trialBtn">Активировать тест</button>
             <div id="trialChangeEmail" style="display:none;text-align:center;margin-top:.4rem">
                 <a href="javascript:trialReset()" style="color:#888;font-size:.8rem;text-decoration:none">Изменить email</a>
             </div>
@@ -316,10 +353,13 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
         <div class="input-wrap">
             <input type="email" id="emailInput" placeholder="Ваш email" autocomplete="email">
         </div>
+        <div class="input-wrap" style="margin-top: 5px;">
+            <input type="email" id="emailInputRepeat" placeholder="Повторите email" autocomplete="email">
+        </div>
         <div class="error" id="emailError">Введите корректный email</div>
         <div class="promo-row">
             <input type="text" id="promoInput" placeholder="Промокод" maxlength="30" autocomplete="off">
-            <button type="button" class="promo-btn" onclick="applyPromo()">Применить</button>
+            <button type="button" id="promoBtn" class="promo-btn" onclick="applyPromo()" disabled>Применить</button>
         </div>
         <div class="promo-msg" id="promoMsg"></div>
         <div class="total">Итого: <span class="old-price" id="oldPrice" style="display:none"></span><span class="amount" id="totalAmount">—</span></div>
@@ -334,7 +374,7 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
             </div>
         </div>
 
-        <button class="pay-btn" id="payBtn" disabled>Перейти к оплате</button>
+        <button class="pay-btn" id="payBtn">Перейти к оплате</button>
         <div id="changeEmail" style="display:none;text-align:center;margin-top:.5rem">
             <a href="javascript:resetCode()" style="color:#888;font-size:.8rem;text-decoration:none">Изменить email</a>
         </div>
@@ -536,6 +576,22 @@ function updateTotal() {
     }
 }
 
+function checkPromoForm() {
+    var promoInput = document.getElementById('promoInput');
+    var promoBtn = document.getElementById('promoBtn');
+    var isPromoFilled = promoInput.value.trim().length > 0;
+    promoBtn.disabled = !isPromoFilled;
+}
+
+document.getElementById('promoInput').addEventListener('input', function() {
+    checkPromoForm();
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+    checkPromoForm();
+});
+
+
 function applyPromo() {
     var code = document.getElementById('promoInput').value.trim();
     var msgEl = document.getElementById('promoMsg');
@@ -558,8 +614,11 @@ function applyPromo() {
 
 function checkForm() {
     var email = document.getElementById('emailInput').value.trim();
-    var valid = email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/) && selectedTariff;
-    document.getElementById('payBtn').disabled = !valid;
+    var emailRepeat = document.getElementById('emailInputRepeat').value.trim();
+    var isEmailValid = email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);
+    var isEmailMatch = email === emailRepeat;
+    var isTariffSelected = selectedTariff !== null && selectedTariff !== undefined;
+    var valid = isEmailValid && isEmailMatch && isTariffSelected;
 }
 
 function resetCode() {
@@ -568,11 +627,17 @@ function resetCode() {
     document.getElementById('changeEmail').style.display = 'none';
     document.getElementById('codeInput').value = '';
     document.getElementById('emailInput').disabled = false;
+    document.getElementById('emailInputRepeat').disabled = false;
     document.getElementById('payBtn').textContent = 'Перейти к оплате';
     checkForm();
 }
 
 document.getElementById('emailInput').addEventListener('input', function() {
+    if (codeStage) resetCode();
+    checkForm();
+});
+
+document.getElementById('emailInputRepeat').addEventListener('input', function() {
     if (codeStage) resetCode();
     checkForm();
 });
@@ -583,8 +648,47 @@ document.getElementById('codeInput').addEventListener('keydown', function(e) {
 
 document.getElementById('payBtn').addEventListener('click', function() {
     var email = document.getElementById('emailInput').value.trim();
-    if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) { document.getElementById('emailError').style.display = 'block'; return; }
-    document.getElementById('emailError').style.display = 'none';
+    var emailRepeat = document.getElementById('emailInputRepeat').value.trim();
+    var emailErrorDiv = document.getElementById('emailError');
+
+    // Сбрасываем ошибку перед проверкой
+    emailErrorDiv.style.display = 'none';
+    
+    // Проверка выбора тарифа
+    if (!selectedTariff) {
+        emailErrorDiv.textContent = 'Пожалуйста, выберите тариф';
+        emailErrorDiv.style.display = 'block'; 
+        return;
+    }
+    
+    // Проверка что поле email не пустое
+    if (!email) {
+        emailErrorDiv.textContent = 'Введите email';
+        emailErrorDiv.style.display = 'block'; 
+        return; 
+    }
+    
+    // Проверка валидности email
+    if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) { 
+        emailErrorDiv.textContent = 'Введите корректный email (пример: name@domain.com)';
+        emailErrorDiv.style.display = 'block'; 
+        return; 
+    }
+
+    // Проверка что поле повтор email не пустое
+    if (!emailRepeat) {
+        emailErrorDiv.textContent = 'Повторите email';
+        emailErrorDiv.style.display = 'block'; 
+        return; 
+    }
+    
+    // Проверка совпадения email
+    if (email !== emailRepeat) {
+        emailErrorDiv.textContent = 'Email адреса не совпадают';
+        emailErrorDiv.style.display = 'block'; 
+        return; 
+    }
+
     var btn = document.getElementById('payBtn');
 
     if (!codeStage) {
@@ -599,6 +703,7 @@ document.getElementById('payBtn').addEventListener('click', function() {
                 document.getElementById('codeSection').style.display = 'block';
                 document.getElementById('changeEmail').style.display = 'block';
                 document.getElementById('emailInput').disabled = true;
+                document.getElementById('emailInputRepeat').disabled = true;
                 btn.textContent = 'Подтвердить и оплатить'; btn.disabled = false;
                 document.getElementById('codeInput').focus();
             } else {
@@ -741,6 +846,7 @@ document.getElementById('supBtn').addEventListener('click', function() {
 
 // ── Trial activation ──
 var trialCodeStage = false;
+var trialEmail = null;
 
 function trialReset() {
     trialCodeStage = false;
@@ -748,6 +854,7 @@ function trialReset() {
     document.getElementById('trialChangeEmail').style.display = 'none';
     document.getElementById('trialCode').value = '';
     document.getElementById('trialEmail').disabled = false;
+    document.getElementById('trialEmailRepeat').disabled = false;
     document.getElementById('trialBtn').textContent = 'Активировать тест';
     document.getElementById('trialMsg').textContent = '';
     trialCheckForm();
@@ -755,12 +862,28 @@ function trialReset() {
 
 function trialCheckForm() {
     var email = document.getElementById('trialEmail').value.trim();
-    document.getElementById('trialBtn').disabled = !email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);
+    var emailRepeat = document.getElementById('trialEmailRepeat').value.trim();
+    var isEmailValid = email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);
+    var isEmailMatch = email === emailRepeat;
+    var valid = isEmailValid && isEmailMatch;
+    
+    // Скрываем ошибку при корректном вводе
+    if (isEmailValid && isEmailMatch) {
+        document.getElementById('trialEmailError').style.display = 'none';
+    }
+    
+    return isValid;
 }
 
+// Слушатели ввода для проверки
 document.getElementById('trialEmail').addEventListener('input', function() {
     if (trialCodeStage) trialReset();
     trialCheckForm();
+});
+
+document.getElementById('trialEmailRepeat').addEventListener('input', function() {
+    if (trialCodeStage) trialReset();
+    checkTrialForm();
 });
 
 document.getElementById('trialCode').addEventListener('keydown', function(e) {
@@ -769,11 +892,35 @@ document.getElementById('trialCode').addEventListener('keydown', function(e) {
 
 document.getElementById('trialBtn').addEventListener('click', function() {
     var email = document.getElementById('trialEmail').value.trim();
+    var emailRepeat = document.getElementById('trialEmailRepeat').value.trim();
+    var errorDiv = document.getElementById('trialEmailError');
+    var btn = document.getElementById('trialBtn');
+    var msgDiv = document.getElementById('trialMsg');
+
     if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) return;
     var btn = document.getElementById('trialBtn');
     var msgEl = document.getElementById('trialMsg');
     msgEl.textContent = '';
 
+    // Очищаем предыдущие сообщения
+    errorDiv.style.display = 'none';
+    msgDiv.innerHTML = '';
+
+    // Проверка валидности email
+    if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
+        errorDiv.textContent = 'Введите корректный email';
+        errorDiv.style.display = 'block';
+        return;
+    }
+    
+    // Проверка совпадения email
+    if (email !== emailRepeat) {
+        errorDiv.textContent = 'Email адреса не совпадают';
+        errorDiv.style.display = 'block';
+        return;
+    }
+    
+    // Если не в режиме кода - отправляем код
     if (!trialCodeStage) {
         btn.disabled = true; btn.textContent = 'Отправка кода...';
         fetch(API + '/order/send-code', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -782,12 +929,15 @@ document.getElementById('trialBtn').addEventListener('click', function() {
         .then(function(res) {
             if (res.data.ok) {
                 trialCodeStage = true;
+                trialEmail = email;
                 document.getElementById('trialCodeEmail').textContent = email;
                 document.getElementById('trialCodeSection').style.display = 'block';
                 document.getElementById('trialChangeEmail').style.display = 'block';
                 document.getElementById('trialEmail').disabled = true;
-                btn.textContent = 'Подтвердить и активировать'; btn.disabled = false;
+                document.getElementById('trialEmailRepeat').disabled = true;
+                btn.textContent = 'Активировать'; btn.disabled = false;
                 document.getElementById('trialCode').focus();
+                msgDiv.innerHTML = '<span style="color:#10b981">✓ Код отправлен на почту</span>';
             } else {
                 msgEl.textContent = res.data.detail || res.data.message || 'Ошибка отправки кода';
                 btn.textContent = 'Активировать тест'; btn.disabled = false;
@@ -796,7 +946,7 @@ document.getElementById('trialBtn').addEventListener('click', function() {
         .catch(function() { msgEl.textContent = 'Ошибка соединения'; btn.textContent = 'Активировать тест'; btn.disabled = false; });
     } else {
         var code = document.getElementById('trialCode').value.trim();
-        if (!code) { msgEl.textContent = 'Введите код из письма'; return; }
+        if (!code) { msgDiv.innerHTML = '<span style="color:#ef4444">Введите код из письма</span>'; return; }
         btn.disabled = true; btn.textContent = 'Активация...';
         fetch(API + '/trial', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: email, code: code, ref: getRef() }) })

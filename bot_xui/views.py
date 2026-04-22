@@ -242,6 +242,7 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
 
 
 async def show_tariffs(query):
+    logger.info(f"{query.message}check the tariffs here")
     text, markup = _build_tariff_text_and_keyboard(query.from_user.id, mode="buy")
     await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
 
