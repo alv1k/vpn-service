@@ -601,9 +601,9 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
                 # Ссылка на подписку + кнопки
                 message = (
-                    f"🔗 <b>Ваша ссылка:</b>\n"
-                    f"<code>{user_sub_url or sub_url}</code>\n\n"
-                    f"📱 Скопируйте и вставьте в приложение"
+                    f"❗ <b>Скопируйте вашу ссылку:</b>\n"
+                    f"➡️➡️➡️ <code>{user_sub_url or sub_url}</code> ⬅️\n\n"
+                    f"📱 И вставьте в приложение ⬇️"
                 )
                 buttons = []
                 if portal_url:
@@ -659,13 +659,13 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     logger.info(f"📧 Portal link emailed to {_tg_user['email']} (TG fallback)")
                 elif _tg_user and not _tg_user.get('email'):
                     # Ask user for email for fallback access
-                    await send_telegram_notification(
-                        tg_id,
-                        "📧 <b>Укажите email для резервного доступа</b>\n\n"
-                        "Если Telegram будет недоступен, мы отправим "
-                        "ссылку на личный кабинет на вашу почту.\n\n"
-                        "Отправьте email ответным сообщением:",
-                    )
+                    # await send_telegram_notification(
+                    #     tg_id,
+                    #     "📧 <b>Укажите email для резервного доступа</b>\n\n"
+                    #     "Если Telegram будет недоступен, мы отправим "
+                    #     "ссылку на личный кабинет на вашу почту.\n\n"
+                    #     "Отправьте email ответным сообщением:",
+                    # )
                     from bot_xui.bot import WAITING_EMAIL
                     import time as _time
                     WAITING_EMAIL[tg_id] = _time.time()

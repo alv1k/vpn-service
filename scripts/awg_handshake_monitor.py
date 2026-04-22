@@ -33,7 +33,7 @@ WINDOW_HOURS = 6            # окно наблюдения
 STATE_DIR = "/var/lib/awg_monitor"
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 AWG_INTERFACE = "awg0"
-AUTO_DISABLE = True         # True = автоотключение, False = только алерт
+AUTO_DISABLE = False         # True = автоотключение, False = только алерт
 
 
 def _load_state() -> dict:

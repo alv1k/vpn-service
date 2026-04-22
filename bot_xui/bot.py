@@ -14,7 +14,7 @@ import pytz
 import qrcode
 from pathlib import Path
 
-START_IMAGE_PATH = Path(__file__).parent / "assets" / "start command.png"
+START_IMAGE_PATH = Path(__file__).parent / "assets" / "no.png"
 _START_IMAGE_FILE_ID: str | None = None
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
