@@ -150,7 +150,7 @@ Per-code and per-user usage limits, expiry dates, admin CRUD via bot commands.
 │  Docker containers:         │                      │           │
 │  ┌──────────────┐  ┌───────┴────────┐  ┌─────────┴────────┐  │
 │  │ 3x-UI (VLESS)│  │ MySQL 8.0      │  │ AmneziaWG        │  │
-│  │ :51999       │  │ :3306          │  │ :51888 (VPN)     │  │
+│  │ :2053       │  │ :3306          │  │ :51888 (VPN)     │  │
 │  └──────────────┘  │ + phpMyAdmin   │  └──────────────────┘  │
 │                    │   :8080 (local)│                         │
 │  Native:           └───────────────┘                         │
@@ -437,7 +437,7 @@ sudo ufw allow 22/tcp       # SSH
 sudo ufw allow 80/tcp       # HTTP (redirect to HTTPS)
 sudo ufw allow 443/tcp      # HTTPS
 sudo ufw allow 51888/udp    # AmneziaWG
-sudo ufw allow 51999/tcp    # X-UI panel
+sudo ufw allow 2053/tcp    # X-UI panel
 sudo ufw allow 992/tcp      # SoftEther main
 sudo ufw allow 5556/tcp     # SoftEther alternate
 sudo ufw allow 500/udp      # IPsec IKE

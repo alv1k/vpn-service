@@ -346,8 +346,6 @@ class XUIClient:
             logger.error(f"Error deactivating client: {e}", exc_info=True)
             return False
 
-
-
 def generate_vless_link(
     client_id: str,
     domain: str,
@@ -368,16 +366,17 @@ def generate_vless_link(
     if VLESS_SID_LIST and sid in VLESS_SID_LIST:
         sid = random.choice(VLESS_SID_LIST)
 
+    # Формируем параметры в том же порядке, что и в панели
     params = (
-        f"encryption=none"
-        f"&flow=xtls-rprx-vision"
-        f"&type=tcp"
+        f"type=tcp"
+        f"&encryption=none"
         f"&security=reality"
         f"&pbk={pbk}"
         f"&fp={fp}"
         f"&sni={sni}"
         f"&sid={sid}"
         f"&spx={quote(spx, safe='')}"
+        f"&flow=xtls-rprx-vision"
     )
 
     display_name = remark or client_name

@@ -5,6 +5,7 @@ import sys
 import httpx
 import logging
 import time
+import sqlite3
 from ipaddress import ip_address, ip_network
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -228,6 +229,20 @@ def deactivate_xui_client(client_name: str) -> bool:
         return False
 
 
+def get_subid_from_xui_db(client_email: str) -> str | None:
+    """Получает subId клиента из базы данных 3x-ui."""
+    db_path = "/home/alvik/vpn-service/x-ui-db/x-ui.db"  # путь к вашей БД
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT subId FROM client_traffics WHERE email = ?", (client_email,))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception as e:
+        logger.error(f"Failed to get subId from DB: {e}")
+        return None
+
 async def process_refund(payment_id: str) -> bool:
     """Деактивирует VPN конфиг при возврате платежа"""
     try:
@@ -381,6 +396,26 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             if not success:
                 raise RuntimeError("Failed to create VLESS client")
             
+            # ===== ПОЛУЧАЕМ / ГЕНЕРИРУЕМ subId ДЛЯ ПОДПИСКИ =====
+            sub_id = get_subid_from_xui_db(client_name)   # функция для чтения subId из БД 3x-ui
+            if not sub_id:
+                # Если subId нет (баг API 3x-ui), генерируем сами и пишем прямо в БД
+                import secrets
+                sub_id = secrets.token_hex(8)   # 16 hex-символов (0-9a-f)
+                conn = sqlite3.connect("/home/alvik/vpn-service/x-ui-db/x-ui.db")
+                conn.execute("UPDATE client_traffics SET subId = ? WHERE email = ?", (sub_id, client_name))
+                conn.commit()
+                conn.close()
+                logger.info(f"Generated and saved subId for {client_name}: {sub_id}")
+            else:
+                logger.info(f"Found existing subId for {client_name}: {sub_id}")
+
+            # Формируем правильную ссылку для пользователя (через Nginx, без порта)
+            user_sub_url = f"https://344988.snk.wtf/sub/{sub_id}"
+
+            # Сохраняем sub_url (прямая ссылка 3x-ui, может не работать, но оставим для резерва)
+            sub_url = user_sub_url   # или можно оставить как было, но user_sub_url теперь правильный
+            
             # Генерируем VLESS ссылку
             client_config = generate_vless_link(
                 client_id=client_id,
@@ -397,19 +432,19 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             )
             
             # Получаем subscription URL (XUI) — храним в БД как источник для прокси
-            if tg_id and tg_id != 0:
-                sub_url = xui.get_client_subscription_url(tg_id)
-            else:
-                sub_url = xui.get_subscription_url_by_uuid(client_id)
+            # if tg_id and tg_id != 0:
+            #     sub_url = xui.get_client_subscription_url(tg_id)
+            # else:
+            #     sub_url = xui.get_subscription_url_by_uuid(client_id)
 
             # Пользователю показываем прокси-URL, который переписывает remark
-            from api.db import get_web_token
-            if tg_id and tg_id != 0:
-                _wt = get_web_token(tg_id)
-                user_sub_url = f"https://344988.snk.wtf/sub/{_wt}" if _wt else sub_url
-            else:
+            # from api.db import get_web_token
+            # if tg_id and tg_id != 0:
+            #     _wt = get_web_token(tg_id)
+            #     user_sub_url = f"https://344988.snk.wtf/sub/{_wt}" if _wt else sub_url
+            # else:
                 # для веб-заказов web_token добавим позже при отдаче email-писем
-                user_sub_url = sub_url
+                # user_sub_url = sub_url
 
             # Создаем QR код из прокси-URL
             qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -967,7 +1002,7 @@ async def yookassa_webhook(request: Request):
                 f"Тариф: {tariff}\n"
                 f"VPN тип: {vpn_type}\n"
                 f"Web: {is_web_order}\n\n"
-                f"VPN конфиг не создан. Вебхук вернёт 500 для повтора.",
+                f"VPN конфиг не создан. Повтор запроса.",
             )
             return Response(status_code=500)  # YooKassa повторит запрос
 
