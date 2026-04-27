@@ -21,6 +21,7 @@ from config import (
     SERVER_LOCATION,
 )
 from bot_xui.utils import XUIClient, generate_vless_link
+from bot_xui.helpers import make_back_keyboard
 from bot_xui import softether
 from bot_xui.tariffs import TARIFFS
 from api.db import (
@@ -533,6 +534,8 @@ async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_fun
     автоматически создаёт тестовый VLESS-конфиг и отправляет сообщение с QR.
     Возвращает True, если тест был выдан, иначе False.
     """
+    from datetime import datetime
+
     if is_vless_test_activated(tg_id):
         return False
     keys = get_keys_by_tg_id(tg_id)
@@ -557,6 +560,91 @@ async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_fun
     except Exception as e:
         logger.warning(f"Failed to send auto-test notification: {e}")
     return True
+
+
+async def activate_test_period(query, xui):
+    """Активирует тестовый период для пользователя"""
+    from datetime import datetime
+    from bot_xui.vpn_factory import ensure_test_subscription, make_qr_bytes
+    from api.db import get_web_token
+    
+    tg_id = query.from_user.id
+    
+    # Проверяем, не активирован ли уже тест
+    if is_vless_test_activated(tg_id):
+        await query.edit_message_text(
+            "❌ Тестовый период уже был активирован ранее.\n\n"
+            "Ты можешь приобрести тариф, чтобы продолжить пользоваться VPN.",
+            reply_markup=make_back_keyboard()
+        )
+        return
+    
+    # Проверяем, нет ли уже активной подписки
+    keys = get_keys_by_tg_id(tg_id)
+    now = datetime.utcnow()
+    active_keys = [k for k in keys if k.get("expires_at") and k["expires_at"] > now]
+    
+    if active_keys:
+        await query.edit_message_text(
+            "✅ У тебя уже есть активная подписка!\n\n"
+            "Ты можешь посмотреть свои конфиги в разделе «🔑 Мои конфиги».",
+            reply_markup=make_back_keyboard()
+        )
+        return
+    
+    # Отправляем сообщение о начале активации
+    await query.edit_message_text(
+        "🎁 Активируем тестовый период...\n\n"
+        "⏳ Пожалуйста, подожди несколько секунд.",
+        reply_markup=None
+    )
+    
+    # Создаем тестовую подписку
+    result = await ensure_test_subscription(tg_id, xui)
+    
+    if not result:
+        await query.message.reply_text(
+            "❌ Не удалось активировать тестовый период.\n\n"
+            "Пожалуйста, попробуй позже или обратись в поддержку.",
+            reply_markup=make_back_keyboard()
+        )
+        return
+    
+    # Отправляем QR-код с конфигом
+    bio = make_qr_bytes(result["sub_url"])
+    
+    try:
+        await query.message.reply_photo(
+            photo=bio,
+            caption=(
+                f"🎉 <b>Тестовый период активирован!</b>\n\n"
+                f"✅ Твой VPN-ключ готов к использованию.\n"
+                f"👤 ID: <code>{result['client_email']}</code>\n"
+                f"⏱ Действует: 24 часа\n\n"
+                f"📲 <b>Как подключиться:</b>\n"
+                f"• Скачай приложение (V2Ray, Hiddify, Nekoray)\n"
+                f"• Отсканируй QR-код или скопируй ссылку\n"
+                f"• Вставь в приложение и наслаждайся!\n\n"
+                f'📖 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Подробная инструкция</a>\n\n'
+                f"💎 После окончания теста выбери тариф, чтобы продолжить пользоваться VPN."
+            ),
+            parse_mode="HTML",
+            reply_markup=make_back_keyboard("💎 Выбрать тариф", "tariffs")
+        )
+    except Exception as e:
+        logger.error(f"Failed to send test config: {e}")
+        await query.message.reply_text(
+            f"🎉 <b>Тестовый период активирован!</b>\n\n"
+            f"✅ Твой VPN-ключ готов.\n"
+            f"👤 ID: <code>{result['client_email']}</code>\n"
+            f"⏱ Действует: 24 часа\n\n"
+            f"🔗 <b>Твоя ссылка для подключения:</b>\n"
+            f"<code>{result['sub_url']}</code>\n\n"
+            f"Просто скопируй её в приложение.\n\n"
+            f'📖 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция</a>',
+            parse_mode="HTML",
+            reply_markup=make_back_keyboard("💎 Выбрать тариф", "tariffs")
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

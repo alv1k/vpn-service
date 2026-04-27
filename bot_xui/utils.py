@@ -17,24 +17,23 @@ class XUIClient:
         self.cookie_file = '/tmp/xui-cookie.txt'
         self._logged_in = False
 
-    def login(self):
-        """Авторизация в 3x-ui (с поддержкой 2FA/TOTP)"""
-        login_data = {
-            "username": self.username,
-            "password": self.password,
-        }
-        if XUI_TOTP_SECRET:
-            import pyotp
-            login_data["twoFactorCode"] = pyotp.TOTP(XUI_TOTP_SECRET).now()
-        response = self.session.post(
-            f"{self.host}/login",
-            data=login_data,
-            timeout=10,
-        )
-        data = response.json()
-        if not data.get('success'):
-            raise Exception(f"Failed to login: {data.get('msg')}")
-        self._logged_in = True
+    def login(self) -> bool:
+        """Login через nginx"""
+        try:
+            response = self.session.post(
+                f"{self.url}{self.base_path}/login",  # /xui/login
+                json={"username": self.username, "password": self.password}
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("success"):
+                    logger.info("✅ XUI login successful")
+                    return True
+            return False
+        except Exception as e:
+            logger.error(f"Login error: {e}")
+            return False
 
     def _request(self, method, url, **kwargs):
         """Выполняет запрос, при необходимости делает login/re-login."""
