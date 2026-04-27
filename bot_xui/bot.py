@@ -54,7 +54,7 @@ from bot_xui.views    import (
     # show_vless_link,
 )
 from bot_xui.payment     import process_payment
-from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_test_softether, handle_get_awg_config, handle_get_softether_config, grant_referral_vpn
+from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_test_softether, handle_get_awg_config, handle_get_softether_config, grant_referral_vpn, activate_test_period
 from bot_xui.messaging   import send_message_by_tg_id
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -178,10 +178,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
         else:
-            from bot_xui.vpn_factory import auto_grant_test_and_notify
-            await auto_grant_test_and_notify(tg_id, xui, update.message.reply_photo)
-            await send_start_screen(update.message.chat, build_main_menu_text(tg_id), make_main_keyboard(tg_id))
+            # Обычный новый пользователь без рефералки
+            logger.info(f"🐿 New user registered with TG ID {tg_id}")
+            
+            # Просто показываем приветствие без автоматической выдачи теста
+            await send_start_screen(
+                update.message.chat, 
+                build_main_menu_text(tg_id), 
+                make_main_keyboard(tg_id)
+            )
 
+async def test_xui_connection(xui: XUIClient) -> bool:
+    """Проверяет соединение с XUI панелью"""
+    try:
+        # Попробуем получить список clients
+        inbounds = await xui.get_inbounds()
+        logger.info(f"XUI connection OK, inbounds: {len(inbounds)}")
+        return True
+    except Exception as e:
+        logger.error(f"XUI connection failed: {e}")
+        return False
 
 async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, link = await _refer_text(context, update.effective_user.id)
@@ -727,6 +743,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "tariffs":
         await show_tariffs(query)
+
+    elif data == "activate_test":
+        await activate_test_period(query, xui)
 
     elif data == "back_to_menu":
         await show_main_menu(query, xui)

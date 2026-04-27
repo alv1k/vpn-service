@@ -90,13 +90,14 @@ def make_main_keyboard(tg_id: int | None = None) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton("🔑 Мои конфиги", callback_data="my_configs"),
+            InlineKeyboardButton("🎁 Активировать тест", callback_data="activate_test"),  # новая кнопка
+        ],
+        [
             InlineKeyboardButton("💎 Тарифы", callback_data="tariffs"),
-        ],
-        [
             InlineKeyboardButton("✉️ Поддержка", callback_data="feedback"),
-            InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service"),
         ],
         [
+            InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service"),
             InlineKeyboardButton("🔗 Прокси TG", callback_data="proxy_file"),
         ],
     ]
@@ -109,12 +110,31 @@ def make_main_keyboard(tg_id: int | None = None) -> InlineKeyboardMarkup:
         )
     return InlineKeyboardMarkup(rows)
 
+# MAIN_MENU_TEXT = (
+#     "⚡️ <b> тииҥ VPN 🐿</b>\n\n"
+#     "Твой тестовый период закончился 🙂\n"
+#     "Чтобы продолжить пользоваться VPN — выбери подходящий тариф 👇\n"
+# )
+
+# MAIN_MENU_TEXT = (
+#     "⚡️ <b> тииҥ VPN 🐿</b>\n\n"
+#     "🚀 <b>Добро пожаловать!</b>\n\n"
+#     "Тестовый период на 3 дня уже активирован и готов к использованию!\n\n"
+#     "📱 <b>Быстрый старт:</b>\n"
+#     "1. Нажми «🔑 Мои конфиги»\n"
+#     "2. Скопируй VLESS-ссылку\n"
+#     "3. Вставь в любое VPN-приложение\n\n"
+#     "✨ <b>Совет:</b> Добавь ключ в закладки — он вернется, если купишь тариф после теста.\n\n"
+#     "💎 Выбирай тариф, чтобы оставаться на связи:"
+# )
+
 MAIN_MENU_TEXT = (
     "⚡️ <b> тииҥ VPN 🐿</b>\n\n"
-    "Твой тестовый период закончился 🙂\n"
-    "Чтобы продолжить пользоваться VPN — выбери подходящий тариф 👇\n"
+    "Добро пожаловать!\n\n"
+    "🎁 <b>Попробуй VPN бесплатно</b>\n"
+    "У тебя есть возможность активировать тестовый период.\n\n"
+    "👇 Нажми на кнопку ниже, чтобы начать"
 )
-
 
 def tariff_emoji(days: int) -> str:
     """Эмодзи для кнопки тарифа по количеству дней."""

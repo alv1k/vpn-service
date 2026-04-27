@@ -477,6 +477,7 @@ async def dashboard():
     # XUI stats
     xui_data = {"inbounds": 0, "clients": 0, "up": 0, "down": 0, "running": False}
     try:
+        logger.warning("🧑🏼‍🎨TRY BLOCK reached:")
         xui = _get_xui()
         inbounds = xui.get_inbounds()
         xui_data["inbounds"] = len(inbounds)
@@ -490,6 +491,7 @@ async def dashboard():
                            capture_output=True, text=True)
         xui_data["running"] = "true" in r.stdout.lower()
     except Exception as e:
+        logger.warning("🛀🏼🛀🏼🛀🏼Failed to get XUI stats:")
         logger.warning(f"XUI stats error: {e}")
 
     # Bot stats
