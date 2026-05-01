@@ -19,6 +19,8 @@ from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET
 from awg_api.config import SERVER_ENDPOINT as AWG_SERVER_HOST, LISTEN_PORT as AWG_LISTEN_PORT
 
 from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id, is_vless_test_activated_by_id
+from bot_xui.helpers import get_user_sub_url
+
 
 logger = logging.getLogger(__name__)
 web_router = APIRouter()
@@ -176,7 +178,10 @@ async def personal_page(token: str):
 
     # Используем собственный прокси-эндпоинт, который переписывает remark
     # в человекочитаемый формат (🐿 TIIN — осталось N дней)
-    sub_url = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
+    # sub_url = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
+    # qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
+
+    sub_url = get_user_sub_url(tg_id) if active_vless else ""
     qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
 
     test_used = is_vless_test_activated_by_id(user['id'])

@@ -564,7 +564,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 }
                 xui._request(
                     "POST",
-                    f"{xui.host}/panel/api/inbounds/updateClient/{existing_xui['client']['id']}",
+                    f"{xui.host}/XhU5cXVfMCyHzAXlrT/api/inbounds/updateClient/{existing_xui['client']['id']}",
                     json=payload,
                     headers={"Content-Type": "application/json"}
                 )

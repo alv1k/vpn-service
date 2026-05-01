@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 DOTENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(DOTENV_PATH)
 
-
 # YooKassa: боевые креды
 YOO_KASSA_SHOP_ID = os.getenv("YOO_KASSA_SHOP_ID")
 YOO_KASSA_SECRET_KEY = os.getenv("YOO_KASSA_SECRET_KEY")
@@ -134,5 +133,3 @@ def validate_config():
         msg = "Missing required environment variables:\n" + "\n".join(missing)
         logger.critical(msg)
         sys.exit(1)
-
-    logger.info("Config validation passed")

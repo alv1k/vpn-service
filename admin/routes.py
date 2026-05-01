@@ -121,7 +121,8 @@ def _get_online_users() -> list[dict]:
     vless_ts: dict[str, str] = {}         # email -> latest timestamp
 
     # VLESS: parse access.log for activity in last 5 minutes
-    access_log = "/home/alvik/vpn-service/docker/x-ui-logs/access.log"
+    # access_log = "/home/alvik/vpn-service/docker/x-ui-logs/access.log"
+    access_log = "/var/log/x-ui/3xui.log"
     try:
         cutoff = time.time() - 300  # 5 min ago
         result = subprocess.run(
@@ -271,7 +272,8 @@ async def offline_users():
     # ── VLESS: get clients + last_online directly from x-ui SQLite ──
     try:
         import sqlite3 as _sqlite3
-        XUI_DB = "/home/alvik/vpn-service/docker/x-ui-data/x-ui.db"
+        # XUI_DB = "/home/alvik/vpn-service/docker/x-ui-data/x-ui.db"
+        XUI_DB = "/etc/x-ui/x-ui.db"
         now_ms = int(time.time() * 1000)
 
         conn = _sqlite3.connect(f"file:{XUI_DB}?mode=ro", uri=True)
@@ -477,7 +479,6 @@ async def dashboard():
     # XUI stats
     xui_data = {"inbounds": 0, "clients": 0, "up": 0, "down": 0, "running": False}
     try:
-        logger.warning("🧑🏼‍🎨TRY BLOCK reached:")
         xui = _get_xui()
         inbounds = xui.get_inbounds()
         xui_data["inbounds"] = len(inbounds)
@@ -487,12 +488,20 @@ async def dashboard():
             for cs in ib.get("clientStats", []):
                 xui_data["up"] += cs.get("up", 0)
                 xui_data["down"] += cs.get("down", 0)
-        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", "x-ui"],
-                           capture_output=True, text=True)
-        xui_data["running"] = "true" in r.stdout.lower()
+        # r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", "x-ui"],
+        #                    capture_output=True, text=True)
+        # xui_data["running"] = "true" in r.stdout.lower()
+        try:
+            r = subprocess.run(["systemctl", "is-active", "x-ui"], 
+                            capture_output=True, text=True)
+            xui_data["running"] = r.stdout.strip() == "active"
+        except Exception:
+            xui_data["running"] = False
     except Exception as e:
-        logger.warning("🛀🏼🛀🏼🛀🏼Failed to get XUI stats:")
         logger.warning(f"XUI stats error: {e}")
+        logger.warning(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.warning(traceback.format_exc())
 
     # Bot stats
     user_stats = admin_db.count_users()
