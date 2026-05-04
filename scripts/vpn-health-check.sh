@@ -130,18 +130,54 @@ else
 fi
 
 # Test 9: x-ui container status
-if docker ps --format '{{.Names}} {{.Status}}' | grep -q "^x-ui Up"; then
-    log "✅ x-ui container running"
-    RESULTS+="✅ x-ui container: UP\n"
+# if docker ps --format '{{.Names}} {{.Status}}' | grep -q "^x-ui Up"; then
+#     log "✅ x-ui container running"
+#     RESULTS+="✅ x-ui container: UP\n"
+# else
+#     try_restart "x-ui" "sudo docker restart x-ui" "docker ps --format '{{.Names}} {{.Status}}' | grep -q '^x-ui Up'"
+#     if [ "$TRY_RESTART_OK" -eq 1 ]; then
+#         RESULTS+="✅ x-ui container: UP [auto-recovered]\n"
+#         RECOVERED+="x-ui "
+#     else
+#         log "❌ x-ui container DOWN"
+#         RESULTS+="❌ x-ui container: DOWN [auto-restart failed]\n"
+#         FAILED=1
+#     fi
+# fi
+
+# Test 9: x-ui service status (systemd)
+log "Test 9: x-ui service status"
+if systemctl is-active --quiet x-ui; then
+    XUI_PID=$(pgrep -f "/usr/local/x-ui/x-ui" | head -1)
+    log "✅ x-ui service running (PID: ${XUI_PID:-unknown})"
+    RESULTS+="✅ x-ui service: UP (PID: ${XUI_PID:-unknown})\n"
 else
-    try_restart "x-ui" "sudo docker restart x-ui" "docker ps --format '{{.Names}} {{.Status}}' | grep -q '^x-ui Up'"
+    try_restart "x-ui" "sudo systemctl restart x-ui" "systemctl is-active --quiet x-ui"
     if [ "$TRY_RESTART_OK" -eq 1 ]; then
-        RESULTS+="✅ x-ui container: UP [auto-recovered]\n"
+        RESULTS+="✅ x-ui service: UP [auto-recovered]\n"
         RECOVERED+="x-ui "
     else
-        log "❌ x-ui container DOWN"
-        RESULTS+="❌ x-ui container: DOWN [auto-restart failed]\n"
+        log "❌ x-ui service DOWN"
+        RESULTS+="❌ x-ui service: DOWN [auto-restart failed]\n"
         FAILED=1
+    fi
+fi
+
+# Test 9a: Xray process status (check if running)
+log "Test 9a: Xray process status"
+if pgrep -f "bin/xray-linux-amd64" > /dev/null; then
+    XRAY_PID=$(pgrep -f "bin/xray-linux-amd64" | head -1)
+    log "✅ Xray process running (PID: $XRAY_PID)"
+    RESULTS+="✅ Xray process: UP (PID: $XRAY_PID)\n"
+else
+    # Check if x-ui is running but xray not started
+    if systemctl is-active --quiet x-ui; then
+        log "⚠️ Xray process not found but x-ui is running"
+        log "   Xray may be starting or using different binary name"
+        RESULTS+="⚠️ Xray process: NOT FOUND (check x-ui status)\n"
+    else
+        log "⚠️ Xray process not found (x-ui service is down)"
+        RESULTS+="⚠️ Xray process: NOT FOUND (x-ui service down)\n"
     fi
 fi
 

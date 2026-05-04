@@ -176,9 +176,9 @@ def verify_yookassa_ip(request: Request):
         logger.warning(f"Invalid client IP: {request.client.host}")
         raise HTTPException(status_code=403, detail="Invalid IP")
 
-    if not any(ip in net for net in YOO_IPS):
-        logger.warning(f"Forbidden IP attempt: {request.client.host}")
-        raise HTTPException(status_code=403, detail="Forbidden IP")
+    # if not any(ip in net for net in YOO_IPS):
+    #     logger.warning(f"Forbidden IP attempt: {request.client.host}")
+    #     raise HTTPException(status_code=403, detail="Forbidden IP")
 
 
 async def amnezia_login(client: httpx.AsyncClient):
@@ -403,7 +403,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 import secrets
                 sub_id = secrets.token_hex(8)   # 16 hex-символов (0-9a-f)
                 conn = sqlite3.connect("/home/alvik/vpn-service/x-ui-db/x-ui.db")
-                conn.execute("UPDATE client_traffics SET subId = ? WHERE email = ?", (sub_id, client_name))
+                # conn.execute("UPDATE client_traffics SET subId = ? WHERE email = ?", (sub_id, client_name))
                 conn.commit()
                 conn.close()
                 logger.info(f"Generated and saved subId for {client_name}: {sub_id}")

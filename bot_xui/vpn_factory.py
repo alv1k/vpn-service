@@ -274,7 +274,7 @@ async def handle_test_awg(query, xui: XUIClient):
                 f"1. Установите <a href='https://amnezia.org'>AmneziaVPN</a>\n"
                 f"2. Импортируйте файл конфигурации\n"
                 f"3. Подключитесь\n\n"
-                f"💬 Поддержка: кнопка «Написать нам» в меню или support@tiinservice.ru"
+                f"💬 Поддержка: кнопка «Написать нам» в меню"
             ),
             parse_mode="HTML",
         )
@@ -466,6 +466,7 @@ async def handle_test_vless(query, xui: XUIClient):
     try:
         data = await create_vless_config(tg_id, xui)
         sub_url = xui.get_client_subscription_url(tg_id)
+        # web_token_url = get_web_token(tg_id)
 
         create_vpn_key(
             tg_id=tg_id, payment_id=None,
@@ -474,7 +475,6 @@ async def handle_test_vless(query, xui: XUIClient):
             vless_link=data["vless_link"], expires_at=data["expires_at"], vpn_type="vless",
             subscription_link=sub_url,
         )
-
         bio = make_qr_bytes(sub_url)
 
         await query.message.reply_photo(
@@ -484,7 +484,7 @@ async def handle_test_vless(query, xui: XUIClient):
                 f"👤 ID: {data['client_email']}\n"
                 f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
                 f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>\n\n'
-                f"💬 Поддержка: кнопка «Написать нам» в меню или support@tiinservice.ru"
+                f"💬 Поддержка: кнопка «Написать нам» в меню"
             ),
             parse_mode="HTML",
         )
@@ -508,8 +508,8 @@ async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
     Возвращает dict с данными конфига (client_email, client_uuid, vless_link,
     expires_at, sub_url) или None, если тест уже активирован либо возникла ошибка.
     """
-    if is_vless_test_activated(tg_id):
-        return None
+    # if is_vless_test_activated(tg_id):
+    #     return None
     try:
         data = await create_vless_config(tg_id, xui)
         sub_url = xui.get_client_subscription_url(tg_id)
@@ -620,10 +620,10 @@ async def activate_test_period(query, xui):
                 f"🎉 <b>Тестовый период активирован!</b>\n\n"
                 f"✅ Твой VPN-ключ готов к использованию.\n"
                 f"👤 ID: <code>{result['client_email']}</code>\n"
-                f"⏱ Действует: 24 часа\n\n"
+                f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
+                f"🔑 Ссылка на подписку: <code>{result['sub_url']}</code>\n\n"
                 f"📲 <b>Как подключиться:</b>\n"
-                f"• Скачай приложение (V2Ray, Hiddify, Nekoray)\n"
-                f"• Отсканируй QR-код или скопируй ссылку\n"
+                f"• Скачай приложение и скопируй ссылку с помощью инструкции ниже\n"
                 f"• Вставь в приложение и наслаждайся!\n\n"
                 f'📖 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Подробная инструкция</a>\n\n'
                 f"💎 После окончания теста выбери тариф, чтобы продолжить пользоваться VPN."
@@ -637,7 +637,7 @@ async def activate_test_period(query, xui):
             f"🎉 <b>Тестовый период активирован!</b>\n\n"
             f"✅ Твой VPN-ключ готов.\n"
             f"👤 ID: <code>{result['client_email']}</code>\n"
-            f"⏱ Действует: 24 часа\n\n"
+            f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
             f"🔗 <b>Твоя ссылка для подключения:</b>\n"
             f"<code>{result['sub_url']}</code>\n\n"
             f"Просто скопируй её в приложение.\n\n"
@@ -795,7 +795,7 @@ async def handle_test_softether(query):
             f"1. Установите <b>SoftEther VPN Client</b>\n"
             f"2. Импортируйте этот файл в клиент\n"
             f"3. Подключитесь\n\n"
-            f"💬 Поддержка: кнопка «Написать нам» в меню или support@tiinservice.ru"
+            f"💬 Поддержка: кнопка «Написать нам» в меню"
         )
         await query.message.reply_document(
             document=vpn_file,

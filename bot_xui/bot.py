@@ -775,7 +775,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "test_protocol_choose":
         # Explicit protocol choice (from instructions or menu)
         await query.edit_message_text(
-            "🎁 <b>Бесплатный тест — 24 часа</b>\n\n"
+            f"🎁 <b>Бесплатный тест — {TARIFFS['test_24h']['period']}</b>\n\n"
             "Выберите протокол:\n\n"
             "🟢 <b>VLESS</b> — телефоны, ПК, macOS\n"
             "🖥 <b>SoftEther</b> — Windows (включая XP/7)",
