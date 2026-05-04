@@ -9,20 +9,20 @@ from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_TOTP_SECRET, VLESS_
 logger = logging.getLogger(__name__)
 
 class XUIClient:
-    def __init__(self, host, username, password, base_path=""):
+    def __init__(self, host, username, password):
         self.host = host.rstrip('/')  # Исправлено: host, не url
-        self.base_path = base_path.rstrip('/')
         self.username = username
         self.password = password
         self.session = requests.Session()
+        self.session.verify = False  # Отключаем проверку SSL для локального подключения
         self.cookie_file = '/tmp/xui-cookie.txt'
         self._logged_in = False
 
-    def login(self) -> bool:  # Убран async, так как requests синхронный
+    def login(self) -> bool:
         """Login через nginx"""
         try:
             # Исправлено: используем self.host, нет base_path
-            login_url = f"{self.host}{self.base_path}/login"
+            login_url = f"{self.host}/login"
             response = self.session.post(
                 login_url,
                 json={"username": self.username, "password": self.password},
@@ -58,7 +58,7 @@ class XUIClient:
 
     def get_inbounds(self):  # Убран async
         """Получить список inbounds"""
-        response = self._request("GET", f"{self.host}{self.base_path}/panel/api/inbounds/list")
+        response = self._request("GET", f"{self.host}/panel/api/inbounds/list")
         data = response.json()
         if data.get('success'):
             return data.get('obj', [])
@@ -92,7 +92,7 @@ class XUIClient:
     def get_client_by_tg_id(self, tg_id):
         """Найти клиента по tg_id среди всех inbound'ов"""
         try:
-            response = self._request("GET", f"{self.host}{self.base_path}/panel/api/inbounds/list")
+            response = self._request("GET", f"{self.host}/panel/api/inbounds/list")
             result = response.json()
 
             if not result.get('success'):
@@ -140,7 +140,7 @@ class XUIClient:
 
             response = self._request(
                 "POST",
-                f"{self.host}{self.base_path}/panel/api/inbounds/updateClient/{client['id']}",
+                f"{self.host}/panel/api/inbounds/updateClient/{client['id']}",
                 json=payload,
                 headers={"Content-Type": "application/json"}
             )
@@ -200,11 +200,11 @@ class XUIClient:
         }
         
         try:
-            logger.info(f"Sending addClient request to: {self.host}{self.base_path}/panel/api/inbounds/addClient")
+            logger.info(f"Sending addClient request to: {self.host}/panel/api/inbounds/addClient")
             
             response = self._request(
                 "POST",
-                f"{self.host}{self.base_path}/panel/api/inbounds/addClient",
+                f"{self.host}/panel/api/inbounds/addClient",
                 json=client_data,
                 headers={"Content-Type": "application/json"}
             )
@@ -219,14 +219,14 @@ class XUIClient:
 
     def get_client_subscription_url(self, tg_id):
         """Получить ссылку подписки клиента"""
-        from config import XUI_SUB_HOST, XUI_SUB_PATH
-        if not XUI_SUB_HOST or not XUI_SUB_PATH:
-            logger.warning("XUI_SUB_HOST or XUI_SUB_PATH not configured")
+        from config import XUI_SUB_PATH
+        if not XUI_SUB_PATH:
+            logger.warning("XUI_SUB_PATH not configured")
             return None
         try:
             import time
             now_ms = int(time.time() * 1000)
-            response = self._request("GET", f"{self.host}{self.base_path}/panel/api/inbounds/list")
+            response = self._request("GET", f"{self.host}/panel/api/inbounds/list")
             result = response.json()
 
             if not result.get('success'):
@@ -247,7 +247,7 @@ class XUIClient:
                                 best_sub_id = sub_id
                                 best_expiry = expiry
             if best_sub_id:
-                return f"{XUI_SUB_HOST}/sub/{XUI_SUB_PATH}/{best_sub_id}"
+                return f"{XUI_SUB_PATH}/sub/{best_sub_id}"
             return None
 
         except Exception as e:
@@ -288,7 +288,8 @@ def generate_vless_link(
         f"&flow=xtls-rprx-vision"
     )
 
-    display_name = remark or client_name
+    # display_name = remark or client_name
+    display_name = client_name
     return f"vless://{client_id}@{domain}:{port}?{params}#{quote(display_name)}"
 
 def get_amneziawg_config(client_email):

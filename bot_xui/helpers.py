@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET, BOT_USERNAME, REFERRAL_REWARD_DAYS
+from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET, BOT_USERNAME, REFERRAL_REWARD_DAYS, XUI_SUB_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def get_user_sub_url(tg_id: int) -> str:
                 if client.get('email') == email:
                     sub_id = client.get('subId')
                     if sub_id:
-                        return f"http://344988.snk.wtf:2096/sub/{sub_id}"
+                        return f"{XUI_SUB_PATH}/sub/{sub_id}"
         
         return ""
         

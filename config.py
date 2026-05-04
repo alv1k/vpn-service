@@ -43,6 +43,7 @@ XUI_HOST = os.getenv("XUI_HOST")
 XUI_USERNAME = os.getenv("XUI_USERNAME")
 XUI_PASSWORD = os.getenv("XUI_PASSWORD")
 XUI_TOTP_SECRET = os.getenv("XUI_TOTP_SECRET", "")
+XUI_SUB_PATH = os.getenv("XUI_SUB_PATH")
 
 # VLESS настройки
 VLESS_DOMAIN = os.getenv("VLESS_DOMAIN")
@@ -61,8 +62,6 @@ SERVER_LOCATION = os.getenv("SERVER_LOCATION", "Germany")
 # AmneziaWG
 AMNEZIA_CONTAINER = os.getenv("AMNEZIA_CONTAINER")
 
-XUI_SUB_HOST = os.getenv("XUI_SUB_HOST")  # e.g. https://344988.snk.wtf:2096
-XUI_SUB_PATH = os.getenv("XUI_SUB_PATH")  # e.g. m5t2vx84r
 
 # SoftEther VPN
 SOFTETHER_VPNCMD = os.getenv("SOFTETHER_VPNCMD", "/opt/softether/vpncmd")
@@ -112,6 +111,7 @@ _REQUIRED_VARS = {
         "XUI_HOST": XUI_HOST,
         "XUI_USERNAME": XUI_USERNAME,
         "XUI_PASSWORD": XUI_PASSWORD,
+        "XUI_SUB_PATH": XUI_SUB_PATH,
     },
     "VLESS": {
         "VLESS_DOMAIN": VLESS_DOMAIN,
