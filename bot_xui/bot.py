@@ -905,8 +905,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query,
             "✉️ <b>Поддержка</b>\n\n"
             "Напишите ваш вопрос или предложение — мы ответим в ближайшее время.\n\n"
-            "👇 Просто отправьте сообщение в чат\n\n"
-            "📧 Или напишите на <b>support@tiinservice.ru</b>",
+            "👇 Просто отправьте сообщение в чат\n\n",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ Отмена", callback_data="back_to_menu")],
             ])

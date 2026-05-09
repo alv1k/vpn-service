@@ -308,7 +308,8 @@ def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link=
     status_text = "Активна" if is_active else "Неактивна"
     status_dot = "&#9679;"
 
-    return f"""<!DOCTYPE html>
+    # Начало HTML
+    html = f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
@@ -392,17 +393,28 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
 <div class="header">
     <h1>TIIN</h1>
     <div class="sub">Личный кабинет</div>
-</div>
+</div>"""
 
-{_render_wizard(sub_url, qr_b64, happ_routing_link, awg_link, awg_download_link) if sub_url else _render_no_sub(web_token, test_used)}
+    # Wizard или кнопка активации теста
+    if sub_url or test_used:
+        html += _render_wizard(sub_url, qr_b64, happ_routing_link, awg_link, awg_download_link)
+        if test_used and not sub_url:
+            html += '''
+<div class="card" style="margin-top:1rem;background:#1e1b2e;text-align:center;border-color:#fbbf24">
+    <p style="color:#fbbf24;font-size:.85rem">⚠️ У вас тестовый период. После его окончания оформите подписку.</p>
+</div>'''
+    else:
+        html += _render_no_sub(web_token, test_used)
 
+    # Карточка подписки
+    html += f"""
 <div class="card">
     <h2>Подписка</h2>
     <div class="status">
         <span class="dot">{status_dot}</span>
         <span class="text">{status_text}</span>
     </div>
-    <div class="expiry">до {sub_until}</div>
+    <div class="expiry">до {sub_until or '—'}</div>
     <a href="https://t.me/tiin_service_bot?start=renew" class="connect-btn primary"
        style="margin-top:1rem;text-align:center;display:block;text-decoration:none">
         🔄 Продлить подписку
@@ -411,39 +423,32 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
 
 <!-- Telegram Proxy -->
 <div class="card">
-    <h2>&#128640; Прокси для Telegram</h2>
+    <h2>🚀 Прокси для Telegram</h2>
     <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
         Бесплатный MTProto-прокси для Telegram. Работает без VPN.
     </p>
-    <a href="tg://proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}&secret={MTPROTO_SECRET}"
+    <a href="tg://proxy?server=mtproto.tiin.su&port=443&secret=ee1234567890abcdef1234567890abcdef"
        class="connect-btn primary" style="text-decoration:none;text-align:center;display:block">
-        &#9889; Подключить прокси
-    </a>
-    <a href="/proxy.html" download="tiinservice_telegram_proxy.html"
-       class="connect-btn secondary" style="text-decoration:none;text-align:center;display:block">
-        &#128229; Скачать файл прокси
+        ⚡ Подключить прокси
     </a>
     <p style="color:#666;font-size:.75rem;text-align:center;margin-top:.6rem">
-        Не открывается?
-        <a href="https://t.me/proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}&secret={MTPROTO_SECRET}"
-           style="color:#a78bfa;text-decoration:none">Попробуйте эту ссылку</a>
+        <a href="https://t.me/proxy?server=mtproto.tiin.su&port=443&secret=ee1234567890abcdef1234567890abcdef"
+           style="color:#a78bfa;text-decoration:none">Альтернативная ссылка</a>
     </p>
 </div>
 
 <!-- Support form -->
 <div class="card">
-    <h2>&#9993;&#65039; Поддержка</h2>
+    <h2>✉️ Поддержка</h2>
     <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
         Напишите нам, и мы ответим на вашу почту. Для отправки сообщения
         нужно подтвердить email — мы отправим код подтверждения.
     </p>
     <div class="support-form">
-        <!-- Step 1: email -->
         <div id="supStep1">
             <input type="email" id="supportEmail" placeholder="Ваш email" value="{email}">
             <button class="support-btn" onclick="supSendCode()">Получить код</button>
         </div>
-        <!-- Step 2: code + message -->
         <div id="supStep2" style="display:none">
             <p style="color:#888;font-size:.85rem;margin-bottom:.6rem">
                 Код отправлен на <b id="supEmailShow" style="color:#a78bfa"></b>
@@ -458,8 +463,7 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
                 <a href="javascript:supBack()" style="color:#888;font-size:.8rem;text-decoration:none">Изменить email</a>
             </p>
         </div>
-        <!-- Done -->
-        <div class="support-ok" id="supportOk">&#10004; Сообщение отправлено! Мы ответим на вашу почту.</div>
+        <div class="support-ok" id="supportOk">✓ Сообщение отправлено! Мы ответим на вашу почту.</div>
         <div class="support-err" id="supportErr"></div>
     </div>
 </div>
@@ -510,7 +514,6 @@ const APPS = {{
     ]
 }};
 
-// AmneziaVPN добавляется только если есть активный AWG-ключ
 if (AWG_LINK) {{
     var amneziaApp = {{
         name: 'AmneziaVPN',
@@ -530,10 +533,10 @@ function selectDevice(device) {{
     list.innerHTML = '';
     var apps = APPS[device] || [];
     apps.forEach(function(app, i) {{
-        list.innerHTML += '<div class="app-card" onclick="selectApp(' + i + ')">' +
-            '<div class="app-icon">' + app.icon + '</div>' +
-            '<div class="app-info"><div class="app-name">' + app.name + '</div>' +
-            '<div class="app-desc">' + app.desc + '</div></div></div>';
+        list.innerHTML += '<div class=\"app-card\" onclick=\"selectApp(' + i + ')\">' +
+            '<div class=\"app-icon\">' + app.icon + '</div>' +
+            '<div class=\"app-info\"><div class=\"app-name\">' + app.name + '</div>' +
+            '<div class=\"app-desc\">' + app.desc + '</div></div></div>';
     }});
     showStep(2);
 }}
@@ -566,32 +569,12 @@ function goBack(step) {{
     showStep(step);
 }}
 
-// Routing
 const HAPP_ROUTING_LINK = {json_mod.dumps(happ_routing_link)};
 
 const ROUTING_GUIDES = {{
-    'Happ': `
-        <p class="note" style="margin-top:.8rem">Нажмите для автоматической настройки:</p>
-        <a href="${{HAPP_ROUTING_LINK}}" class="connect-btn primary">Настроить маршруты в Happ</a>
-        <p class="note" style="margin-top:.8rem">Правила применятся автоматически.</p>`,
-    'Hiddify': `
-        <p class="note" style="margin-top:.8rem"><b>Настройка в Hiddify:</b></p>
-        <p class="note">1. Откройте приложение &rarr; Настройки &rarr; Конфигурация</p>
-        <p class="note">2. Найдите раздел <b>Правила маршрутизации</b></p>
-        <p class="note">3. Включите <b>Обход локальных адресов</b></p>
-        <p class="note">4. В разделе «Прямое подключение» добавьте: <b>geosite:category-ru</b> и <b>geoip:ru</b></p>
-        <p class="note" style="margin-top:.5rem;color:#a78bfa">Российские сайты будут открываться напрямую.</p>`,
-    'Streisand': `
-        <p class="note" style="margin-top:.8rem"><b>Настройка в Streisand:</b></p>
-        <p class="note">1. Откройте приложение &rarr; Настройки &rarr; Маршрутизация</p>
-        <p class="note">2. Выберите режим <b>Обход локальных и выбранных адресов</b></p>
-        <p class="note">3. Добавьте в список обхода: <b>.ru, .su, .рф</b></p>
-        <p class="note">4. Включите <b>GeoIP: RU &rarr; Direct</b></p>
-        <p class="note" style="margin-top:.5rem;color:#a78bfa">Российские сайты будут открываться напрямую.</p>`,
-    'VPN4TV': `
-        <p class="note" style="margin-top:.8rem"><b>Настройка на Android TV:</b></p>
-        <p class="note">Маршрутизация настраивается так же, как в Hiddify.</p>
-        <p class="note">Настройки &rarr; Конфигурация &rarr; Правила маршрутизации &rarr; добавьте <b>geosite:category-ru</b> и <b>geoip:ru</b> в прямое подключение.</p>`,
+    'Happ': '<p class=\"note\" style=\"margin-top:.8rem\">Нажмите для автоматической настройки:</p><a href=\"' + HAPP_ROUTING_LINK + '\" class=\"connect-btn primary\">Настроить маршруты в Happ</a>',
+    'Hiddify': '<p class=\"note\">Настройки → Конфигурация → Правила маршрутизации → добавьте <b>geosite:category-ru</b> и <b>geoip:ru</b> в прямое подключение.</p>',
+    'Streisand': '<p class=\"note\">Настройки → Маршрутизация → режим обхода → добавьте <b>.ru, .su, .рф</b></p>',
 }};
 
 function showStep(n) {{
@@ -604,7 +587,6 @@ function showStep(n) {{
     }}
 }}
 
-// Support form
 function supErr(msg) {{
     var el = document.getElementById('supportErr');
     el.textContent = msg; el.style.display = msg ? 'block' : 'none';
@@ -629,7 +611,7 @@ function supSendCode() {{
             document.getElementById('supEmailShow').textContent = email;
             document.getElementById('supportCode').focus();
         }} else {{
-            supErr(res.data.detail || res.data.message || 'Ошибка отправки кода');
+            supErr(res.data.detail || res.data.message || 'Ошибка');
         }}
     }})
     .catch(function() {{ supErr('Ошибка сети'); }})
@@ -647,7 +629,7 @@ function supSubmit() {{
     var code = document.getElementById('supportCode').value.trim();
     var msg = document.getElementById('supportMsg').value.trim();
     supErr('');
-    if (!code) {{ supErr('Введите код из письма'); return; }}
+    if (!code) {{ supErr('Введите код'); return; }}
     if (!msg) {{ supErr('Введите сообщение'); return; }}
     var btn = event.target; btn.disabled = true; btn.textContent = 'Отправка...';
 
@@ -662,21 +644,36 @@ function supSubmit() {{
             document.getElementById('supStep2').style.display = 'none';
             document.getElementById('supportOk').style.display = 'block';
         }} else {{
-            supErr(res.data.detail || res.data.message || 'Ошибка отправки');
+            supErr(res.data.detail || res.data.message || 'Ошибка');
         }}
     }})
     .catch(function() {{ supErr('Ошибка сети'); }})
     .finally(function() {{ btn.disabled = false; btn.textContent = 'Отправить'; }});
 }}
 
-// Init
 showStep(1);
 </script>
 </body>
 </html>"""
 
+    return html  # ← этот return должен быть на том же уровне, что и начало функции (без лишних пробелов)
 
 def _render_no_sub(web_token="", test_used=False):
+    # Если тест уже активирован, показываем мастер с подсказкой о тестовом периоде
+    if test_used:
+        return """
+<div class="card">
+    <div class="no-sub" style="border-color:#10b981">
+        <div class="emoji">🧪</div>
+        <p style="color:#10b981">Тестовый период активен</p>
+        <p style="font-size:.85rem;margin-top:.25rem;color:#94a3b8">У вас нет активной подписки, но вы можете настроить тестовый доступ</p>
+    </div>
+</div>
+<div style="margin-top:1rem"></div>
+<!-- Мастер настройки будет добавлен отдельно -->
+"""
+    
+    # Обычный случай — нет подписки и нет теста
     if not test_used and web_token:
         test_btn = f"""
         <button class="connect-btn primary" id="testBtn" onclick="activateTest()" style="margin-top:1rem">
