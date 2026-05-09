@@ -24,48 +24,44 @@ PUBLIC_BASE_URL = "https://344988.snk.wtf"
 
 
 def get_user_sub_url(tg_id: int) -> str:
-    # """Прокси-URL подписки для пользователя: /sub/{web_token}.
-    # Пустая строка, если web_token не выдан."""
-    # from api.db import get_web_token
-    # token = get_web_token(tg_id)
-    # if not token:
-    #     return ""
-    # return f"{PUBLIC_BASE_URL}/sub/{token}"
-    
     """Получает subId пользователя из 3x-ui"""
     
     db_path = "/etc/x-ui/x-ui.db"
-    email = f"tiin_{tg_id}"  # Формат email в вашей БД
+    tg_id_str = str(tg_id)
+    
+    # Массив портов для проверки
+    ports_to_check = [7443]  # Добавьте нужные порты
     
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Получаем settings для inbound с портом 7443
-        cursor.execute("""
-            SELECT settings 
-            FROM inbounds 
-            WHERE port = 7443
-        """)
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            settings = json.loads(result[0])
-            clients = settings.get('clients', [])
+        for port in ports_to_check:
+            cursor.execute("""
+                SELECT settings 
+                FROM inbounds 
+                WHERE port = ?
+            """, (port,))
             
-            # Ищем клиента с нужным email
-            for client in clients:
-                if client.get('email') == email:
-                    sub_id = client.get('subId')
-                    if sub_id:
-                        return f"{XUI_SUB_PATH}/sub/{sub_id}"
+            result = cursor.fetchone()
+            
+            if result:
+                settings = json.loads(result[0])
+                clients = settings.get('clients', [])
+                
+                for client in clients:
+                    client_email = client.get('email', '')
+                    if tg_id_str in client_email:
+                        sub_id = client.get('subId')
+                        if sub_id:
+                            conn.close()
+                            return f"{XUI_SUB_PATH}/sub/{sub_id}"
         
+        conn.close()
         return ""
         
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error getting sub_url for tg_id {tg_id}: {e}")
         return ""
 
 
