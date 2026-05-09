@@ -636,7 +636,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
                 # Ссылка на подписку + кнопки
                 message = (
-                    f"❗ <b>Скопируйте вашу ссылку:</b>\n"
+                    f"❗ <b>Скопируйте вашу ссылку:</b>\n\n"
                     f"➡️➡️➡️ <code>{user_sub_url or sub_url}</code> ⬅️\n\n"
                     f"📱 И вставьте в приложение ⬇️"
                 )
