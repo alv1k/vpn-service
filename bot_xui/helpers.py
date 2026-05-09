@@ -35,7 +35,7 @@ def get_user_sub_url(tg_id: int) -> str:
     """Получает subId пользователя из 3x-ui"""
     
     db_path = "/etc/x-ui/x-ui.db"
-    email = f"vless_{tg_id}"  # Формат email в вашей БД
+    email = f"tiin_{tg_id}"  # Формат email в вашей БД
     
     try:
         conn = sqlite3.connect(db_path)
