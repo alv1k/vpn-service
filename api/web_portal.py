@@ -155,10 +155,12 @@ async def personal_page(token: str):
         return HTMLResponse(_page_not_found(), status_code=404)
 
     tg_id = user['tg_id']
+    users_id = user['id']
     sub_until = user.get('subscription_until')
     now = datetime.now()
 
-    keys = get_keys_by_tg_id(tg_id) if tg_id else []
+    keys = get_keys_by_tg_id(tg_id) if tg_id else get_keys_by_user_id(users_id)
+
     if not keys:
         keys = get_keys_by_user_id(user['id'])
     vless_keys = [k for k in keys if k['vpn_type'] == 'vless' and k.get('subscription_link')]
@@ -181,7 +183,7 @@ async def personal_page(token: str):
     # sub_url = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
     # qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
 
-    sub_url = get_user_sub_url(tg_id) if active_vless else ""
+    sub_url = get_user_sub_url(tg_id, users_id) if active_vless else ""
     qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
 
     test_used = is_vless_test_activated_by_id(user['id'])

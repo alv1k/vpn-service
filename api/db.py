@@ -146,6 +146,12 @@ def get_user_by_id(user_id: int) -> dict | None:
         (user_id,), fetch='one'
     )
 
+def get_user_by_email(email: str) -> dict | None:
+    return execute_query(
+        "SELECT * FROM users WHERE email = %s",
+        (email,), fetch='one'
+    )
+
 
 def update_user_subscription_by_id(user_id: int, subscription_until):
     execute_query(

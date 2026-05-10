@@ -23,9 +23,9 @@ def convert_to_local(dt: datetime, offset_hours: int = 9) -> str:
 PUBLIC_BASE_URL = "https://344988.snk.wtf"
 
 
-def get_user_sub_url(tg_id: int) -> str:
+def get_user_sub_url(tg_id: int, users_id: int) -> str:
     """Получает subId пользователя из 3x-ui"""
-    
+
     db_path = "/etc/x-ui/x-ui.db"
     tg_id_str = str(tg_id)
     
@@ -35,6 +35,12 @@ def get_user_sub_url(tg_id: int) -> str:
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
+
+        # Безопасная проверка tg_id
+        if tg_id and tg_id != 0:  # Проверяем что tg_id не None и не 0
+            search_pattern = str(tg_id)
+        else:
+            search_pattern = "web_" + str(users_id)  # Преобразуем users_id в строку
         
         for port in ports_to_check:
             cursor.execute("""
@@ -51,12 +57,12 @@ def get_user_sub_url(tg_id: int) -> str:
                 
                 for client in clients:
                     client_email = client.get('email', '')
-                    if tg_id_str in client_email:
+                    if search_pattern in client_email:
                         sub_id = client.get('subId')
                         if sub_id:
                             conn.close()
                             return f"{XUI_SUB_PATH}/sub/{sub_id}"
-        
+                                    
         conn.close()
         return ""
         

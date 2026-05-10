@@ -13,7 +13,7 @@ from io import BytesIO
 import qrcode
 
 from config import (
-    XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
+    XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_SUB_PATH,
     VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
     TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI,
     AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD,
@@ -419,7 +419,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 logger.info(f"Found existing subId for {client_name}: {sub_id}")
 
             # Формируем правильную ссылку для пользователя (через Nginx, без порта)
-            user_sub_url = f"https://344988.snk.wtf/sub/{sub_id}"
+            user_sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}"
 
             # Сохраняем sub_url (прямая ссылка 3x-ui, может не работать, но оставим для резерва)
             sub_url = user_sub_url   # или можно оставить как было, но user_sub_url теперь правильный

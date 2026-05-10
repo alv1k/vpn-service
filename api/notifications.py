@@ -10,7 +10,17 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 
-from api.db import execute_query
+from db import execute_query
+#!/usr/bin/env python3
+import sys
+import logging
+from pathlib import Path
+
+# Добавляем корневую директорию в путь для импорта config
+root_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(root_dir))
+
+# Теперь импорт config должен работать
 from config import (
     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM,
 )
