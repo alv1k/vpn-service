@@ -156,10 +156,18 @@ async def email_open_track(track_id: str):
 
 # ===== Белые IP ЮKassa =====
 YOO_IPS = [
+    # Сети
     ip_network("185.71.76.0/27"),
     ip_network("185.71.77.0/27"),
     ip_network("77.75.153.0/25"),
     ip_network("77.75.154.128/25"),
+    # Отдельные адреса (добавьте эти!)
+    ip_network("77.75.156.11/32"),
+    ip_network("77.75.156.35/32"),
+    # Тестовый режим (если нужен)
+    ip_network("194.54.15.41/32"),
+    # IPv6
+    ip_network("2a02:5180::/32"),
 ]
 
 logger.info("WEBHOOK APP STARTED")
