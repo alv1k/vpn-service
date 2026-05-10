@@ -9,7 +9,7 @@ import qrcode
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot_xui.tariffs import TARIFFS
-from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated, get_permanent_discount, update_vless_link, get_web_token, get_user_by_tg_id, get_payment_by_id, get_referral_count
+from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated, get_permanent_discount, update_vless_link, get_web_token, get_user_by_tg_id, get_payment_by_id, get_referral_count, get_user_by_web_token
 from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, get_user_sub_url
 from bot_xui.test_mode import is_test_mode
 from config import ADMIN_TG_ID, REFERRAL_REWARD_DAYS, BOT_USERNAME
@@ -526,7 +526,9 @@ async def show_single_config(query, client_name: str, xui):
         return
 
     # VLESS — QR + ссылка подписки (через прокси-эндпоинт, который переписывает remark)
-    sub_url = get_user_sub_url(tg_id) or key.get("subscription_link") or ""
+    token = get_web_token(tg_id)
+    user_data = get_user_by_web_token(token)
+    sub_url = get_user_sub_url(tg_id, user_data['id']) or key.get("subscription_link") or ""
 
     bio = BytesIO()
     bio.name = "qr.png"

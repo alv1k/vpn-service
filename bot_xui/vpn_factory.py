@@ -404,7 +404,12 @@ async def handle_get_softether_config(query):
     await query.edit_message_text("⏳ Создаю SoftEther конфиг...")
 
     try:
+        # Ensure sub_until has timezone info
+        if sub_until.tzinfo is None:
+            sub_until = sub_until.replace(tzinfo=timezone.utc)
+
         remaining_days = max(1, (sub_until - datetime.now(timezone.utc)).days)
+
         data = create_softether_config(tg_id, days=remaining_days)
 
         create_vpn_key(
@@ -660,7 +665,7 @@ def _softether_credentials_text(username: str, password: str) -> str:
         f"│ 🔌 Порт: <code>{SOFTETHER_CONNECT_PORT}</code>\n"
         f"│ 🏠 Hub: <code>{SOFTETHER_HUB}</code>\n"
         f"│ 👤 Логин: <code>{username}</code>\n"
-        f"│ 🔑 Пароль: <code>{password}</code>\n"
+        f"│ 🔑 Пароль123: <code>{password}</code>\n"
         f"└─────────────────────\n"
     )
 
