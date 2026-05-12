@@ -122,7 +122,7 @@ def _get_online_users() -> list[dict]:
 
     # VLESS: parse access.log for activity in last 5 minutes
     # access_log = "/home/alvik/vpn-service/docker/x-ui-logs/access.log"
-    access_log = "/var/log/x-ui/3xui.log"
+    access_log = "/var/log/x-ui/access.log"
     try:
         cutoff = time.time() - 300  # 5 min ago
         result = subprocess.run(

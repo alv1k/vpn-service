@@ -106,7 +106,10 @@ def test_xui_client_init():
 def test_xui_client_login(mock_session_cls):
     from bot_xui.utils import XUIClient
     mock_session = MagicMock()
-    mock_session.post.return_value.json.return_value = {"success": True}
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"success": True}
+    mock_session.post.return_value = mock_resp
     mock_session_cls.return_value = mock_session
 
     c = XUIClient("https://panel", "admin", "pass")
@@ -119,12 +122,14 @@ def test_xui_client_login(mock_session_cls):
 def test_xui_client_login_failure(mock_session_cls):
     from bot_xui.utils import XUIClient
     mock_session = MagicMock()
-    mock_session.post.return_value.json.return_value = {"success": False, "msg": "wrong password"}
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200 # Status OK but success: False
+    mock_resp.json.return_value = {"success": False, "msg": "wrong password"}
+    mock_session.post.return_value = mock_resp
     mock_session_cls.return_value = mock_session
 
     c = XUIClient("https://panel", "admin", "wrong")
-    with pytest.raises(Exception, match="Failed to login"):
-        c.login()
+    assert c.login() is False # login() returns False on failure now
 
 
 @patch("bot_xui.utils.requests.Session")
@@ -234,12 +239,30 @@ def test_xui_extend_client_expiry(mock_session_cls):
 def test_xui_delete_client(mock_session_cls):
     from bot_xui.utils import XUIClient
     mock_session = MagicMock()
+    # Mock for login
     mock_session.post.return_value.json.return_value = {"success": True}
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"success": True}
-    mock_resp.headers = {"content-type": "application/json"}
-    mock_resp.status_code = 200
-    mock_session.request.return_value = mock_resp
+    mock_session.post.return_value.status_code = 200
+
+    # Mock for get_inbounds (called inside get_client_by_email)
+    mock_inbounds_resp = MagicMock()
+    mock_inbounds_resp.status_code = 200
+    mock_inbounds_resp.headers = {"content-type": "application/json"}
+    mock_inbounds_resp.json.return_value = {
+        "success": True,
+        "obj": [{
+            "id": 5,
+            "settings": json.dumps({"clients": [{"id": "uuid-123", "email": "test-email"}]})
+        }]
+    }
+
+    # Mock for the deleteClient request itself
+    mock_delete_resp = MagicMock()
+    mock_delete_resp.status_code = 200
+    mock_delete_resp.headers = {"content-type": "application/json"}
+    mock_delete_resp.json.return_value = {"success": True}
+
+    # Side effect to handle multiple calls to session.request
+    mock_session.request.side_effect = [mock_inbounds_resp, mock_delete_resp]
     mock_session_cls.return_value = mock_session
 
     c = XUIClient("https://panel", "admin", "pass")

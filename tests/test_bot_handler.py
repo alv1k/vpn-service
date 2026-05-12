@@ -269,10 +269,18 @@ class TestSendStartScreen:
         chat.send_message.assert_called_once()
         chat.send_photo.assert_not_called()
 
+    @patch("pathlib.Path.exists", return_value=True) # Patch exists() to always return True
+    @patch("builtins.open", new_callable=MagicMock) # Mock open()
     @pytest.mark.asyncio
-    async def test_first_send_reads_disk_and_caches_file_id(self):
+    async def test_first_send_reads_disk_and_caches_file_id(self, mock_open, mock_exists):
         """First send reads PNG from disk and caches the returned file_id."""
         from bot_xui import bot
+
+        # Setup mock_open to return a mock file object
+        mock_file = MagicMock()
+        mock_file.__enter__.return_value = mock_file # For 'with open(...) as f:'
+        mock_file.read.return_value = b"dummy_image_data" # Provide some bytes
+        mock_open.return_value = mock_file
 
         # Mock the returned message with a photo file_id
         photo_obj = MagicMock()
@@ -290,8 +298,9 @@ class TestSendStartScreen:
         # Cache populated
         assert bot._START_IMAGE_FILE_ID == "cached-file-id-1"
 
+    @patch("pathlib.Path.exists", return_value=True) # Patch exists() to always return True
     @pytest.mark.asyncio
-    async def test_second_send_uses_cached_file_id(self):
+    async def test_second_send_uses_cached_file_id(self, mock_exists):
         """When _START_IMAGE_FILE_ID is set, subsequent sends pass it instead of bytes."""
         from bot_xui import bot
         bot._START_IMAGE_FILE_ID = "preset-id-99"
@@ -311,11 +320,18 @@ class TestSendStartScreen:
         chat.send_photo.assert_called_once()
         assert chat.send_photo.call_args[1]["photo"] == "preset-id-99"
 
+    @patch("pathlib.Path.exists", return_value=True) # Patch exists() to always return True
+    @patch("builtins.open", new_callable=MagicMock) # Mock open()
     @pytest.mark.asyncio
-    async def test_telegram_error_falls_back_to_text(self):
+    async def test_telegram_error_falls_back_to_text(self, mock_open, mock_exists):
         """If Telegram raises during send_photo, falls back to send_message."""
         from bot_xui import bot
         bot._START_IMAGE_FILE_ID = "cached-id"
+
+        mock_file = MagicMock()
+        mock_file.__enter__.return_value = mock_file
+        mock_file.read.return_value = b"dummy_image_data"
+        mock_open.return_value = mock_file
 
         chat = MagicMock()
         chat.send_photo = AsyncMock(side_effect=RuntimeError("Telegram timeout"))

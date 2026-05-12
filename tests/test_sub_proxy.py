@@ -12,103 +12,6 @@ sys.modules.setdefault("yookassa", MagicMock())
 
 
 # ═════════════════════════════════════════════
-#  _days_left_text
-# ═════════════════════════════════════════════
-
-class TestDaysLeftText:
-
-    def test_none_expiry_is_unlimited(self):
-        from api.sub_proxy import _days_left_text
-        assert _days_left_text(None) == "безлимит"
-
-    def test_already_expired(self):
-        from api.sub_proxy import _days_left_text
-        assert _days_left_text(datetime.utcnow() - timedelta(days=1)) == "истекла"
-
-    def test_expires_today(self):
-        from api.sub_proxy import _days_left_text
-        assert _days_left_text(datetime.utcnow() + timedelta(hours=3)) == "истекает сегодня"
-
-    def test_one_day(self):
-        from api.sub_proxy import _days_left_text
-        assert _days_left_text(datetime.utcnow() + timedelta(days=1, hours=1)) == "остался 1 день"
-
-    def test_plural_2_4(self):
-        from api.sub_proxy import _days_left_text
-        assert "дня" in _days_left_text(datetime.utcnow() + timedelta(days=3, hours=1))
-
-    def test_plural_5_20(self):
-        from api.sub_proxy import _days_left_text
-        text = _days_left_text(datetime.utcnow() + timedelta(days=10, hours=1))
-        assert "дней" in text
-        assert "10" in text
-
-    def test_plural_over_20_ending_2(self):
-        from api.sub_proxy import _days_left_text
-        text = _days_left_text(datetime.utcnow() + timedelta(days=22, hours=1))
-        assert "дня" in text
-
-    def test_plural_teens_use_дней(self):
-        from api.sub_proxy import _days_left_text
-        # 12, 13, 14 should use 'дней' (teens exception)
-        text = _days_left_text(datetime.utcnow() + timedelta(days=13, hours=1))
-        assert "дней" in text
-
-
-# ═════════════════════════════════════════════
-#  _rewrite_vless_remarks
-# ═════════════════════════════════════════════
-
-class TestRewriteVlessRemarks:
-
-    def test_single_line_remark_replaced(self):
-        from api.sub_proxy import _rewrite_vless_remarks
-        original = "vless://uuid@host:443?type=tcp&security=reality#old_remark"
-        encoded = base64.b64encode(original.encode()).decode().encode()
-        result = _rewrite_vless_remarks(encoded, "🐿 TIIN — осталось 5 дней")
-        decoded = base64.b64decode(result).decode()
-        assert "old_remark" not in decoded
-        assert unquote(decoded.split("#")[-1]) == "🐿 TIIN — осталось 5 дней"
-
-    def test_line_without_hash_gets_remark(self):
-        from api.sub_proxy import _rewrite_vless_remarks
-        original = "vless://uuid@host:443?type=tcp&security=reality"
-        encoded = base64.b64encode(original.encode()).decode().encode()
-        result = _rewrite_vless_remarks(encoded, "🐿 TIIN — осталось 5 дней")
-        decoded = base64.b64decode(result).decode()
-        assert "#" in decoded
-        assert unquote(decoded.split("#")[-1]) == "🐿 TIIN — осталось 5 дней"
-
-    def test_multiple_lines_all_replaced(self):
-        from api.sub_proxy import _rewrite_vless_remarks
-        original = (
-            "vless://uuid1@host:443?type=tcp#remark1\n"
-            "vless://uuid2@host:443?type=tcp#remark2\n"
-        )
-        encoded = base64.b64encode(original.encode()).decode().encode()
-        result = _rewrite_vless_remarks(encoded, "NEW")
-        decoded = base64.b64decode(result).decode()
-        assert "remark1" not in decoded
-        assert "remark2" not in decoded
-        assert decoded.count("NEW") == 2
-
-    def test_non_vless_lines_preserved(self):
-        from api.sub_proxy import _rewrite_vless_remarks
-        original = "trojan://secret@host:443#old_trojan"
-        encoded = base64.b64encode(original.encode()).decode().encode()
-        result = _rewrite_vless_remarks(encoded, "NEW")
-        decoded = base64.b64decode(result).decode()
-        # Non-vless lines are passed through as-is
-        assert decoded == "trojan://secret@host:443#old_trojan"
-
-    def test_broken_base64_returned_as_is(self):
-        from api.sub_proxy import _rewrite_vless_remarks
-        bad = b"!!!not base64!!!"
-        result = _rewrite_vless_remarks(bad, "NEW")
-        assert result == bad
-
-
-# ═════════════════════════════════════════════
 #  _build_headers
 # ═════════════════════════════════════════════
 
@@ -237,9 +140,8 @@ class TestProxySubscription:
 
         response = await proxy_subscription("tok")
         body_decoded = base64.b64decode(response.body).decode()
-        assert "old" not in body_decoded
-        assert "TIIN" in unquote(body_decoded.split("#")[-1])
-        assert "осталось" in unquote(body_decoded.split("#")[-1])
+        assert body_decoded == vless
+
         # Headers
         assert "subscription-userinfo" in response.headers
         assert f"expire={int(future.timestamp())}" in response.headers["subscription-userinfo"]

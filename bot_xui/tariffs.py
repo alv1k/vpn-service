@@ -9,7 +9,7 @@ TARIFFS = {
         "yookassa_description": "Персональный цифровой доступ на 3 дня",
         "days": 3,
         "hours" : 72,
-        "device_limit": 1,
+        "device_limit": 10,
         "is_test": True
     },
     "weekly_7d": {

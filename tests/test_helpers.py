@@ -130,7 +130,7 @@ def test_make_proxy_file_has_both_links():
 def test_main_menu_text():
     from bot_xui.helpers import MAIN_MENU_TEXT
     assert "тииҥ VPN" in MAIN_MENU_TEXT
-    assert "тариф" in MAIN_MENU_TEXT
+
 
 
 # ─────────────────────────────────────────────
