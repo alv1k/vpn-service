@@ -355,7 +355,7 @@ async def activate_test(req: TestActivateRequest):
             uuid=client_uuid,
             expiry_time=expiry_ms,
             total_gb=0,
-            limit_ip=1,
+            limit_ip=TARIFFS["test_24h"]["device_limit"],
         )
         if not success:
             raise RuntimeError("add_client returned False")

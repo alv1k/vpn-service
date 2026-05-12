@@ -217,6 +217,55 @@ class XUIClient:
             logger.error(f"Error adding client: {e}")
             return False
 
+    def deactivate_client(self, inbound_id, client):
+        """Отключить клиента (enable=false)"""
+        client_to_update = {**client, 'enable': False}
+        payload = {
+            "id": inbound_id,
+            "settings": json.dumps({"clients": [client_to_update]})
+        }
+        try:
+            response = self._request(
+                "POST",
+                f"{self.host}/panel/api/inbounds/updateClient/{client['id']}",
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            return response.json().get('success', False)
+        except Exception as e:
+            logger.error(f"Error deactivating client: {e}")
+            return False
+
+    def delete_client(self, inbound_id, client_email):
+        """Удалить клиента по email из inbound"""
+        client_info = self.get_client_by_email(client_email)
+        if not client_info:
+            return False
+            
+        try:
+            response = self._request(
+                "POST",
+                f"{self.host}/panel/api/inbounds/deleteClient/{client_info['client']['id']}",
+                headers={"Content-Type": "application/json"}
+            )
+            return response.json().get('success', False)
+        except Exception as e:
+            logger.error(f"Error deleting client: {e}")
+            return False
+
+    def reset_client_traffic(self, inbound_id, client_email):
+        """Сбросить трафик клиента"""
+        try:
+            response = self._request(
+                "POST",
+                f"{self.host}/panel/api/inbounds/{inbound_id}/resetClientTraffic/{client_email}",
+                headers={"Content-Type": "application/json"}
+            )
+            return response.json().get('success', False)
+        except Exception as e:
+            logger.error(f"Error resetting client traffic: {e}")
+            return False
+
     def get_client_subscription_url(self, tg_id):
         """Получить ссылку подписки клиента"""
         from config import XUI_SUB_PATH

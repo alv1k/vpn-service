@@ -180,9 +180,7 @@ def test_branded_html_contains_branding():
     html = _branded_html("<p>Test content</p>")
     assert "TIIN" in html
     assert "<p>Test content</p>" in html
-    assert "support@tiinservice.ru" in html
     assert "tiin_service_bot" in html
-
 
 # ─────────────────────────────────────────────
 #  Transactional emails

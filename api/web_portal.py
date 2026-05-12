@@ -180,11 +180,11 @@ async def personal_page(token: str):
 
     # Используем собственный прокси-эндпоинт, который переписывает remark
     # в человекочитаемый формат (🐿 TIIN — осталось N дней)
-    # sub_url = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
-    # qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
-
-    sub_url = get_user_sub_url(tg_id, users_id) if active_vless else ""
+    sub_url = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
     qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
+
+    # sub_url = get_user_sub_url(tg_id, users_id) if active_vless else ""
+    # qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
 
     test_used = is_vless_test_activated_by_id(user['id'])
 

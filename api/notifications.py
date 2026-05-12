@@ -10,7 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 
-from db import execute_query
+from api.db import execute_query
 #!/usr/bin/env python3
 import sys
 import logging
@@ -180,8 +180,6 @@ def _branded_html(body_content: str) -> str:
 
     <div style="text-align: center; padding: 2rem 0; color: #555; font-size: .75rem;">
       <a href="https://t.me/tiin_service_bot" style="color: #888; text-decoration: none;">Telegram-бот</a>
-      &nbsp;·&nbsp;
-      <a href="mailto:support@tiinservice.ru" style="color: #888; text-decoration: none;">support@tiinservice.ru</a>
     </div>
   </div>
 </body>

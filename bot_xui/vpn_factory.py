@@ -117,7 +117,7 @@ async def create_vless_config(tg_id: int, xui: XUIClient) -> dict:
         uuid=client_uuid,
         expiry_time=expiry_ms,
         total_gb=0,
-        limit_ip=1,
+        limit_ip=10,
     )
     if not success:
         raise RuntimeError("Не удалось создать VLESS клиента")
