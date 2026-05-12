@@ -97,6 +97,19 @@ async def create_awg_config(tg_id: int, client_name: str = None) -> dict:
             "client_ip": client_ip, "config": config_text}
 
 
+def _get_dynamic_remark(expires_at: datetime) -> str:
+    """Генерирует понятный Remark: '🐿 TIIN | до 25.05'"""
+    if not expires_at:
+        return "🐿 TIIN | Безлимит"
+    
+    # Считаем дни до истечения
+    days_left = (expires_at - datetime.now(timezone.utc)).days
+    if days_left < 0:
+        return "🐿 TIIN | Истекла"
+    
+    return f"🐿 TIIN | осталось {max(days_left, 1)} дн."
+
+
 async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) -> dict:
     """
     Создаёт VLESS и Hysteria клиентов через XUI с единым subId.
@@ -116,6 +129,7 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
     raw_end = datetime.now(timezone.utc) + timedelta(days=days_to_add)
     end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
     expiry_ms = int(end_tokyo.timestamp() * 1000)
+    expires_at = end_tokyo.astimezone(timezone.utc)
 
     # 1. Создаем VLESS (основной)
     res_vless = xui.add_client(
@@ -131,14 +145,17 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
     sub_id = res_vless["subId"]
 
     # 2. Создаем Hysteria (дополнительный) с тем же sub_id и паролем
+    # Используем суффикс _h для email, так как email должен быть уникальным
     xui.add_client(
         inbound_id=int(HYSTERIA_INBOUND_ID),
-        email=client_email,
+        email=f"{client_email}_h",
         tg_id=tg_id,
         uuid=client_uuid, # Пароль для Hysteria такой же как UUID VLESS
         expiry_time=expiry_ms,
         sub_id=sub_id
     )
+
+    dynamic_remark = _get_dynamic_remark(expires_at)
 
     vless_link = generate_vless_link(
         client_id=client_uuid,
@@ -151,19 +168,17 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
         sni=VLESS_SNI,
         fp="chrome",
         spx="/",
-        remark=f"🐿 TIIN | VLESS",
+        remark=dynamic_remark,
     )
 
     hysteria_link = generate_hysteria2_link(
         auth=client_uuid,
         domain=VLESS_DOMAIN,
         port=HYSTERIA_PORT,
-        client_name=client_email,
+        client_name=dynamic_remark,
         sni=HYSTERIA_SNI,
         insecure=0
     )
-
-    expires_at = end_tokyo.astimezone(timezone.utc)
 
     return {
         "client_email": client_email, 
@@ -182,19 +197,18 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
 async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | None:
     """
     Выдаёт или продлевает VPN за реферальную награду.
-    Если у пользователя есть активный VLESS конфиг — продлевает его.
-    Если нет — создаёт новый.
+    Если у пользователя есть активный XUI конфиг — продлевает его в обоих инбаундах.
+    Если нет — создаёт новый (VLESS + Hysteria).
     Возвращает dict с информацией о конфиге или None при ошибке.
     """
     try:
         duration_ms = days * 86400 * 1000
-        inbound_id = int(VLESS_INBOUND_ID)
 
-        # Check for existing active config
+        # Check for existing active config (usually found in VLESS inbound)
         existing = xui.get_client_by_tg_id(tg_id)
 
         if existing:
-            # Extend existing client
+            # Продлеваем основной (VLESS)
             result = xui.extend_client_expiry(
                 existing['inbound_id'],
                 existing['client'],
@@ -204,6 +218,17 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
                 logger.error(f"Failed to extend referral VPN for {tg_id}")
                 return None
 
+            # Продлеваем дополнительный (Hysteria), если есть
+            hysteria_inbound_id = xui.get_hysteria_inbound_id()
+            hysteria_client = xui.get_client_by_email(f"{existing['client']['email']}_h")
+            # Мы ищем по email с суффиксом _h
+            if hysteria_client and hysteria_client['inbound_id'] == hysteria_inbound_id:
+                 xui.extend_client_expiry(
+                    hysteria_inbound_id,
+                    hysteria_client['client'],
+                    duration_ms,
+                )
+
             # Sync new expiry (result is new_expiry_ms) to MySQL
             new_expiry_ms = result
             new_expiry_dt = datetime.fromtimestamp(new_expiry_ms / 1000, tz=timezone.utc)
@@ -212,57 +237,25 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
             logger.info(f"Referral: extended VPN for {tg_id} by {days} days")
             return {"action": "extended", "days": days}
 
-        # No existing config — create new VLESS
-        client_email = f"tiin_{tg_id}"
-        client_uuid = str(uuid.uuid4())
-        tz_tokyo = timezone(timedelta(hours=9))
-        raw_end = datetime.now(timezone.utc) + timedelta(days=days)
-        end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
-        expiry_ms = int(end_tokyo.timestamp() * 1000)
-
-        success = xui.add_client(
-            inbound_id=inbound_id,
-            email=client_email,
-            tg_id=tg_id,
-            uuid=client_uuid,
-            expiry_time=expiry_ms,
-            total_gb=0,
-            limit_ip=10,
-        )
-        if not success:
-            logger.error(f"Failed to create referral VPN for {tg_id}")
-            return None
-
-        vless_link = generate_vless_link(
-            client_id=client_uuid,
-            domain=VLESS_DOMAIN,
-            port=VLESS_PORT,
-            path=VLESS_PATH,
-            client_name=client_email,
-            pbk=VLESS_PBK,
-            sid=VLESS_SID,
-            sni=VLESS_SNI,
-            fp="chrome",
-            spx="/",
-            remark=f"🇩🇪 {SERVER_LOCATION} | VLESS",
-        )
-
+        # No existing config — create new Multi-protocol
+        data = await create_xui_multi_config(tg_id, xui, days=days)
+        
         sub_url = xui.get_client_subscription_url(tg_id)
-        expires_at = end_tokyo.astimezone(timezone.utc)
+        expires_at = data["expires_at"]
 
         create_vpn_key(
             tg_id=tg_id, payment_id=None,
-            client_id=client_uuid, client_name=client_email,
+            client_id=data["client_uuid"], client_name=data["client_email"],
             client_ip=None, client_public_key=None,
-            vless_link=vless_link, expires_at=expires_at, vpn_type="vless",
+            vless_link=data["vless_link"], expires_at=expires_at, vpn_type="vless",
             subscription_link=sub_url,
         )
 
         # Sync expiry to users.subscription_until + vpn_keys
         sync_expiry(tg_id, expires_at)
 
-        logger.info(f"Referral: created new VPN for {tg_id}, {days} days")
-        return {"action": "created", "days": days, "vless_link": vless_link, "sub_url": sub_url}
+        logger.info(f"Referral: created new Multi-VPN for {tg_id}, {days} days")
+        return {"action": "created", "days": days, "vless_link": data["vless_link"], "sub_url": sub_url}
 
     except Exception as e:
         logger.error(f"Referral VPN grant error for {tg_id}: {e}", exc_info=True)
@@ -509,7 +502,7 @@ async def handle_test_vless(query, xui: XUIClient):
             tg_id=tg_id, payment_id=None,
             client_id=data["client_uuid"], client_name=data["client_email"],
             client_ip=None, client_public_key=None,
-            vless_link=data["vless_link"], expires_at=data["expires_at"], vpn_type="vless",
+            vless_link=data["vless_link"], hysteria_link=data["hysteria_link"], expires_at=data["expires_at"], vpn_type="vless",
             subscription_link=sub_url,
         )
         bio = make_qr_bytes(sub_url)
@@ -553,7 +546,7 @@ async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
             tg_id=tg_id, payment_id=None,
             client_id=data["client_uuid"], client_name=data["client_email"],
             client_ip=None, client_public_key=None,
-            vless_link=data["vless_link"], expires_at=data["expires_at"], vpn_type="vless",
+            vless_link=data["vless_link"], hysteria_link=data["hysteria_link"], expires_at=data["expires_at"], vpn_type="vless",
             subscription_link=sub_url,
         )
         set_vless_test_activated(tg_id)

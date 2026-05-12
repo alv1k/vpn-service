@@ -417,8 +417,10 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
             # ===== Создаем/продлеваем клиента в 3x-ui (Hysteria) =====
             # Мы используем тот же client_id (UUID) и sub_id
-            existing_hysteria = xui.get_client_by_email(client_name)
-            # Если клиент уже есть в каком-то инбаунде с этим email, проверим hysteria
+            # Используем суффикс _h для уникальности email
+            hysteria_email = f"{client_name}_h"
+            existing_hysteria = xui.get_client_by_email(hysteria_email)
+            
             if existing_hysteria and existing_hysteria['inbound_id'] == hysteria_inbound_id:
                 import time as _time
                 now_ms = int(_time.time() * 1000)
@@ -432,7 +434,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 # Добавляем в hysteria inbound
                 xui.add_client(
                     inbound_id=hysteria_inbound_id,
-                    email=client_name,
+                    email=hysteria_email,
                     tg_id=tg_id,
                     uuid=client_id,
                     expiry_time=expiry_time,
