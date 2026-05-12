@@ -612,6 +612,7 @@ def create_vpn_key(
     client_ip: str,
     client_public_key: str,
     vless_link: str = None,
+    hysteria_link: str = None,
     expires_at=None,
     vpn_type: str = 'awg',
     subscription_link: str = None,
@@ -622,13 +623,22 @@ def create_vpn_key(
     execute_query(
         """
         INSERT INTO vpn_keys
-            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
+            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, hysteria_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
+        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, hysteria_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
     )
     logger.debug("create_vpn_key done")
+
+
+def get_hysteria_link_by_tg_id(tg_id: int) -> str | None:
+    """Получает Hysteria конфиг из vpn_keys."""
+    row = execute_query(
+        "SELECT hysteria_link FROM vpn_keys WHERE tg_id = %s AND hysteria_link IS NOT NULL ORDER BY expires_at DESC LIMIT 1",
+        (tg_id,), fetch='one'
+    )
+    return row['hysteria_link'] if row else None
 
 
 def get_keys_by_tg_id(tg_id: int) -> list[dict]:

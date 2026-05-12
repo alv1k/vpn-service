@@ -177,30 +177,44 @@ class XUIClient:
         logger.info(f"Client with tg_id={tg_id} not found, creating new")
         return self.add_client(inbound_id, email, tg_id, uuid, expiry_time, total_gb, limit_ip)
 
-    def add_client(self, inbound_id, email, tg_id, uuid, expiry_time=0, total_gb=0, limit_ip=10):
-        """Добавить клиента в inbound"""
+    def add_client(self, inbound_id, email, tg_id, uuid, expiry_time=0, total_gb=0, limit_ip=10, sub_id=None):
+        """Добавить клиента в inbound с учетом протокола (VLESS или Hysteria)"""
         import uuid as uuid_lib
+        
+        # 1. Сначала узнаем протокол инбаунда
+        protocol = "vless"
+        for ib in self.get_inbounds():
+            if ib['id'] == inbound_id:
+                protocol = ib.get('protocol', 'vless').lower()
+                break
+
+        final_sub_id = sub_id or str(uuid_lib.uuid4()).replace('-', '')[:16]
+        
+        # 2. Формируем данные клиента в зависимости от протокола
+        client_obj = {
+            "email": email,
+            "limitIp": limit_ip,
+            "totalGB": total_gb,
+            "expiryTime": expiry_time,
+            "enable": True,
+            "tgId": tg_id,
+            "subId": final_sub_id,
+            "reset": 0
+        }
+
+        if protocol == "hysteria":
+            client_obj["auth"] = uuid # Для Hysteria ID — это auth (password)
+        else:
+            client_obj["id"] = uuid
+            client_obj["flow"] = "xtls-rprx-vision"
         
         client_data = {
             "id": inbound_id,
-            "settings": json.dumps({
-                "clients": [{
-                    "id": uuid,
-                    "flow": "xtls-rprx-vision",
-                    "email": email,
-                    "limitIp": limit_ip,
-                    "totalGB": total_gb,
-                    "expiryTime": expiry_time,
-                    "enable": True,
-                    "tgId": tg_id,
-                    "subId": str(uuid_lib.uuid4()).replace('-', '')[:16],
-                    "reset": 0
-                }]
-            })
+            "settings": json.dumps({"clients": [client_obj]})
         }
         
         try:
-            logger.info(f"Sending addClient request to: {self.host}/panel/api/inbounds/addClient")
+            logger.info(f"Sending addClient request ({protocol}) to: {self.host}/panel/api/inbounds/addClient")
             
             response = self._request(
                 "POST",
@@ -211,11 +225,22 @@ class XUIClient:
             
             result = response.json()
             logger.info(f"api Response: {result}")
-            return result.get('success', False)
+            if result.get('success', False):
+                return {"success": True, "subId": final_sub_id}
+            return {"success": False, "msg": result.get('msg')}
             
         except Exception as e:
             logger.error(f"Error adding client: {e}")
-            return False
+            return {"success": False}
+
+    def get_hysteria_inbound_id(self, fallback_id: int = 4) -> int:
+        """Find the first Hysteria inbound id dynamically."""
+        for inbound in self.get_inbounds():
+            protocol = inbound.get('protocol', '')
+            if protocol == 'hysteria':
+                return inbound['id']
+        logger.warning(f"No Hysteria inbound found, using fallback={fallback_id}")
+        return fallback_id
 
     def deactivate_client(self, inbound_id, client):
         """Отключить клиента (enable=false)"""
