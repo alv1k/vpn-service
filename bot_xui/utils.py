@@ -337,9 +337,19 @@ def generate_vless_link(
         f"&flow=xtls-rprx-vision"
     )
 
-    # display_name = remark or client_name
     display_name = client_name
     return f"vless://{client_id}@{domain}:{port}?{params}#{quote(display_name)}"
+
+def generate_hysteria2_link(
+    auth: str, # Password
+    domain: str,
+    port: int,
+    client_name: str,
+    sni: str,
+    insecure: int = 0,
+) -> str:
+    from urllib.parse import quote
+    return f"hysteria2://{auth}@{domain}:{port}?sni={sni}&insecure={insecure}#{quote(client_name)}"
 
 def get_amneziawg_config(client_email):
     """Получить конфиг AmneziaWG (native AWG 2.0)"""

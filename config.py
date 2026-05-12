@@ -56,6 +56,11 @@ VLESS_SID_LIST = [s.strip() for s in _VLESS_SID_RAW.split(",") if s.strip()]
 VLESS_SID = VLESS_SID_LIST[0] if VLESS_SID_LIST else ""
 VLESS_SNI = os.getenv("VLESS_SNI")
 
+# Hysteria 2 настройки
+HYSTERIA_PORT = int(os.getenv("HYSTERIA_PORT", "54321"))
+HYSTERIA_SNI = os.getenv("HYSTERIA_SNI") or VLESS_SNI or VLESS_DOMAIN
+HYSTERIA_INBOUND_ID = int(os.getenv("HYSTERIA_INBOUND_ID", "4"))
+
 # Server location (for display in client apps)
 SERVER_LOCATION = os.getenv("SERVER_LOCATION", "Germany")
 
@@ -118,6 +123,10 @@ _REQUIRED_VARS = {
         "VLESS_PBK": VLESS_PBK,
         "VLESS_SID": VLESS_SID,
         "VLESS_SNI": VLESS_SNI,
+    },
+    "Hysteria": {
+        "HYSTERIA_PORT": HYSTERIA_PORT,
+        "HYSTERIA_SNI": HYSTERIA_SNI,
     },
 }
 

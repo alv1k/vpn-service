@@ -350,6 +350,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             client_id = str(uuid.uuid4())
             
             inbound_id = xui.get_vless_reality_inbound_id(fallback_id=int(VLESS_INBOUND_ID))
+            hysteria_inbound_id = xui.get_hysteria_inbound_id()
             
             # Время истечения — 23:59:59 Tokyo последнего дня
             duration_days = TARIFFS[tariff_key].get('days', 30)
@@ -358,14 +359,16 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
             expiry_time = int(end_tokyo.timestamp() * 1000)
             
-            # ===== Создаем/продлеваем клиента в 3x-ui =====
+            # ===== Создаем/продлеваем клиента в 3x-ui (VLESS) =====
+            sub_id = None
             if tg_id and tg_id != 0:
                 existing = xui.get_client_by_tg_id(tg_id)
                 if existing:
                     client_id = existing['client']['id']
+                    sub_id = existing['client'].get('subId')
                     logger.info(f"Existing client found, reusing uuid: {client_id}")
 
-                success = xui.add_or_extend_client(
+                res_vless = xui.add_or_extend_client(
                     inbound_id=inbound_id,
                     email=client_name,
                     tg_id=tg_id,
@@ -374,24 +377,30 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     total_gb=0,
                     limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
                 )
+                # add_or_extend returns expiryTime on success or bool
+                success = bool(res_vless)
+                if not sub_id:
+                    # After add, try to find sub_id
+                    updated = xui.get_client_by_tg_id(tg_id)
+                    sub_id = updated['client'].get('subId') if updated else None
             else:
                 # Web user without tg_id — check for existing client by email
                 existing_web = xui.get_client_by_email(client_name)
                 if existing_web:
                     client_id = existing_web['client']['id']
+                    sub_id = existing_web['client'].get('subId')
                     logger.info(f"Existing web client found, reusing uuid: {client_id}")
-                    # Extend expiry
                     import time as _time
                     now_ms = int(_time.time() * 1000)
                     duration_ms = expiry_time - now_ms
-                    success = xui.extend_client_expiry(
+                    success = bool(xui.extend_client_expiry(
                         existing_web['inbound_id'],
                         existing_web['client'],
                         duration_ms,
-                    )
+                    ))
                 else:
                     logger.info(f"Web user (no tg_id), creating new VLESS client")
-                    success = xui.add_client(
+                    res_add = xui.add_client(
                         inbound_id=inbound_id,
                         email=client_name,
                         tg_id=0,
@@ -400,29 +409,48 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                         total_gb=0,
                         limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
                     )
+                    success = res_add.get("success")
+                    sub_id = res_add.get("subId")
             
             if not success:
-                raise RuntimeError("Failed to create VLESS client")
-            
-            # ===== ПОЛУЧАЕМ / ГЕНЕРИРУЕМ subId ДЛЯ ПОДПИСКИ =====
-            sub_id = get_subid_from_xui_db(client_name)   # функция для чтения subId из БД 3x-ui
-            if not sub_id:
-                # Если subId нет (баг API 3x-ui), генерируем сами и пишем прямо в БД
-                import secrets
-                sub_id = secrets.token_hex(8)   # 16 hex-символов (0-9a-f)
-                conn = sqlite3.connect("/home/alvik/vpn-service/x-ui-db/x-ui.db")
-                # conn.execute("UPDATE client_traffics SET subId = ? WHERE email = ?", (sub_id, client_name))
-                conn.commit()
-                conn.close()
-                logger.info(f"Generated and saved subId for {client_name}: {sub_id}")
+                raise RuntimeError("Failed to create/extend VLESS client")
+
+            # ===== Создаем/продлеваем клиента в 3x-ui (Hysteria) =====
+            # Мы используем тот же client_id (UUID) и sub_id
+            existing_hysteria = xui.get_client_by_email(client_name)
+            # Если клиент уже есть в каком-то инбаунде с этим email, проверим hysteria
+            if existing_hysteria and existing_hysteria['inbound_id'] == hysteria_inbound_id:
+                import time as _time
+                now_ms = int(_time.time() * 1000)
+                duration_ms = expiry_time - now_ms
+                xui.extend_client_expiry(
+                    hysteria_inbound_id,
+                    existing_hysteria['client'],
+                    duration_ms
+                )
             else:
-                logger.info(f"Found existing subId for {client_name}: {sub_id}")
+                # Добавляем в hysteria inbound
+                xui.add_client(
+                    inbound_id=hysteria_inbound_id,
+                    email=client_name,
+                    tg_id=tg_id,
+                    uuid=client_id,
+                    expiry_time=expiry_time,
+                    sub_id=sub_id
+                )
+            
+            # ===== ПОЛУЧАЕМ / ГЕНЕРИРУЕМ subId ДЛЯ ПОДПИСКИ (Fallback) =====
+            if not sub_id:
+                sub_id = get_subid_from_xui_db(client_name)
+            
+            if not sub_id:
+                import secrets
+                sub_id = secrets.token_hex(8)
+                logger.warning(f"subId still missing for {client_name}, using random fallback: {sub_id}")
 
             # Формируем правильную ссылку для пользователя (через Nginx, без порта)
             user_sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}"
-
-            # Сохраняем sub_url (прямая ссылка 3x-ui, может не работать, но оставим для резерва)
-            sub_url = user_sub_url   # или можно оставить как было, но user_sub_url теперь правильный
+            sub_url = user_sub_url
             
             # Генерируем VLESS ссылку
             client_config = generate_vless_link(
@@ -436,7 +464,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 sni=VLESS_SNI,
                 fp="chrome",
                 spx="/",
-                remark=f"🇩🇪 {SERVER_LOCATION} | VLESS",
+                remark=f"🐿 TIIN | VLESS",
             )
             
             # Получаем subscription URL (XUI) — храним в БД как источник для прокси

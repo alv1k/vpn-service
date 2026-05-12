@@ -17,10 +17,11 @@ from config import (
     AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD,
     VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
     VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+    HYSTERIA_PORT, HYSTERIA_SNI, HYSTERIA_INBOUND_ID,
     SOFTETHER_CONNECT_HOST, SOFTETHER_CONNECT_PORT, SOFTETHER_HUB,
     SERVER_LOCATION,
 )
-from bot_xui.utils import XUIClient, generate_vless_link
+from bot_xui.utils import XUIClient, generate_vless_link, generate_hysteria2_link
 from bot_xui.helpers import make_back_keyboard
 from bot_xui import softether
 from bot_xui.tariffs import TARIFFS
@@ -96,31 +97,48 @@ async def create_awg_config(tg_id: int, client_name: str = None) -> dict:
             "client_ip": client_ip, "config": config_text}
 
 
-async def create_vless_config(tg_id: int, xui: XUIClient) -> dict:
+async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) -> dict:
     """
-    Создаёт VLESS-клиента через XUI и возвращает dict с полями:
-        client_email, client_uuid, vless_link, expires_at
-    Бросает RuntimeError при любой ошибке.
+    Создаёт VLESS и Hysteria клиентов через XUI с единым subId.
+    Возвращает dict с полями:
+        client_email, client_uuid, vless_link, hysteria_link, expires_at
+    Бросает RuntimeError при критической ошибке (VLESS).
     """
     client_email = f"tiin_{tg_id}"
     client_uuid = str(uuid.uuid4())
     tz_tokyo = timezone(timedelta(hours=9))
-    raw_end = datetime.now(timezone.utc) + timedelta(hours=TARIFFS["test_24h"]["hours"])
+    
+    if days is None:
+        days_to_add = TARIFFS["test_24h"]["hours"] / 24
+    else:
+        days_to_add = days
+        
+    raw_end = datetime.now(timezone.utc) + timedelta(days=days_to_add)
     end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
     expiry_ms = int(end_tokyo.timestamp() * 1000)
-    inbound_id = int(VLESS_INBOUND_ID)
 
-    success = xui.add_client(
-        inbound_id=inbound_id,
+    # 1. Создаем VLESS (основной)
+    res_vless = xui.add_client(
+        inbound_id=int(VLESS_INBOUND_ID),
         email=client_email,
         tg_id=tg_id,
         uuid=client_uuid,
         expiry_time=expiry_ms,
-        total_gb=0,
-        limit_ip=10,
     )
-    if not success:
+    if not res_vless.get("success"):
         raise RuntimeError("Не удалось создать VLESS клиента")
+
+    sub_id = res_vless["subId"]
+
+    # 2. Создаем Hysteria (дополнительный) с тем же sub_id и паролем
+    xui.add_client(
+        inbound_id=int(HYSTERIA_INBOUND_ID),
+        email=client_email,
+        tg_id=tg_id,
+        uuid=client_uuid, # Пароль для Hysteria такой же как UUID VLESS
+        expiry_time=expiry_ms,
+        sub_id=sub_id
+    )
 
     vless_link = generate_vless_link(
         client_id=client_uuid,
@@ -133,13 +151,28 @@ async def create_vless_config(tg_id: int, xui: XUIClient) -> dict:
         sni=VLESS_SNI,
         fp="chrome",
         spx="/",
-        remark=f"🇩🇪 {SERVER_LOCATION} | VLESS",
+        remark=f"🐿 TIIN | VLESS",
+    )
+
+    hysteria_link = generate_hysteria2_link(
+        auth=client_uuid,
+        domain=VLESS_DOMAIN,
+        port=HYSTERIA_PORT,
+        client_name=client_email,
+        sni=HYSTERIA_SNI,
+        insecure=0
     )
 
     expires_at = end_tokyo.astimezone(timezone.utc)
 
-    return {"client_email": client_email, "client_uuid": client_uuid,
-            "vless_link": vless_link, "expires_at": expires_at}
+    return {
+        "client_email": client_email, 
+        "client_uuid": client_uuid,
+        "vless_link": vless_link, 
+        "hysteria_link": hysteria_link,
+        "expires_at": expires_at,
+        "sub_id": sub_id
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -460,18 +493,17 @@ async def handle_get_softether_config(query):
 
 
 async def handle_test_vless(query, xui: XUIClient):
-    """Создаёт тестовый VLESS конфиг и отправляет пользователю."""
+    """Создаёт тестовый VLESS+Hysteria конфиг и отправляет пользователю."""
     tg_id = query.from_user.id
     if is_vless_test_activated(tg_id):
         from bot_xui.views import show_configs
         await show_configs(query, xui)
         return
-    await query.edit_message_text("⏳ Создаю тестовый VLESS конфиг...")
+    await query.edit_message_text("⏳ Создаю тестовый конфиг (VLESS + Hysteria)...")
 
     try:
-        data = await create_vless_config(tg_id, xui)
+        data = await create_xui_multi_config(tg_id, xui)
         sub_url = xui.get_client_subscription_url(tg_id)
-        # web_token_url = get_web_token(tg_id)
 
         create_vpn_key(
             tg_id=tg_id, payment_id=None,
@@ -485,8 +517,10 @@ async def handle_test_vless(query, xui: XUIClient):
         await query.message.reply_photo(
             photo=bio,
             caption=(
-                f"🟢 <b>Тестовый VLESS конфиг</b>\n\n"
-                f"👤 ID: {data['client_email']}\n"
+                f"🚀 <b>Тестовый период активирован!</b>\n\n"
+                f"Мы подключили вам сразу два протокола:\n"
+                f"🟢 <b>VLESS</b> — для обычной работы\n"
+                f"🚀 <b>Hysteria 2</b> — для обхода жестких блокировок\n\n"
                 f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
                 f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>\n\n'
                 f"💬 Поддержка: кнопка «Написать нам» в меню"
@@ -498,7 +532,7 @@ async def handle_test_vless(query, xui: XUIClient):
 
 
     except Exception as e:
-        logger.error(f"VLESS config error: {e}")
+        logger.error(f"XUI multi-config error: {e}")
         await query.message.reply_text(
             "❌ Ошибка создания конфига\n\nПопробуйте позже.",
             reply_markup=InlineKeyboardMarkup([
@@ -509,14 +543,11 @@ async def handle_test_vless(query, xui: XUIClient):
 
 async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
     """
-    Создаёт тестовый VLESS-конфиг, если пользователь ещё не активировал тест.
-    Возвращает dict с данными конфига (client_email, client_uuid, vless_link,
-    expires_at, sub_url) или None, если тест уже активирован либо возникла ошибка.
+    Создаёт тестовый Multi-XUI-конфиг, если пользователь ещё не активировал тест.
+    Возвращает dict с данными конфига или None, если тест уже активирован либо возникла ошибка.
     """
-    # if is_vless_test_activated(tg_id):
-    #     return None
     try:
-        data = await create_vless_config(tg_id, xui)
+        data = await create_xui_multi_config(tg_id, xui)
         sub_url = xui.get_client_subscription_url(tg_id)
         create_vpn_key(
             tg_id=tg_id, payment_id=None,
@@ -526,10 +557,10 @@ async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
             subscription_link=sub_url,
         )
         set_vless_test_activated(tg_id)
-        logger.info(f"Auto-granted test VLESS for tg_id={tg_id}")
+        logger.info(f"Auto-granted test Multi-XUI for tg_id={tg_id}")
         return {**data, "sub_url": sub_url}
     except Exception as e:
-        logger.error(f"Auto-grant test VLESS failed for {tg_id}: {e}")
+        logger.error(f"Auto-grant test Multi-XUI failed for {tg_id}: {e}")
         return None
 
 
