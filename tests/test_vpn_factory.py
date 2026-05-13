@@ -43,7 +43,7 @@ class TestCreateVlessConfig:
         assert len(result["client_uuid"]) == 36  # UUID format
         assert result["vless_link"] == "vless://fake"
         assert isinstance(result["expires_at"], datetime)
-        xui.add_client.assert_called_once()
+        assert xui.add_client.call_count == 2
 
     @pytest.mark.asyncio
     async def test_xui_failure_raises(self):
@@ -148,19 +148,21 @@ class TestGrantReferralVpn:
     @patch("bot_xui.vpn_factory.create_vpn_key")
     @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://ref")
     async def test_create_new(self, mock_gen, mock_create_key, mock_sync):
-        """Creates new VLESS config when user has no existing config."""
+        """Creates new VLESS+Hysteria config when user has no existing config."""
         from bot_xui.vpn_factory import grant_referral_vpn
 
         xui = MagicMock()
         xui.get_client_by_tg_id.return_value = None
-        xui.add_client.return_value = True
-        xui.get_client_subscription_url.return_value = "https://sub/url"
+        xui.add_client.return_value = {"success": True, "subId": "url"}
+        xui.get_subscription_url_by_uuid.return_value = "https://sub/url"
+        xui.get_hysteria_inbound_id.return_value = 4
 
         result = await grant_referral_vpn(tg_id=200, days=3, xui=xui)
 
         assert result["action"] == "created"
         assert result["vless_link"] == "vless://ref"
-        xui.add_client.assert_called_once()
+        # 2 вызова add_client: VLESS и Hysteria
+        assert xui.add_client.call_count == 2
         mock_create_key.assert_called_once()
 
     @pytest.mark.asyncio
@@ -198,7 +200,7 @@ class TestHandleTestVless:
     @patch("bot_xui.vpn_factory.set_vless_test_activated")
     @patch("bot_xui.vpn_factory.create_vpn_key")
     @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
-    @patch("bot_xui.vpn_factory.create_vless_config")
+    @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_success(self, mock_is_act, mock_create, mock_qr,
                            mock_key, mock_set_act, mock_token):
@@ -207,7 +209,7 @@ class TestHandleTestVless:
 
         mock_create.return_value = {
             "client_email": "tiin_111", "client_uuid": "uuid-1",
-            "vless_link": "vless://test", "expires_at": datetime.now(timezone.utc),
+            "vless_link": "vless://test", "hysteria_link": "hysteria://test", "expires_at": datetime.now(timezone.utc),
         }
 
         query = MagicMock()
@@ -220,7 +222,7 @@ class TestHandleTestVless:
 
         await handle_test_vless(query, xui)
 
-        mock_create.assert_called_once_with(111, xui)
+        mock_create.assert_called_once()
         mock_key.assert_called_once()
         mock_set_act.assert_called_once_with(111)
         query.message.reply_photo.assert_called_once()
