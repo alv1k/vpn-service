@@ -462,8 +462,10 @@ class SiteEvent(BaseModel):
 @web_api_router.post("/event")
 async def track_event(body: SiteEvent, request: Request):
     if body.event not in ALLOWED_EVENTS:
+        logger.warning(f"Invalid event received: {body.event} from {request.client.host}")
         raise HTTPException(400, "Unknown event")
     if not body.visitor_id or len(body.visitor_id) > 64:
+        logger.warning(f"Invalid visitor_id received: {body.visitor_id} from {request.client.host}")
         raise HTTPException(400, "Bad visitor_id")
 
     ip = request.headers.get("x-real-ip", request.client.host)

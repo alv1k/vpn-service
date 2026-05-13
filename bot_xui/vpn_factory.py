@@ -132,13 +132,26 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
     expires_at = end_tokyo.astimezone(timezone.utc)
 
     # 1. Создаем VLESS (основной)
-    res_vless = xui.add_client(
+    res_vless_raw = xui.add_client(
         inbound_id=int(VLESS_INBOUND_ID),
         email=client_email,
         tg_id=tg_id,
         uuid=client_uuid,
         expiry_time=expiry_ms,
     )
+    # Преобразуем boolean результат в словарь для совместимости
+    if isinstance(res_vless_raw, dict):
+        res_vless = res_vless_raw
+    else:
+        # Если метод вернул True (как раньше), пробуем найти subId через sub_url
+        if res_vless_raw:
+             # Это fallback для старых версий add_client, которые возвращали True
+             sub_url = xui.get_client_subscription_url(tg_id)
+             sub_id = sub_url.split('/')[-1] if sub_url else "legacy_sub"
+             res_vless = {"success": True, "subId": sub_id}
+        else:
+             res_vless = {"success": False}
+             
     if not res_vless.get("success"):
         raise RuntimeError("Не удалось создать VLESS клиента")
 
@@ -194,6 +207,17 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
 # Referral VPN reward
 # ──────────────────────────────────────────────────────────────────────────────
 
+async def create_vless_config(tg_id: int, xui: XUIClient) -> dict:
+    """Обертка для обратной совместимости старых тестов."""
+    data = await create_xui_multi_config(tg_id, xui)
+    return {
+        "client_email": data["client_email"],
+        "client_uuid": data["client_uuid"],
+        "vless_link": data["vless_link"],
+        "expires_at": data["expires_at"]
+    }
+
+
 async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | None:
     """
     Выдаёт или продлевает VPN за реферальную награду.
@@ -239,6 +263,8 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
 
         # No existing config — create new Multi-protocol
         data = await create_xui_multi_config(tg_id, xui, days=days)
+        if not data:
+            return None
         
         sub_url = xui.get_client_subscription_url(tg_id)
         expires_at = data["expires_at"]

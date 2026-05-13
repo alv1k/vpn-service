@@ -12,10 +12,11 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from db import (
+from api.db import (
     get_user_by_web_token,
     get_keys_by_tg_id,
     get_keys_by_user_id,
+    get_hysteria_link_by_tg_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,52 +65,53 @@ def _pick_vless_key(user: dict) -> dict | None:
 async def _fetch_xui(url: str) -> bytes:
     """Получает подписку из XUI."""
     async with httpx.AsyncClient(timeout=10, verify=False) as client:
-        from db import (
-            get_user_by_web_token,
-            get_keys_by_tg_id,
-            get_keys_by_user_id,
-            get_hysteria_link_by_tg_id,
-        )
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.content
 
-        # ... (rest of code) ...
 
-        @sub_router.get("/sub/{token}")
-        async def proxy_subscription(token: str):
-            user = get_user_by_web_token(token)
-            if not user:
-                raise HTTPException(status_code=404, detail="Not found")
+@sub_router.get("/sub/{token}")
+async def proxy_subscription(token: str):
+    """Эндпоинт подписки – проксирует ответ от XUI и склеивает с Hysteria."""
+    user = get_user_by_web_token(token)
+    if not user:
+        raise HTTPException(status_code=404, detail="Not found")
 
-            key = _pick_vless_key(user)
-            if not key:
-                raise HTTPException(status_code=404, detail="No active subscription")
+    key = _pick_vless_key(user)
+    if not key:
+        raise HTTPException(status_code=404, detail="No active subscription")
 
-            xui_url = key["subscription_link"]
-            expires_at = key.get("expires_at")
+    xui_url = key["subscription_link"]
+    expires_at = key.get("expires_at")
 
-            now = time.time()
-            async with _CACHE_LOCK:
-                cached = _CACHE.get(token)
-                if cached and (now - cached[0]) < SUB_CACHE_TTL:
-                    logger.debug(f"sub_proxy: serving cached for {token[:8]}…")
-                    return Response(content=cached[1], headers=cached[2])
+    now = time.time()
+    async with _CACHE_LOCK:
+        cached = _CACHE.get(token)
+        if cached and (now - cached[0]) < SUB_CACHE_TTL:
+            return Response(content=cached[1], headers=cached[2])
 
-            try:
-                raw_body = await _fetch_xui(xui_url)
+    try:
+        raw_body = await _fetch_xui(xui_url)
 
-                # Склейка с Hysteria
-                try:
-                    decoded_sub = base64.b64decode(raw_body).decode('utf-8')
-                except:
-                    decoded_sub = raw_body.decode('utf-8')
+        # Склейка с Hysteria
+        try:
+            decoded_sub = base64.b64decode(raw_body).decode('utf-8')
+        except:
+            decoded_sub = raw_body.decode('utf-8')
 
-                h_link = get_hysteria_link_by_tg_id(user['tg_id'])
-                if h_link:
-                    decoded_sub += "\n" + h_link
-                    raw_body = base64.b64encode(decoded_sub.encode('utf-8'))
+        h_link = get_hysteria_link_by_tg_id(user['tg_id'])
+        if h_link:
+            decoded_sub += "\n" + h_link
+            raw_body = base64.b64encode(decoded_sub.encode('utf-8'))
 
-            except Exception as e:
-                logger.error(f"sub_proxy: XUI fetch failed for {token[:8]}…: {e}")
-                # ... (error handling remains the same)
+    except Exception as e:
+        logger.error(f"sub_proxy: XUI fetch failed for {token[:8]}…: {e}")
+        cached = _CACHE.get(token)
+        if cached:
+            return Response(content=cached[1], headers=cached[2])
+        raise HTTPException(status_code=503, detail="Upstream unavailable")
+
+    headers = _build_headers(expires_at)
 
     async with _CACHE_LOCK:
         _CACHE[token] = (now, raw_body, headers)

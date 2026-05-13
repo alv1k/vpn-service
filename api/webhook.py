@@ -330,6 +330,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         sub_url = None
         user_sub_url = None
         se_data = {}
+        hysteria_link = None
 
         # ===== 5. Создание конфига в зависимости от типа VPN =====
         if vpn_type == "vless":
@@ -617,6 +618,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             client_ip=client_ip,
             client_public_key=client_public_key,
             vless_link=client_config,
+            hysteria_link=hysteria_link,
             expires_at=subscription_until,
             vpn_type=vpn_type,
             subscription_link=sub_url,

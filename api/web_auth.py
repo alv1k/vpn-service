@@ -101,7 +101,9 @@ def _get_current_user(request: Request) -> dict:
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             token = auth[7:]
+    
     if not token:
+        logger.warning(f"Auth failed: missing token from {request.client.host}")
         raise HTTPException(401, "Необходима авторизация")
 
     session = execute_query(
@@ -109,6 +111,7 @@ def _get_current_user(request: Request) -> dict:
         (token,), fetch='one',
     )
     if not session:
+        logger.warning(f"Auth failed: session expired or invalid for token {token[:8]}... from {request.client.host}")
         raise HTTPException(401, "Сессия истекла")
 
     user = execute_query(
@@ -116,6 +119,7 @@ def _get_current_user(request: Request) -> dict:
         (session['user_id'],), fetch='one',
     )
     if not user:
+        logger.error(f"Auth failed: user not found for session user_id={session['user_id']} from {request.client.host}")
         raise HTTPException(401, "Пользователь не найден")
     return user
 
