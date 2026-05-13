@@ -348,6 +348,8 @@ async def activate_test(req: TestActivateRequest):
 
     try:
         xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        
+        # 1. Register VLESS
         success = xui.add_client(
             inbound_id=inbound_id,
             email=client_email,
@@ -358,8 +360,21 @@ async def activate_test(req: TestActivateRequest):
             limit_ip=TARIFFS["test_24h"]["device_limit"],
         )
         if not success:
-            raise RuntimeError("add_client returned False")
-    except Exception:
+            raise RuntimeError("add_vless_client returned False")
+        
+        # 2. Register Hysteria v2
+        hysteria_inbound_id = xui.get_hysteria_inbound_id()
+        xui.add_client(
+            inbound_id=hysteria_inbound_id,
+            email=f"{client_email}_h",
+            tg_id=0,
+            uuid=client_uuid,
+            expiry_time=expiry_ms,
+            sub_id=None # sub_id will be managed by VLESS
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to create VPN clients: {e}")
         # Rollback the flag so user can retry
         _db2 = get_db()
         _cur2 = _db2.cursor()

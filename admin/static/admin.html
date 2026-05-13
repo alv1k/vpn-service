@@ -969,14 +969,14 @@
 
       // Extra dashboard cards (protocol mix, autopay, discounts)
       const proto = d.protocol_breakdown || [];
-      const protoHtml = proto.map(p => `${p.vpn_type}: <b>${p.count}</b>`).join(' / ') || '<span style="color:var(--muted)">N/A</span>';
+      const protoHtml = proto.map(p => `${p.vpn_type.toUpperCase()}: <b>${p.count}</b>`).join(' <span style="font-size:12px;color:var(--muted)">/</span> ') || '<span style="color:var(--muted)">N/A</span>';
       const ap = d.autopay_summary || {};
       const disc = d.discount_summary || [];
       const discTotal = disc.reduce((s, x) => s + x.user_count, 0);
       document.getElementById('dash-extra-cards').innerHTML = `
         <div class="card">
           <h3>Protocol Mix</h3>
-          <div class="val" style="font-size:16px">${protoHtml}</div>
+          <div class="val" style="font-size:14px">${protoHtml}</div>
           <div class="sub">active keys by type</div>
         </div>
         <div class="card">

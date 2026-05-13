@@ -67,7 +67,7 @@ class TestActivateTest:
         data = resp.json()
         assert data["ok"] is True
         assert "3 дня" in data["message"]
-        xui.add_client.assert_called_once()
+        assert xui.add_client.call_count == 2
         mock_create_key.assert_called_once()
         mock_update_sub.assert_called_once()
 
