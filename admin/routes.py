@@ -155,30 +155,32 @@ def _get_online_users() -> list[dict]:
             vless_ts[email] = ts.strftime("%H:%M:%S")
 
         for email, ips in vless_ips.items():
+            is_hysteria = email.endswith("_h")
             online.append({
                 "name": email,
                 "ip_count": len(ips),
-                "type": "vless",
+                "type": "hysteria" if is_hysteria else "vless",
                 "last_seen": vless_ts[email],
             })
     except Exception as e:
         logger.warning(f"Access log parse error: {e}")
 
-    # VLESS: get per-client traffic from x-ui for speed calc
+    # VLESS/Hysteria: get per-client traffic from x-ui for speed calc
     try:
         xui = _get_xui()
         inbounds = xui.get_inbounds()
-        vless_traffic: dict[str, int] = {}  # email -> total bytes
+        traffic: dict[str, int] = {}  # email -> total bytes
         for ib in inbounds:
             for cs in ib.get("clientStats", []):
                 email = cs.get("email", "")
-                vless_traffic[email] = vless_traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
+                traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
         for u in online:
-            if u["type"] == "vless" and u["name"] in vless_traffic:
-                speed = _calc_speed(u["name"], "vless", vless_traffic[u["name"]])
+            if u["name"] in traffic:
+                proto = "hysteria" if u["name"].endswith("_h") else "vless"
+                speed = _calc_speed(u["name"], proto, traffic[u["name"]])
                 u["speed_mbps"] = _speed_mbps(speed)
     except Exception as e:
-        logger.warning(f"VLESS traffic fetch error: {e}")
+        logger.warning(f"Traffic fetch error: {e}")
 
     # AWG: check last handshake from awg show dump
     try:

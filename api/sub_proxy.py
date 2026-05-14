@@ -20,7 +20,7 @@ from api.db import (
 )
 
 logger = logging.getLogger(__name__)
-sub_router = APIRouter()
+sub_router = APIRouter(); print("DEBUG: sub_router initialized")
 
 SUB_CACHE_TTL = 60  # секунд
 SUB_PROFILE_TITLE = "🐿 TIIN VPN"
@@ -102,7 +102,23 @@ async def proxy_subscription(token: str):
         h_link = get_hysteria_link_by_tg_id(user['tg_id'])
         if h_link:
             decoded_sub += "\n" + h_link
-            raw_body = base64.b64encode(decoded_sub.encode('utf-8'))
+        
+        # Переписываем remark'и
+        now = datetime.utcnow()
+        status = "✅Active" if expires_at and expires_at > now else "❌Ended"
+        remark = f"🐿️ TIIN vpn | {status}"
+        logger.info(f"Rewriting sub for {token[:8]}, status={status}, remark={remark}")
+        
+        new_lines = []
+        for line in decoded_sub.splitlines():
+            if '#' in line:
+                parts = line.split('#')
+                new_lines.append(f"{'#'.join(parts[:-1])}#{remark}")
+            else:
+                new_lines.append(line)
+        decoded_sub = "\n".join(new_lines)
+        
+        raw_body = base64.b64encode(decoded_sub.encode('utf-8'))
 
     except Exception as e:
         logger.error(f"sub_proxy: XUI fetch failed for {token[:8]}…: {e}")
