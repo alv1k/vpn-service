@@ -226,6 +226,7 @@ def _get_online_users() -> list[dict]:
         logger.warning(f"SoftEther online parse error: {e}")
 
     # Enrich with expiration dates and first names
+    online_identities = set()
     try:
         names = [u["name"] for u in online]
         info_map = admin_db.get_expiry_by_client_names(names)
@@ -234,6 +235,9 @@ def _get_online_users() -> list[dict]:
             u["expires"] = info.get("expires")
             u["first_name"] = info.get("first_name", "")
             u["web_token"] = info.get("web_token", "")
+            # Add identity for filtering
+            u["identity"] = (u["type"], u["name"])
+            online_identities.add(u["identity"])
     except Exception as e:
         logger.warning(f"Expiry lookup error: {e}")
 
@@ -241,12 +245,13 @@ def _get_online_users() -> list[dict]:
     for u in online:
         u.setdefault("speed_mbps", 0)
 
-    return online
+    return online, online_identities
 
 
 @router.get("/online")
 async def online_users():
-    return _get_online_users()
+    online, _ = _get_online_users()
+    return online
 
 
 @router.get("/online/stream")
@@ -256,7 +261,7 @@ async def online_stream(request: Request):
         while True:
             if await request.is_disconnected():
                 break
-            users = _get_online_users()
+            users, _ = _get_online_users()
             yield {"event": "online", "data": json.dumps(users)}
             await asyncio.sleep(10)
 
@@ -266,32 +271,31 @@ async def online_stream(request: Request):
 @router.get("/offline")
 async def offline_users():
     """Users with active VPN keys who are NOT currently online."""
-    online = _get_online_users()
-    online_names = {u["name"] for u in online}
+    _, online_identities = _get_online_users()
 
     offline = []
 
     # ── VLESS: get clients + last_online directly from x-ui SQLite ──
     try:
         import sqlite3 as _sqlite3
-        # XUI_DB = "/home/alvik/vpn-service/docker/x-ui-data/x-ui.db"
         XUI_DB = "/etc/x-ui/x-ui.db"
         now_ms = int(time.time() * 1000)
 
         conn = _sqlite3.connect(f"file:{XUI_DB}?mode=ro", uri=True)
         cur = conn.cursor()
 
-        # last_online per email from client_traffics
         cur.execute("SELECT email, last_online FROM client_traffics WHERE enable = 1")
         last_online_map = {row[0]: row[1] for row in cur.fetchall()}
 
-        # active clients from inbound settings JSON
         cur.execute("SELECT settings FROM inbounds WHERE protocol = 'vless'")
         for (settings_json,) in cur.fetchall():
             clients = json.loads(settings_json).get("clients", [])
             for c in clients:
-                email = c.get("email", "")
-                if not email or email in online_names:
+                email = c.get("email", "").strip()
+                if not email:
+                    continue
+                identity = ("vless", email)
+                if identity in online_identities:
                     continue
                 if not c.get("enable", True):
                     continue
@@ -333,7 +337,7 @@ async def offline_users():
                 continue
             pub_key = parts[0]
             name = pub_to_name.get(pub_key)
-            if not name or name in online_names or name not in enabled_names:
+            if not name or ("awg", name) in online_identities or name not in enabled_names:
                 continue
             last_hs = int(parts[4]) if parts[4] != "0" else 0
             last_str = ""
@@ -342,8 +346,8 @@ async def offline_users():
                 last_str = datetime.fromtimestamp(
                     last_hs, tz=timezone.utc
                 ).strftime("%Y-%m-%d %H:%M")
-                last_ts = last_hs * 1000  # to ms for consistency
-
+                last_ts = last_hs * 1000
+            
             offline.append({
                 "name": name,
                 "type": "awg",
@@ -358,9 +362,8 @@ async def offline_users():
         from bot_xui.softether import list_users as se_list_users
         for u in se_list_users():
             uname = u.get("username", "")
-            if not uname or uname in online_names:
+            if not uname or ("softether", uname) in online_identities:
                 continue
-            # SoftEther doesn't expose last-login via list_users easily
             offline.append({
                 "name": uname,
                 "type": "softether",
