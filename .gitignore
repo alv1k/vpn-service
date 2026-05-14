@@ -72,3 +72,4 @@ website_dist/
 /docker-compose.yml
 /.env
 /config/
+.env
