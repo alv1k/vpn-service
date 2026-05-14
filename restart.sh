@@ -14,7 +14,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 show_status() {
-    for svc in bot api; do
+    for svc in bot api awg-api; do
         if systemctl is-active --quiet "$svc"; then
             echo -e "  ${GREEN}●${NC} $svc — active"
         else
@@ -45,9 +45,13 @@ case "${1:-all}" in
     api)
         restart_service api
         ;;
+    awg-api)
+        restart_service awg-api
+        ;;
     all)
         restart_service bot
         restart_service api
+        restart_service awg-api
         ;;
     status|s)
         echo "Service status:"
@@ -58,7 +62,7 @@ case "${1:-all}" in
         journalctl -u "$svc" -f --no-pager
         ;;
     *)
-        echo "Usage: $0 {bot|api|all|status|logs [bot|api]}"
+        echo "Usage: $0 {bot|api|awg-api|all|status|logs [bot|api|awg-api]}"
         exit 1
         ;;
 esac
