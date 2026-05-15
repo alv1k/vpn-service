@@ -145,7 +145,7 @@ class TestGrantReferralVpn:
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.sync_expiry")
-    @patch("bot_xui.vpn_factory.create_vpn_key")
+    @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://ref")
     async def test_create_new(self, mock_gen, mock_create_key, mock_sync):
         """Creates new VLESS+Hysteria config when user has no existing config."""
@@ -198,7 +198,7 @@ class TestHandleTestVless:
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.get_web_token", return_value="tok123")
     @patch("bot_xui.vpn_factory.set_vless_test_activated")
-    @patch("bot_xui.vpn_factory.create_vpn_key")
+    @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
@@ -269,7 +269,7 @@ class TestHandleTestAwg:
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.set_awg_test_activated")
-    @patch("bot_xui.vpn_factory.create_vpn_key")
+    @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.create_awg_config")
     @patch("bot_xui.vpn_factory.is_awg_test_activated", return_value=False)
     async def test_success(self, mock_is_act, mock_create, mock_key, mock_set_act):
@@ -376,7 +376,7 @@ class TestEnsureTestSubscription:
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.set_vless_test_activated")
-    @patch("bot_xui.vpn_factory.create_vpn_key")
+    @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.create_vless_config")
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_creates_and_marks_activated(self, mock_is_act, mock_create,
@@ -461,4 +461,5 @@ class TestAutoGrantTestAndNotify:
         mock_ensure.assert_called_once()
         reply.assert_called_once()
         call_kwargs = reply.call_args[1]
-        assert "Тестовый VLESS активирован" in call_kwargs["caption"]
+        assert "Тестовый период активирован" in call_kwargs["caption"]
+        assert "Hysteria" in call_kwargs["caption"]

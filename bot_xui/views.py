@@ -284,6 +284,14 @@ _PROTOCOL_LABELS = {
     "softether": ("🖥", "SoftEther"),
     "vless":     ("🟢", "VLESS"),
     "awg":       ("📱", "AmneziaWG"),
+    "hysteria":  ("🚀", "Hysteria 2"),
+}
+
+_PROTOCOL_DESCRIPTIONS = {
+    "softether": "Windows XP/7/10/11",
+    "vless":     "Reality • Все платформы",
+    "awg":       "AmneziaWG • Нестабильные каналы",
+    "hysteria":  "Hysteria 2 • Обход блокировок",
 }
 
 
@@ -292,12 +300,16 @@ def _pretty_config_label(key: dict, short: bool = False) -> tuple[str, str]:
     Возвращает (emoji, человекочитаемое название) для VPN-ключа.
     short=True — компактная версия (period вместо полного названия тарифа) для inline-кнопок.
     """
+    from config import SERVER_LOCATION
     vpn_type = (key.get("vpn_type") or "").lower()
     emoji, protocol = _PROTOCOL_LABELS.get(vpn_type, ("🔑", vpn_type.upper() or "VPN"))
+    desc = _PROTOCOL_DESCRIPTIONS.get(vpn_type, "")
 
     # Тестовый VLESS (client_name = tiin_<tg_id>) — нет payment_id
     if vpn_type == "vless" and (key.get("client_name") or "").startswith("tiin_") and not key.get("payment_id"):
-        return emoji, f"{protocol} — Тестовый"
+        if short:
+            return emoji, f"{protocol} · Тест"
+        return emoji, f"{protocol} — Тестовый · {SERVER_LOCATION}"
 
     tariff_name = ""
     period = ""
@@ -310,8 +322,13 @@ def _pretty_config_label(key: dict, short: bool = False) -> tuple[str, str]:
                 tariff_name = tariff.get("name", "")
                 period = tariff.get("period", "")
 
-    suffix = (period or tariff_name) if short else (tariff_name or period)
-    return emoji, f"{protocol} — {suffix}" if suffix else protocol
+    if short:
+        suffix = period or tariff_name
+        return emoji, f"{protocol} · {suffix}" if suffix else protocol
+
+    # Full label: "VLESS — Месяц · Germany · Reality"
+    parts = [p for p in [protocol, tariff_name or period, SERVER_LOCATION] if p]
+    return emoji, " — ".join(parts)
 
 
 async def show_configs(query, xui=None):
@@ -339,16 +356,14 @@ async def show_configs(query, xui=None):
 
     text = "🔑 <b>Ваши конфиги</b>\n\n"
     if active_keys:
-        rows = []
         for key in active_keys:
             emoji, label = _pretty_config_label(key)
+            desc = _PROTOCOL_DESCRIPTIONS.get(key.get("vpn_type", "").lower(), "")
             date = convert_to_local(key['expires_at'])
-            rows.append((emoji, label, date))
-        max_label = max(len(label) for _, label, _ in rows)
-        lines = [f"{emoji} {label:<{max_label}}  ·  до {date}" for emoji, label, date in rows]
-        text += "<pre>" + "\n".join(lines) + "</pre>\n"
+            text += f"{emoji} <b>{label}</b>\n"
+            text += f"   <i>{desc}</i> · до {date}\n\n"
 
-    text += "\n<i>Нажмите, чтобы показать данные подключения:</i>"
+    text += "<i>Нажмите, чтобы показать данные подключения:</i>"
 
     keyboard: list = []
     row: list = []
@@ -529,6 +544,8 @@ async def show_single_config(query, client_name: str, xui):
     token = get_web_token(tg_id)
     user_data = get_user_by_web_token(token)
     sub_url = get_user_sub_url(tg_id, user_data['id']) or key.get("subscription_link") or ""
+    vless_link = key.get("vless_link") or ""
+    hysteria_link = key.get("hysteria_link") or ""
 
     bio = BytesIO()
     bio.name = "qr.png"
@@ -538,19 +555,29 @@ async def show_single_config(query, client_name: str, xui):
     qr.make_image(fill_color="black", back_color="white").save(bio, "PNG")
     bio.seek(0)
 
+    from config import SERVER_LOCATION
     caption = (
         f"{sub_info}\n\n"
         f"{pretty_emoji} <b>{pretty_label}</b>  {status[0]} {status[1]}\n"
         f"⏱ До: {convert_to_local(expires_at)}\n\n"
-        f"🚀 <b>Вам доступны два протокола:</b>\n"
-        f"🟢 <b>VLESS</b> — стандартный\n"
-        f"🚀 <b>Hysteria 2</b> — скоростной / обход блокировок\n\n"
-        f"📎 <b>Ссылка подписки</b> (нажмите, чтобы скопировать):\n\n"
-        f"➡️➡️➡️<code>{sub_url}</code>⬅️\n\n"
-        f"💡 <i>Скопируйте ссылку или отсканируйте QR-код в приложении</i>"
+        f"┌─────────────────────────\n"
+        f"│ 🌍 <b>Сервер:</b> {SERVER_LOCATION}\n"
+        f"│ 📱 <b>Устройств:</b> до 10\n"
+        f"└─────────────────────────\n\n"
+        f"🟢 <b>VLESS + Reality</b>\n"
+        f"   <i>Стабильный, для всех платформ</i>\n\n"
+        f"🚀 <b>Hysteria 2</b>\n"
+        f"   <i>Скоростной, обход жёстких блокировок</i>\n\n"
+        f"📎 <b>Ссылка подписки</b> (VLESS + Hysteria в одной):\n"
+        f"<code>{sub_url}</code>\n\n"
+        f"💡 <i>Скопируйте ссылку или отсканируйте QR-код</i>"
     )
 
-    HAPP_ROUTING_URL = "https://344988.snk.wtf:2096/ruleset/happ-routing-rules.json"
+    if vless_link:
+        caption += f"\n\n🟢 <b>VLESS standalone:</b>\n<code>{vless_link}</code>"
+    if hysteria_link:
+        caption += f"\n\n🚀 <b>Hysteria 2 standalone:</b>\n<code>{hysteria_link}</code>"
+
     keyboard = [
         [InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")],
     ]
