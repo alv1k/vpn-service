@@ -26,7 +26,7 @@ from bot_xui.helpers import make_back_keyboard
 from bot_xui import softether
 from bot_xui.tariffs import TARIFFS
 from api.db import (
-    create_vpn_key, set_awg_test_activated, set_vless_test_activated,
+    upsert_vpn_key, set_awg_test_activated, set_vless_test_activated,
     is_awg_test_activated, is_vless_test_activated,
     set_softether_test_activated, is_softether_test_activated,
     get_keys_by_tg_id, sync_expiry, get_subscription_until,
@@ -98,16 +98,29 @@ async def create_awg_config(tg_id: int, client_name: str = None) -> dict:
 
 
 def _get_dynamic_remark(expires_at: datetime) -> str:
-    """Генерирует понятный Remark: '🐿 TIIN | до 25.05'"""
+    """Генерирует понятный Remark: '🐿 TIIN 🇩🇪 | до 25.05'"""
+    from config import SERVER_LOCATION
+    flag = {
+        "Germany": "🇩🇪",
+        "Netherlands": "🇳🇱",
+        "Finland": "🇫🇮",
+        "USA": "🇺🇸",
+        "Russia": "🇷🇺",
+        "Japan": "🇯🇵",
+        "Singapore": "🇸🇬",
+        "France": "🇫🇷",
+        "UK": "🇬🇧",
+        "Canada": "🇨🇦",
+    }.get(SERVER_LOCATION, "🌍")
+    base = f"🐿 TIIN {flag} {SERVER_LOCATION}"
     if not expires_at:
-        return "🐿 TIIN | Безлимит"
-    
-    # Считаем дни до истечения
+        return f"{base} | ♾"
     days_left = (expires_at - datetime.now(timezone.utc)).days
     if days_left < 0:
-        return "🐿 TIIN | Истекла"
-    
-    return f"🐿 TIIN | осталось {max(days_left, 1)} дн."
+        return f"{base} | ✗"
+    if days_left == 0:
+        return f"{base} | сегодня"
+    return f"{base} | {days_left}дн"
 
 
 async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) -> dict:
@@ -194,12 +207,12 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
     )
 
     return {
-        "client_email": client_email, 
+        "client_email": client_email,
         "client_uuid": client_uuid,
-        "vless_link": vless_link, 
+        "vless_link": vless_link,
         "hysteria_link": hysteria_link,
         "expires_at": expires_at,
-        "sub_id": sub_id
+        "sub_id": sub_id,
     }
 
 
@@ -269,11 +282,11 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
         sub_url = xui.get_client_subscription_url(tg_id)
         expires_at = data["expires_at"]
 
-        create_vpn_key(
+        upsert_vpn_key(
             tg_id=tg_id, payment_id=None,
             client_id=data["client_uuid"], client_name=data["client_email"],
             client_ip=None, client_public_key=None,
-            vless_link=data["vless_link"], expires_at=expires_at, vpn_type="vless",
+            vless_link=data["vless_link"], hysteria_link=data.get("hysteria_link"), expires_at=expires_at, vpn_type="vless",
             subscription_link=sub_url,
         )
 
@@ -305,7 +318,7 @@ async def handle_test_awg(query, xui: XUIClient):
         data = await create_awg_config(tg_id)
         expiry_at = datetime.now(timezone.utc) + timedelta(hours=TARIFFS["test_24h"]["hours"])
 
-        create_vpn_key(
+        upsert_vpn_key(
             tg_id=tg_id, payment_id=None,
             client_id=data["client_id"], client_name=data["client_name"],
             client_ip=data["client_ip"], client_public_key=None,
@@ -384,7 +397,7 @@ async def handle_get_awg_config(query):
         client_name = f"awg_{tg_id}"
         data = await create_awg_config(tg_id, client_name=client_name)
 
-        create_vpn_key(
+        upsert_vpn_key(
             tg_id=tg_id, payment_id=None,
             client_id=data["client_id"], client_name=data["client_name"],
             client_ip=data["client_ip"], client_public_key=None,
@@ -464,7 +477,7 @@ async def handle_get_softether_config(query):
 
         data = create_softether_config(tg_id, days=remaining_days)
 
-        create_vpn_key(
+        upsert_vpn_key(
             tg_id=tg_id, payment_id=None,
             client_id=data["username"], client_name=data["username"],
             client_ip=None, client_public_key=None,
@@ -524,7 +537,7 @@ async def handle_test_vless(query, xui: XUIClient):
         data = await create_xui_multi_config(tg_id, xui)
         sub_url = xui.get_client_subscription_url(tg_id)
 
-        create_vpn_key(
+        upsert_vpn_key(
             tg_id=tg_id, payment_id=None,
             client_id=data["client_uuid"], client_name=data["client_email"],
             client_ip=None, client_public_key=None,
@@ -533,13 +546,16 @@ async def handle_test_vless(query, xui: XUIClient):
         )
         bio = make_qr_bytes(sub_url)
 
+        from config import SERVER_LOCATION
         await query.message.reply_photo(
             photo=bio,
             caption=(
                 f"🚀 <b>Тестовый период активирован!</b>\n\n"
-                f"Мы подключили вам сразу два протокола:\n"
-                f"🟢 <b>VLESS</b> — для обычной работы\n"
-                f"🚀 <b>Hysteria 2</b> — для обхода жестких блокировок\n\n"
+                f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n\n"
+                f"🟢 <b>VLESS + Reality</b>\n"
+                f"   Стабильный протокол для всех платформ\n\n"
+                f"🚀 <b>Hysteria 2</b>\n"
+                f"   Скоростной протокол для обхода блокировок\n\n"
                 f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
                 f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>\n\n'
                 f"💬 Поддержка: кнопка «Написать нам» в меню"
@@ -568,7 +584,7 @@ async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
     try:
         data = await create_xui_multi_config(tg_id, xui)
         sub_url = xui.get_client_subscription_url(tg_id)
-        create_vpn_key(
+        upsert_vpn_key(
             tg_id=tg_id, payment_id=None,
             client_id=data["client_uuid"], client_name=data["client_email"],
             client_ip=None, client_public_key=None,
@@ -601,13 +617,17 @@ async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_fun
     if not result:
         return False
     bio = make_qr_bytes(result["sub_url"])
+    from config import SERVER_LOCATION
     try:
         await reply_photo_func(
             photo=bio,
             caption=(
-                f"🎁 <b>Тестовый VLESS активирован</b>\n\n"
+                f"🎁 <b>Тестовый период активирован!</b>\n\n"
+                f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n"
+                f"🟢 VLESS + Reality · 🚀 Hysteria 2\n"
                 f"👤 ID: {result['client_email']}\n"
-                f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
+                f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
+                f"📎 Ссылка:\n<code>{result['sub_url']}</code>\n\n"
                 f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
             ),
             parse_mode="HTML",
@@ -668,20 +688,23 @@ async def activate_test_period(query, xui):
     # Отправляем QR-код с конфигом
     bio = make_qr_bytes(result["sub_url"])
     
+    from config import SERVER_LOCATION
     try:
         await query.message.reply_photo(
             photo=bio,
             caption=(
                 f"🎉 <b>Тестовый период активирован!</b>\n\n"
-                f"✅ Твой VPN-ключ готов к использованию.\n"
+                f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n\n"
+                f"🟢 <b>VLESS + Reality</b> — стабильный\n"
+                f"🚀 <b>Hysteria 2</b> — скоростной\n\n"
                 f"👤 ID: <code>{result['client_email']}</code>\n"
                 f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
-                f"🔑 Ссылка на подписку: <code>{result['sub_url']}</code>\n\n"
+                f"📎 Ссылка подписки:\n<code>{result['sub_url']}</code>\n\n"
                 f"📲 <b>Как подключиться:</b>\n"
-                f"• Скачай приложение и скопируй ссылку с помощью инструкции ниже\n"
+                f"• Скачай приложение и скопируй ссылку\n"
                 f"• Вставь в приложение и наслаждайся!\n\n"
                 f'📖 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Подробная инструкция</a>\n\n'
-                f"💎 После окончания теста выбери тариф, чтобы продолжить пользоваться VPN."
+                f"💎 После окончания теста выбери тариф для продолжения."
             ),
             parse_mode="HTML",
             reply_markup=make_back_keyboard("💎 Выбрать тариф", "tariffs")
@@ -690,12 +713,11 @@ async def activate_test_period(query, xui):
         logger.error(f"Failed to send test config: {e}")
         await query.message.reply_text(
             f"🎉 <b>Тестовый период активирован!</b>\n\n"
-            f"✅ Твой VPN-ключ готов.\n"
+            f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n"
             f"👤 ID: <code>{result['client_email']}</code>\n"
             f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
-            f"🔗 <b>Твоя ссылка для подключения:</b>\n"
+            f"🔗 <b>Ссылка подписки:</b>\n"
             f"<code>{result['sub_url']}</code>\n\n"
-            f"Просто скопируй её в приложение.\n\n"
             f'📖 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция</a>',
             parse_mode="HTML",
             reply_markup=make_back_keyboard("💎 Выбрать тариф", "tariffs")

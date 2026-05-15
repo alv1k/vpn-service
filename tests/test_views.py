@@ -345,12 +345,12 @@ class TestPrettyConfigLabel:
     """Pure-function tests for _pretty_config_label."""
 
     def test_test_vless_no_payment(self):
-        """Test VLESS (tiin_<id>, no payment_id) labeled as 'VLESS — Тестовый'."""
+        """Test VLESS (tiin_<id>, no payment_id) labeled as 'VLESS — Тестовый · <location>'."""
         from bot_xui.views import _pretty_config_label
         key = {"vpn_type": "vless", "client_name": "tiin_42", "payment_id": None}
         emoji, label = _pretty_config_label(key)
         assert emoji == "🟢"
-        assert label == "VLESS — Тестовый"
+        assert label == "VLESS — Тестовый · Germany"
 
     @patch("bot_xui.views.get_payment_by_id")
     def test_paid_vless_uses_tariff_name(self, mock_payment):
