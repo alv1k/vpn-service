@@ -136,11 +136,12 @@ class TestProxySubscription:
         }
         # XUI returns base64-encoded vless link
         vless = "vless://uuid@host:443?type=tcp&security=reality#old"
+        expected_vless = "vless://uuid@host:443?type=tcp&security=reality#🐿️ TIIN vpn | ✅Active"
         mock_fetch.return_value = base64.b64encode(vless.encode())
 
         response = await proxy_subscription("tok")
         body_decoded = base64.b64decode(response.body).decode()
-        assert body_decoded == vless
+        assert body_decoded == expected_vless
 
         # Headers
         assert "subscription-userinfo" in response.headers
@@ -152,6 +153,7 @@ class TestProxySubscription:
     @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
     async def test_cache_hit_skips_xui_fetch(self, mock_user, mock_pick, mock_fetch):
         from api.sub_proxy import proxy_subscription
+        import time
         mock_pick.return_value = {
             "subscription_link": "https://xui.example/sub/abc",
             "expires_at": datetime.utcnow() + timedelta(days=10),
@@ -164,8 +166,7 @@ class TestProxySubscription:
 
         # Second call — should hit cache
         await proxy_subscription("tok")
-        assert mock_fetch.call_count == 1  # unchanged
-
+        assert mock_fetch.call_count == 1  # unchanged (1 was still the count)    @pytest.mark.asyncio
     @pytest.mark.asyncio
     @patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock)
     @patch("api.sub_proxy._pick_vless_key")
@@ -183,7 +184,8 @@ class TestProxySubscription:
 
         # Expire cache entry manually
         ts, body, hdr = sub_proxy._CACHE["tok"]
-        sub_proxy._CACHE["tok"] = (ts - sub_proxy.SUB_CACHE_TTL - 1, body, hdr)
+        # Set TS to be older than SUB_CACHE_TTL
+        sub_proxy._CACHE["tok"] = (datetime.utcnow() - timedelta(seconds=sub_proxy.SUB_CACHE_TTL + 1), body, hdr)
 
         await sub_proxy.proxy_subscription("tok")
         assert mock_fetch.call_count == 2
@@ -205,7 +207,7 @@ class TestProxySubscription:
 
         # Expire it and make XUI fail
         ts, body, hdr = sub_proxy._CACHE["tok"]
-        sub_proxy._CACHE["tok"] = (ts - sub_proxy.SUB_CACHE_TTL - 1, body, hdr)
+        sub_proxy._CACHE["tok"] = (datetime.utcnow() - timedelta(seconds=sub_proxy.SUB_CACHE_TTL + 1), body, hdr)
         mock_fetch.side_effect = RuntimeError("XUI down")
 
         response = await sub_proxy.proxy_subscription("tok")

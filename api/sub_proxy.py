@@ -82,16 +82,25 @@ async def proxy_subscription(token: str):
         raise HTTPException(status_code=404, detail="No active subscription")
 
     xui_url = key["subscription_link"]
+    xui_url = key["subscription_link"]
     expires_at = key.get("expires_at")
 
+    headers = _build_headers(expires_at)
     now = time.time()
     async with _CACHE_LOCK:
         cached = _CACHE.get(token)
-        if cached and (now - cached[0]) < SUB_CACHE_TTL:
-            return Response(content=cached[1], headers=cached[2])
+        if cached:
+            # cached entry is: (timestamp_float, body, headers)
+            ts = cached[0].timestamp() if isinstance(cached[0], datetime) else cached[0]
+            if (now - ts) < SUB_CACHE_TTL:
+                return Response(content=cached[1], headers=cached[2])
 
     try:
         raw_body = await _fetch_xui(xui_url)
+
+        # Store in cache with current timestamp
+        async with _CACHE_LOCK:
+            _CACHE[token] = (now, raw_body, headers)
 
         # Склейка с Hysteria
         try:
@@ -104,10 +113,9 @@ async def proxy_subscription(token: str):
             decoded_sub += "\n" + h_link
         
         # Переписываем remark'и
-        now = datetime.utcnow()
-        status = "✅Active" if expires_at and expires_at > now else "❌Ended"
+        now_dt = datetime.utcnow()
+        status = "✅Active" if expires_at and expires_at > now_dt else "❌Ended"
         remark = f"🐿️ TIIN vpn | {status}"
-        logger.info(f"Rewriting sub for {token[:8]}, status={status}, remark={remark}")
         
         new_lines = []
         for line in decoded_sub.splitlines():
@@ -122,14 +130,10 @@ async def proxy_subscription(token: str):
 
     except Exception as e:
         logger.error(f"sub_proxy: XUI fetch failed for {token[:8]}…: {e}")
-        cached = _CACHE.get(token)
-        if cached:
-            return Response(content=cached[1], headers=cached[2])
+        async with _CACHE_LOCK:
+            cached = _CACHE.get(token)
+            if cached:
+                return Response(content=cached[1], headers=cached[2])
         raise HTTPException(status_code=503, detail="Upstream unavailable")
-
-    headers = _build_headers(expires_at)
-
-    async with _CACHE_LOCK:
-        _CACHE[token] = (now, raw_body, headers)
 
     return Response(content=raw_body, headers=headers)

@@ -243,7 +243,7 @@ class TestShowSingleConfigAWG:
 class TestHandleGetAWGConfig:
     """Тесты создания AWG конфига через handle_get_awg_config."""
 
-    @patch("bot_xui.vpn_factory.create_vpn_key")
+    @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.get_subscription_until")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @patch("bot_xui.vpn_factory.create_awg_config", new_callable=AsyncMock)
@@ -318,7 +318,7 @@ class TestHandleGetAWGConfig:
         text = query.edit_message_text.call_args[0][0]
         assert "нет активной подписки" in text
 
-    @patch("bot_xui.vpn_factory.create_vpn_key")
+    @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.get_subscription_until")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @patch("bot_xui.vpn_factory.create_awg_config", new_callable=AsyncMock)
@@ -338,7 +338,7 @@ class TestHandleGetAWGConfig:
         text = query.message.reply_text.call_args[0][0]
         assert "Ошибка" in text
 
-    @patch("bot_xui.vpn_factory.create_vpn_key")
+    @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.get_subscription_until")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @patch("bot_xui.vpn_factory.create_awg_config", new_callable=AsyncMock)
@@ -372,7 +372,7 @@ class TestHandleGetAWGConfig:
             vpn_type="awg",
         )
 
-    @patch("bot_xui.vpn_factory.create_vpn_key")
+    @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.get_subscription_until")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @patch("bot_xui.vpn_factory.create_awg_config", new_callable=AsyncMock)

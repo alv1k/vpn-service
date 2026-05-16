@@ -109,13 +109,13 @@ def test_webhook_unknown_payment(mock_verify, mock_status, client):
 @patch("api.webhook.send_telegram_notification", new_callable=AsyncMock)
 @patch("api.webhook.send_telegram_document", new_callable=AsyncMock)
 @patch("api.webhook.sync_expiry")
-@patch("api.webhook.create_vpn_key")
+@patch("api.webhook.upsert_vpn_key")
 @patch("api.webhook.get_subscription_until")
 @patch("api.webhook.activate_subscription")
 @patch("api.webhook.get_or_create_user", return_value=1)
 @patch("api.db.get_web_token", return_value="test-token-abc")
 async def test_activation_after_vpn_creation_awg(
-    mock_web_token, mock_get_user, mock_activate, mock_get_sub, mock_create_key,
+    mock_web_token, mock_get_user, mock_activate, mock_get_sub, mock_upsert_key,
     mock_sync_expiry, mock_send_doc, mock_send_notif,
 ):
     """activate_subscription must be called AFTER VPN config creation, not before."""
@@ -170,7 +170,7 @@ async def test_activation_after_vpn_creation_awg(
     assert result is True
     # activate_subscription called AFTER VPN creation succeeded (not before)
     mock_activate.assert_called_once_with("pay-12345678", user_id=None)
-    mock_create_key.assert_called_once()
+    mock_upsert_key.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -223,3 +223,71 @@ def test_web_order_tg_id_is_int(mock_verify, mock_status, mock_update, mock_get_
         call_args = mock_process.call_args
         payment_data = call_args[0][1]
         assert isinstance(payment_data["tg_id"], int)
+
+
+# ─────────────────────────────────────────────
+#  upsert_vpn_key — renewing existing subscription
+# ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+@patch("api.webhook.send_telegram_notification", new_callable=AsyncMock)
+@patch("api.webhook.send_telegram_document", new_callable=AsyncMock)
+@patch("api.webhook.sync_expiry")
+@patch("api.webhook.upsert_vpn_key")
+@patch("api.webhook.get_subscription_until")
+@patch("api.webhook.activate_subscription")
+@patch("api.webhook.get_or_create_user", return_value=1)
+async def test_repeat_payment_calls_upsert_not_insert(
+    mock_get_user, mock_activate, mock_get_sub, mock_upsert_key,
+    mock_sync_expiry, mock_send_doc, mock_send_notif,
+):
+    """Repeat payment must call upsert_vpn_key (not create_vpn_key) to avoid duplicate rows."""
+    from api.webhook import process_successful_payment
+    from datetime import datetime
+
+    mock_get_sub.return_value = datetime(2026, 5, 1)
+
+    post_resp = MagicMock()
+    post_resp.status_code = 200
+    post_resp.json.return_value = {"id": "uuid-1", "name": "tiin_12345"}
+    post_resp.raise_for_status = MagicMock()
+
+    list_resp = MagicMock()
+    list_resp.status_code = 200
+    list_resp.json.return_value = [
+        {"id": "uuid-1", "name": "tiin_12345", "address": "10.0.0.2", "publicKey": "pk1"}
+    ]
+    list_resp.raise_for_status = MagicMock()
+
+    conf_resp = MagicMock()
+    conf_resp.status_code = 200
+    conf_resp.text = "[Interface]\nPrivateKey=abc"
+    conf_resp.raise_for_status = MagicMock()
+
+    with patch("api.webhook.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post.return_value = post_resp
+        mock_client.delete = AsyncMock()
+        dedup_resp = MagicMock()
+        dedup_resp.status_code = 200
+        dedup_resp.json.return_value = []
+        dedup_resp.raise_for_status = MagicMock()
+        mock_client.get = AsyncMock(side_effect=[dedup_resp, list_resp, conf_resp])
+        mock_client_cls.return_value = mock_client
+
+        result = await process_successful_payment(
+            "pay-repeat-001",
+            {"tg_id": 12345, "tariff": "1month"},
+            "awg",
+        )
+
+    assert result is True
+    mock_activate.assert_called_once_with("pay-repeat-001", user_id=None)
+    mock_upsert_key.assert_called_once()
+    # Verify upsert was called (not create)
+    from unittest.mock import call
+    # Ensure upsert_vpn_key received correct tg_id
+    call_kwargs = mock_upsert_key.call_args
+    assert call_kwargs.kwargs.get("tg_id") == 12345 or call_kwargs[1].get("tg_id") == 12345

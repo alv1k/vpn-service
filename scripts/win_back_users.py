@@ -544,6 +544,8 @@ async def send_messages(results):
     for scenario, users in results.items():
         if not users or scenario == 'multi_config_partial':
             continue
+        if scenario == 'zero_traffic':
+            continue
 
         msg_template = MESSAGES.get(scenario)
         if not msg_template:
