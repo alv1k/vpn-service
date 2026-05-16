@@ -28,6 +28,7 @@ from api.db import (
     get_payment_by_id,
     get_or_create_user,
     create_vpn_key,
+    upsert_vpn_key,
     get_subscription_until,
     get_user_email,
     deactivate_key_by_payment,
@@ -369,6 +370,10 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     sub_id = existing['client'].get('subId')
                     logger.info(f"Existing client found, reusing uuid: {client_id}")
 
+                import time as _time
+                now_ms = int(_time.time() * 1000)
+                duration_ms = duration_days * 86400 * 1000
+                extend_ms = duration_ms if existing else None
                 res_vless = xui.add_or_extend_client(
                     inbound_id=inbound_id,
                     email=client_name,
@@ -376,7 +381,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     uuid=client_id,
                     expiry_time=expiry_time,
                     total_gb=0,
-                    limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
+                    limit_ip=TARIFFS[tariff_key].get('device_limit', 10),
+                    extend_ms=extend_ms,
                 )
                 # add_or_extend returns expiryTime on success or bool
                 success = bool(res_vless)
@@ -425,7 +431,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             if existing_hysteria and existing_hysteria['inbound_id'] == hysteria_inbound_id:
                 import time as _time
                 now_ms = int(_time.time() * 1000)
-                duration_ms = expiry_time - now_ms
+                duration_ms = duration_days * 86400 * 1000
                 xui.extend_client_expiry(
                     hysteria_inbound_id,
                     existing_hysteria['client'],
@@ -609,8 +615,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 )
                 logger.info(f"Re-synced 3x-ui expiry to {subscription_until}")
 
-        # ===== 7. Сохранение в БД =====
-        create_vpn_key(
+        # ===== 7. Сохранение в БД (UPSERT: обновляем существующий ключ или создаём новый) =====
+        upsert_vpn_key(
             tg_id=tg_id,
             payment_id=payment_id,
             client_id=client_id,

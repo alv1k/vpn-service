@@ -1084,7 +1084,7 @@ async def users_today():
         logger.warning(f"AWG traffic fetch for new users: {e}")
 
     # Get online users for speed
-    online = _get_online_users()
+    online, _ = _get_online_users()
     online_speed: dict[str, float] = {u["name"]: u.get("speed_mbps", 0) for u in online}
 
     # Enrich each user

@@ -1,6 +1,7 @@
 """Тесты для платежей — DB операции + process_payment логика."""
 import sys
 import asyncio
+import pytest
 from datetime import datetime
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -211,10 +212,12 @@ def _make_mock_query(user_id=123456, username="testuser"):
     return query
 
 
+@pytest.mark.asyncio
 @patch("bot_xui.payment.create_payment")
 @patch("bot_xui.payment.Payment")
 @patch("bot_xui.payment.is_test_mode", return_value=False)
-def test_process_payment_with_promo_discount(mock_test_mode, mock_payment_cls, mock_create):
+@patch("bot_xui.payment.get_permanent_discount", return_value=0)
+async def test_process_payment_with_promo_discount(mock_disc, mock_test_mode, mock_payment_cls, mock_create):
     """Promo discount should reduce price in Payment.create and mark promo used."""
     from bot_xui.payment import process_payment
 
@@ -226,10 +229,7 @@ def test_process_payment_with_promo_discount(mock_test_mode, mock_payment_cls, m
     query = _make_mock_query()
     promo = {"id": 1, "code": "SALE50", "value": 50}
 
-    asyncio.get_event_loop().run_until_complete(
-        process_payment(query, "monthly_30d", "vless", promo=promo)
-    )
-
+    await process_payment(query, "monthly_30d", "vless", promo=promo)
     # Payment.create called with discounted price (199 * 50% = 100)
     create_args = mock_payment_cls.create.call_args[0][0]
     assert create_args["amount"]["value"] == "100"
@@ -247,10 +247,11 @@ def test_process_payment_with_promo_discount(mock_test_mode, mock_payment_cls, m
     assert "SALE50" in text
 
 
+@pytest.mark.asyncio
 @patch("bot_xui.payment.create_payment")
 @patch("bot_xui.payment.Payment")
 @patch("bot_xui.payment.is_test_mode", return_value=False)
-def test_process_payment_without_promo(mock_test_mode, mock_payment_cls, mock_create):
+async def test_process_payment_without_promo(mock_test_mode, mock_payment_cls, mock_create):
     """Without promo, full price is charged."""
     from bot_xui.payment import process_payment
 
@@ -261,9 +262,7 @@ def test_process_payment_without_promo(mock_test_mode, mock_payment_cls, mock_cr
 
     query = _make_mock_query()
 
-    asyncio.get_event_loop().run_until_complete(
-        process_payment(query, "monthly_30d", "vless")
-    )
+    await process_payment(query, "monthly_30d", "vless")
 
     create_args = mock_payment_cls.create.call_args[0][0]
     assert create_args["amount"]["value"] == "199"
@@ -273,15 +272,14 @@ def test_process_payment_without_promo(mock_test_mode, mock_payment_cls, mock_cr
     assert "<s>" not in text
 
 
+@pytest.mark.asyncio
 @patch("bot_xui.payment.is_test_mode", return_value=False)
-def test_process_payment_invalid_tariff(mock_test_mode):
+async def test_process_payment_invalid_tariff(mock_test_mode):
     """Invalid tariff → error message."""
     from bot_xui.payment import process_payment
 
     query = _make_mock_query()
 
-    asyncio.get_event_loop().run_until_complete(
-        process_payment(query, "nonexistent_tariff", "vless")
-    )
+    await process_payment(query, "nonexistent_tariff", "vless")
 
     query.edit_message_text.assert_called_once_with("❌ Тариф не найден")

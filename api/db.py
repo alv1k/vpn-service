@@ -632,6 +632,57 @@ def create_vpn_key(
     logger.debug("create_vpn_key done")
 
 
+def upsert_vpn_key(
+    tg_id: int,
+    payment_id: str,
+    client_id: str,
+    client_name: str,
+    client_ip: str,
+    client_public_key: str,
+    vless_link: str = None,
+    hysteria_link: str = None,
+    expires_at=None,
+    vpn_type: str = 'awg',
+    subscription_link: str = None,
+    vpn_file: str = None,
+    user_id: int = None,
+):
+    """
+    Update an active VPN key if it exists for this tg_id/user_id and vpn_type,
+    otherwise insert a new one.
+    """
+    logger.debug(f"upsert_vpn_key called, tg_id={tg_id}, vpn_type={vpn_type}")
+    
+    # Try to find an existing active key for this user and type
+    where = "tg_id = %s" if tg_id else "user_id = %s"
+    val = tg_id if tg_id else user_id
+    
+    existing = execute_query(
+        f"SELECT id FROM vpn_keys WHERE {where} AND vpn_type = %s AND expires_at > NOW() LIMIT 1",
+        (val, vpn_type), fetch='one'
+    )
+    
+    if existing:
+        execute_query(
+            """
+            UPDATE vpn_keys 
+            SET payment_id = %s, client_id = %s, client_name = %s, client_ip = %s, 
+                client_public_key = %s, vless_link = %s, hysteria_link = %s, 
+                expires_at = %s, subscription_link = %s, vpn_file = %s
+            WHERE id = %s
+            """,
+            (payment_id, client_id, client_name, client_ip, client_public_key, 
+             vless_link, hysteria_link, expires_at, subscription_link, vpn_file, existing['id'])
+        )
+        logger.info(f"Updated existing VPN key {existing['id']} for user {val}")
+    else:
+        create_vpn_key(tg_id, payment_id, client_id, client_name, client_ip, 
+                       client_public_key, vless_link, hysteria_link, expires_at, 
+                       vpn_type, subscription_link, vpn_file, user_id)
+        logger.info(f"Inserted new VPN key for user {val}")
+
+
+
 def get_hysteria_link_by_tg_id(tg_id: int) -> str | None:
     """Получает Hysteria конфиг из vpn_keys."""
     row = execute_query(
