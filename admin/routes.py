@@ -192,12 +192,40 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
             "expires": expires,
             "is_test": is_test,
         }
-    # For hysteria _h entries without data, fall back to base vless name
+    # For hysteria _h entries without user info, fall back to base vless name
+    missing_bases = set()
     for name in names:
-        if name not in result and name.endswith("_h"):
+        if name.endswith("_h"):
             base = name[:-2]
-            if base in result:
-                result[name] = dict(result[base])
+            entry = result.get(name)
+            base_entry = result.get(base)
+            if entry and base_entry:
+                if not entry.get("tg_id") or entry["tg_id"] == 0:
+                    entry["tg_id"] = base_entry.get("tg_id")
+                if not entry.get("user_id"):
+                    entry["user_id"] = base_entry.get("user_id")
+                if not entry.get("first_name"):
+                    entry["first_name"] = base_entry.get("first_name", "")
+                if not entry.get("web_token"):
+                    entry["web_token"] = base_entry.get("web_token", "")
+                if not entry.get("expires"):
+                    entry["expires"] = base_entry.get("expires")
+                if not entry.get("is_test"):
+                    entry["is_test"] = base_entry.get("is_test", False)
+            elif not entry:
+                if base_entry:
+                    result[name] = dict(base_entry)
+                else:
+                    missing_bases.add(base)
+    # Batch-lookup missing base names from DB
+    if missing_bases:
+        base_results = _resolve_names_to_users(list(missing_bases))
+        for name in names:
+            if name.endswith("_h") and name not in result:
+                base = name[:-2]
+                base_entry = base_results.get(base)
+                if base_entry:
+                    result[name] = dict(base_entry)
     return result
 
 
