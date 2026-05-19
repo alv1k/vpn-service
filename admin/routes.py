@@ -150,7 +150,7 @@ def _speed_mbps(speed_bps: float) -> float:
 
 def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
     """Resolve client names to user info via vpn_keys table.
-    Returns {client_name: {tg_id, user_id, first_name, web_token, expires}}.
+    Returns {client_name: {tg_id, user_id, first_name, web_token, expires, is_test}}.
     For hysteria _h entries, also tries base vless name as fallback."""
     if not names:
         return {}
@@ -158,7 +158,7 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
     cur = conn.cursor(dictionary=True)
     placeholders = ",".join(["%s"] * len(names))
     cur.execute(f"""
-        SELECT k.client_name, k.tg_id, k.user_id,
+        SELECT k.client_name, k.tg_id, k.user_id, k.expires_at AS key_expires_at,
                COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
                u.web_token, u.subscription_until
         FROM vpn_keys k
@@ -171,17 +171,26 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
     result = {}
     for r in rows:
         sub = r.get("subscription_until")
+        key_exp = r.get("key_expires_at")
         expires = None
+        is_test = False
         if sub and hasattr(sub, "strftime"):
             expires = sub.strftime("%Y-%m-%d")
         elif sub:
             expires = str(sub)
+        elif key_exp and hasattr(key_exp, "strftime"):
+            expires = key_exp.strftime("%Y-%m-%d")
+            is_test = True
+        elif key_exp:
+            expires = str(key_exp)
+            is_test = True
         result[r["client_name"]] = {
             "tg_id": r.get("tg_id"),
             "user_id": r.get("user_id"),
             "first_name": r.get("first_name") or "",
             "web_token": r.get("web_token") or "",
             "expires": expires,
+            "is_test": is_test,
         }
     # For hysteria _h entries without data, fall back to base vless name
     for name in names:
@@ -329,7 +338,7 @@ def _get_online_users() -> tuple[list[dict], set]:
                 "first_name": info.get("first_name", ""),
                 "web_token": info.get("web_token", ""),
                 "expires": info.get("expires"),
-                "is_test": False,
+                "is_test": info.get("is_test", False),
                 "protocols": [],
                 "names": [],
                 "ip_count": 0,
@@ -517,7 +526,7 @@ async def offline_users():
                 "first_name": info.get("first_name", ""),
                 "web_token": info.get("web_token", ""),
                 "expires": info.get("expires"),
-                "is_test": False,
+                "is_test": info.get("is_test", False),
                 "protocols": [],
                 "names": [],
                 "last_seen": "",
