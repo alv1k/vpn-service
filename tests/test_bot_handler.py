@@ -200,7 +200,8 @@ class TestButtonHandler:
         mock_handler.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_rate_limited(self):
+    @patch("bot_xui.bot.safe_edit_text", new_callable=AsyncMock)
+    async def test_rate_limited(self, mock_safe_edit):
         """Rate-limited user gets throttle message."""
         from bot_xui.bot import button_handler, _bot_rate
         _bot_rate[999] = [time.time()] * 15  # over limit
@@ -210,8 +211,8 @@ class TestButtonHandler:
 
         await button_handler(update, context)
 
-        query.edit_message_text.assert_called_once()
-        assert "Слишком много" in query.edit_message_text.call_args[0][0]
+        mock_safe_edit.assert_called_once()
+        assert "Слишком много" in mock_safe_edit.call_args[0][1]
 
     @pytest.mark.asyncio
     async def test_split_tunneling(self):

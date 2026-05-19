@@ -129,6 +129,11 @@ class XUIClient:
 
             logger.info(f"duration_ms: {duration_ms}, new_expiry: {new_expiry}")
 
+            client_id = client.get('id')
+            if not client_id:
+                logger.error(f"Client has no 'id' field: {client.get('email', 'unknown')}")
+                return False
+
             updated_client = {**client, 'expiryTime': new_expiry}
             if not updated_client.get('flow'):
                 updated_client['flow'] = 'xtls-rprx-vision'
@@ -140,7 +145,7 @@ class XUIClient:
 
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/updateClient/{client['id']}",
+                f"{self.host}/panel/api/inbounds/updateClient/{client_id}",
                 json=payload,
                 headers={"Content-Type": "application/json"}
             )
@@ -162,7 +167,8 @@ class XUIClient:
 
         logger.debug(f"existing client: {existing}")
         if existing and not existing['client'].get('email', '').startswith('test-'):
-            logger.info(f"Client with tg_id={tg_id} already exists, extending expiry")
+            client_id = existing['client'].get('id')
+            logger.info(f"Client with tg_id={tg_id} already exists, extending expiry (client_id={client_id})")
             if extend_ms is not None:
                 duration_ms = extend_ms
             else:

@@ -18,6 +18,7 @@ from config import (
     TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI,
     AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD,
     SERVER_LOCATION, VLESS_INBOUND_ID,
+    HYSTERIA_PORT, HYSTERIA_SNI,
 )
 from api.subscriptions import activate_subscription
 from api.db import (
@@ -37,7 +38,7 @@ from api.db import (
 )
 from api.wireguard import AmneziaWGClient
 from bot_xui.tariffs import TARIFFS
-from bot_xui.utils import XUIClient
+from bot_xui.utils import XUIClient, generate_hysteria2_link
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ def deactivate_xui_client(client_name: str) -> bool:
 
 def get_subid_from_xui_db(client_email: str) -> str | None:
     """Получает subId клиента из базы данных 3x-ui."""
-    db_path = "/home/alvik/vpn-service/x-ui-db/x-ui.db"  # путь к вашей БД
+    db_path = "/etc/x-ui/x-ui.db"
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
@@ -432,14 +433,16 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 import time as _time
                 now_ms = int(_time.time() * 1000)
                 duration_ms = duration_days * 86400 * 1000
-                xui.extend_client_expiry(
+                hyst_result = xui.extend_client_expiry(
                     hysteria_inbound_id,
                     existing_hysteria['client'],
                     duration_ms
                 )
+                if not hyst_result:
+                    raise RuntimeError(f"Failed to extend Hysteria client {hysteria_email}")
+                logger.info(f"Hysteria client {hysteria_email} extended to {hyst_result}")
             else:
-                # Добавляем в hysteria inbound
-                xui.add_client(
+                hyst_add = xui.add_client(
                     inbound_id=hysteria_inbound_id,
                     email=hysteria_email,
                     tg_id=tg_id,
@@ -447,7 +450,19 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     expiry_time=expiry_time,
                     sub_id=sub_id
                 )
-            
+                if not hyst_add.get("success"):
+                    raise RuntimeError(f"Failed to create Hysteria client {hysteria_email}")
+                logger.info(f"Hysteria client {hysteria_email} created in inbound {hysteria_inbound_id}")
+
+            hysteria_link = generate_hysteria2_link(
+                auth=client_id,
+                domain=VLESS_DOMAIN,
+                port=HYSTERIA_PORT,
+                client_name=client_name,
+                sni=HYSTERIA_SNI,
+                insecure=0,
+            )
+
             # ===== ПОЛУЧАЕМ / ГЕНЕРИРУЕМ subId ДЛЯ ПОДПИСКИ (Fallback) =====
             if not sub_id:
                 sub_id = get_subid_from_xui_db(client_name)
@@ -738,19 +753,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                         portal_url=portal_url,
                     )
                     logger.info(f"📧 Portal link emailed to {_tg_user['email']} (TG fallback)")
-                elif _tg_user and not _tg_user.get('email'):
-                    # Ask user for email for fallback access
-                    # await send_telegram_notification(
-                    #     tg_id,
-                    #     "📧 <b>Укажите email для резервного доступа</b>\n\n"
-                    #     "Если Telegram будет недоступен, мы отправим "
-                    #     "ссылку на личный кабинет на вашу почту.\n\n"
-                    #     "Отправьте email ответным сообщением:",
-                    # )
-                    from bot_xui.bot import WAITING_EMAIL
-                    import time as _time
-                    WAITING_EMAIL[tg_id] = _time.time()
-                    logger.info(f"📧 Asked tg_id={tg_id} for email (no email on file)")
+
             except Exception:
                 logger.warning("⚠️ Failed to send portal email fallback", exc_info=True)
 

@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, Request, HTTPException
+from fastapi import APIRouter, Depends, Query, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from sse_starlette.sse import EventSourceResponse
 
@@ -44,6 +44,40 @@ def _require_admin_session(request: Request):
 
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(_require_admin_session)])
+
+# ── WebSocket connections ──────────────────────────────────────────────────────
+_admin_ws_connections: set[WebSocket] = set()
+
+
+async def _ws_authenticate(websocket: WebSocket) -> bool:
+    """Verify session cookie for WebSocket handshake."""
+    from awg_api.main import _sessions
+    cookie = websocket.cookies.get("connect.sid")
+    if not cookie or cookie not in _sessions:
+        return False
+    created = _sessions[cookie]
+    now = datetime.now(timezone.utc).timestamp()
+    if now - created > SESSION_MAX_AGE:
+        del _sessions[cookie]
+        return False
+    _sessions[cookie] = now
+    return True
+
+
+async def _broadcast_ws(msg: dict):
+    """Send JSON message to all connected WebSocket clients."""
+    if not _admin_ws_connections:
+        return
+    data = json.dumps(msg, default=_serialize)
+    disconnected = set()
+    for ws in _admin_ws_connections:
+        try:
+            await ws.send_text(data)
+        except Exception:
+            disconnected.add(ws)
+    for ws in disconnected:
+        _admin_ws_connections.discard(ws)
+
 
 # XUI client (lazy init)
 _xui = None
@@ -114,14 +148,59 @@ def _speed_mbps(speed_bps: float) -> float:
     return round(speed_bps * 8 / 1_000_000, 1)
 
 
-def _get_online_users() -> list[dict]:
-    """Parse xray access log + awg handshakes to find who's online now."""
-    online = []
+def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
+    """Resolve client names to user info via vpn_keys table.
+    Returns {client_name: {tg_id, user_id, first_name, web_token, expires}}.
+    For hysteria _h entries, also tries base vless name as fallback."""
+    if not names:
+        return {}
+    conn = awg_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+    placeholders = ",".join(["%s"] * len(names))
+    cur.execute(f"""
+        SELECT k.client_name, k.tg_id, k.user_id,
+               COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
+               u.web_token, u.subscription_until
+        FROM vpn_keys k
+        LEFT JOIN users u ON (k.tg_id != 0 AND k.tg_id = u.tg_id) OR (k.user_id IS NOT NULL AND k.user_id = u.id)
+        WHERE k.client_name IN ({placeholders})
+    """, tuple(names))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    result = {}
+    for r in rows:
+        sub = r.get("subscription_until")
+        expires = None
+        if sub and hasattr(sub, "strftime"):
+            expires = sub.strftime("%Y-%m-%d")
+        elif sub:
+            expires = str(sub)
+        result[r["client_name"]] = {
+            "tg_id": r.get("tg_id"),
+            "user_id": r.get("user_id"),
+            "first_name": r.get("first_name") or "",
+            "web_token": r.get("web_token") or "",
+            "expires": expires,
+        }
+    # For hysteria _h entries without data, fall back to base vless name
+    for name in names:
+        if name not in result and name.endswith("_h"):
+            base = name[:-2]
+            if base in result:
+                result[name] = dict(result[base])
+    return result
+
+
+def _get_online_users() -> tuple[list[dict], set]:
+    """Parse xray access log + awg handshakes + softether to find who's online now.
+    Returns merged list of users (all protocols united by tg_id/user_id) and identity set."""
+    # Collect raw protocol entries: list of {name, type, ip_count, last_seen, speed_mbps}
+    raw_entries = []
     vless_ips: dict[str, set[str]] = {}   # email -> set of IPs
     vless_ts: dict[str, str] = {}         # email -> latest timestamp
 
     # VLESS: parse access.log for activity in last 5 minutes
-    # access_log = "/home/alvik/vpn-service/docker/x-ui-logs/access.log"
     access_log = "/var/log/x-ui/access.log"
     try:
         cutoff = time.time() - 300  # 5 min ago
@@ -131,7 +210,6 @@ def _get_online_users() -> list[dict]:
         for line in result.stdout.strip().split("\n"):
             if "email:" not in line or "127.0.0.1" in line.split("from ")[1][:15] if "from " in line else True:
                 continue
-            # Parse timestamp: 2026/03/18 09:17:23.354755
             ts_match = re.match(r"(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})", line)
             if not ts_match:
                 continue
@@ -142,11 +220,9 @@ def _get_online_users() -> list[dict]:
             except Exception:
                 continue
 
-            # Parse IP
             ip_match = re.search(r"from (?:tcp:)?(\d+\.\d+\.\d+\.\d+)", line)
             ip = ip_match.group(1) if ip_match else "?"
 
-            # Parse email
             email_match = re.search(r"email: (.+)$", line)
             if not email_match:
                 continue
@@ -156,7 +232,7 @@ def _get_online_users() -> list[dict]:
 
         for email, ips in vless_ips.items():
             is_hysteria = email.endswith("_h")
-            online.append({
+            raw_entries.append({
                 "name": email,
                 "ip_count": len(ips),
                 "type": "hysteria" if is_hysteria else "vless",
@@ -174,11 +250,11 @@ def _get_online_users() -> list[dict]:
             for cs in ib.get("clientStats", []):
                 email = cs.get("email", "")
                 traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
-        for u in online:
-            if u["name"] in traffic:
-                proto = "hysteria" if u["name"].endswith("_h") else "vless"
-                speed = _calc_speed(u["name"], proto, traffic[u["name"]])
-                u["speed_mbps"] = _speed_mbps(speed)
+        for e in raw_entries:
+            if e["name"] in traffic:
+                proto = "hysteria" if e["name"].endswith("_h") else "vless"
+                speed = _calc_speed(e["name"], proto, traffic[e["name"]])
+                e["speed_mbps"] = _speed_mbps(speed)
     except Exception as e:
         logger.warning(f"Traffic fetch error: {e}")
 
@@ -189,7 +265,7 @@ def _get_online_users() -> list[dict]:
         result = subprocess.run(
             ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
         )
-        for line in result.stdout.strip().split("\n")[1:]:  # skip interface line
+        for line in result.stdout.strip().split("\n")[1:]:
             parts = line.split("\t")
             if len(parts) < 7:
                 continue
@@ -200,7 +276,7 @@ def _get_online_users() -> list[dict]:
                 rx = int(parts[5]) if parts[5].isdigit() else 0
                 tx = int(parts[6]) if parts[6].isdigit() else 0
                 speed = _calc_speed(name, "awg", rx + tx)
-                online.append({
+                raw_entries.append({
                     "name": name,
                     "ip_count": 1,
                     "type": "awg",
@@ -215,7 +291,7 @@ def _get_online_users() -> list[dict]:
         from bot_xui.softether import list_sessions
         for s in list_sessions():
             speed = _calc_speed(s["username"], "softether", s.get("transfer_bytes", 0))
-            online.append({
+            raw_entries.append({
                 "name": s["username"],
                 "ip_count": 1,
                 "type": "softether",
@@ -225,23 +301,64 @@ def _get_online_users() -> list[dict]:
     except Exception as e:
         logger.warning(f"SoftEther online parse error: {e}")
 
-    # Enrich with expiration dates and first names
-    online_identities = set()
-    try:
-        names = [u["name"] for u in online]
-        info_map = admin_db.get_expiry_by_client_names(names)
-        for u in online:
-            info = info_map.get(u["name"], {})
-            u["expires"] = info.get("expires")
-            u["first_name"] = info.get("first_name", "")
-            u["web_token"] = info.get("web_token", "")
-            # Add identity for filtering
-            u["identity"] = (u["type"], u["name"])
-            online_identities.add(u["identity"])
-    except Exception as e:
-        logger.warning(f"Expiry lookup error: {e}")
+    # Resolve all client names to user info
+    all_names = [e["name"] for e in raw_entries]
+    user_info = _resolve_names_to_users(all_names)
 
-    # Default speed for entries that didn't get it
+    # Merge entries by user identity (tg_id or user_id)
+    # Key: (tg_id, user_id) — tg_id takes priority
+    merged: dict[tuple, dict] = {}
+    online_identities = set()
+
+    for e in raw_entries:
+        info = user_info.get(e["name"], {})
+        tg_id = info.get("tg_id")
+        user_id = info.get("user_id")
+        # Build identity key: prefer tg_id, fall back to user_id, last resort use name
+        if tg_id and tg_id != 0:
+            key = ("tg", tg_id)
+        elif user_id:
+            key = ("uid", user_id)
+        else:
+            key = ("name", e["name"])
+
+        if key not in merged:
+            merged[key] = {
+                "tg_id": tg_id,
+                "user_id": user_id,
+                "first_name": info.get("first_name", ""),
+                "web_token": info.get("web_token", ""),
+                "expires": info.get("expires"),
+                "is_test": False,
+                "protocols": [],
+                "names": [],
+                "ip_count": 0,
+                "speed_mbps": 0,
+                "last_seen": "",
+            }
+
+        entry = merged[key]
+        proto = e["type"]
+        if proto not in entry["protocols"]:
+            entry["protocols"].append(proto)
+        entry["names"].append(e["name"])
+        entry["ip_count"] = max(entry["ip_count"], e.get("ip_count", 0))
+        entry["speed_mbps"] = max(entry.get("speed_mbps", 0), e.get("speed_mbps", 0))
+        if e.get("last_seen", "") > entry.get("last_seen", ""):
+            entry["last_seen"] = e["last_seen"]
+
+        # Build identity set for offline matching
+        online_identities.add((e["type"], e["name"]))
+        if e["name"].endswith("_h"):
+            base = e["name"][:-2]
+            online_identities.add(("vless", base))
+
+    online = list(merged.values())
+
+    # Sort: by first_name
+    online.sort(key=lambda u: (u.get("first_name") or '').lower())
+
+    # Default speed
     for u in online:
         u.setdefault("speed_mbps", 0)
 
@@ -254,9 +371,9 @@ async def online_users():
     return online
 
 
-@router.get("/online/stream")
+@router.get("/online/stream", dependencies=[Depends(_require_admin_session)])
 async def online_stream(request: Request):
-    """SSE stream — pushes online users only when the list changes."""
+    """SSE stream — kept for backward compatibility. New clients use /ws."""
     async def event_generator():
         while True:
             if await request.is_disconnected():
@@ -270,10 +387,12 @@ async def online_stream(request: Request):
 
 @router.get("/offline")
 async def offline_users():
-    """Users with active VPN keys who are NOT currently online."""
+    """Users with active VPN keys who are NOT currently online.
+    All protocols merged into a single row per user (by tg_id/user_id)."""
     _, online_identities = _get_online_users()
 
-    offline = []
+    # Collect raw entries: {name, type, last_seen, last_seen_ts}
+    raw_entries = []
 
     # ── VLESS: get clients + last_online directly from x-ui SQLite ──
     try:
@@ -313,7 +432,7 @@ async def offline_users():
                     except Exception:
                         pass
 
-                offline.append({
+                raw_entries.append({
                     "name": email,
                     "type": "vless",
                     "last_seen": last_str,
@@ -347,8 +466,8 @@ async def offline_users():
                     last_hs, tz=timezone.utc
                 ).strftime("%Y-%m-%d %H:%M")
                 last_ts = last_hs * 1000
-            
-            offline.append({
+
+            raw_entries.append({
                 "name": name,
                 "type": "awg",
                 "last_seen": last_str,
@@ -364,7 +483,7 @@ async def offline_users():
             uname = u.get("username", "")
             if not uname or ("softether", uname) in online_identities:
                 continue
-            offline.append({
+            raw_entries.append({
                 "name": uname,
                 "type": "softether",
                 "last_seen": "",
@@ -373,17 +492,48 @@ async def offline_users():
     except Exception as e:
         logger.warning(f"Offline SoftEther error: {e}")
 
-    # Enrich with first_name and expiry
-    try:
-        names = [u["name"] for u in offline]
-        info_map = admin_db.get_expiry_by_client_names(names)
-        for u in offline:
-            info = info_map.get(u["name"], {})
-            u["expires"] = info.get("expires")
-            u["first_name"] = info.get("first_name", "")
-            u["web_token"] = info.get("web_token", "")
-    except Exception as e:
-        logger.warning(f"Offline expiry lookup error: {e}")
+    # Resolve all client names to user info
+    all_names = [e["name"] for e in raw_entries]
+    user_info = _resolve_names_to_users(all_names)
+
+    # Merge entries by user identity (tg_id or user_id)
+    merged: dict[tuple, dict] = {}
+
+    for e in raw_entries:
+        info = user_info.get(e["name"], {})
+        tg_id = info.get("tg_id")
+        user_id = info.get("user_id")
+        if tg_id and tg_id != 0:
+            key = ("tg", tg_id)
+        elif user_id:
+            key = ("uid", user_id)
+        else:
+            key = ("name", e["name"])
+
+        if key not in merged:
+            merged[key] = {
+                "tg_id": tg_id,
+                "user_id": user_id,
+                "first_name": info.get("first_name", ""),
+                "web_token": info.get("web_token", ""),
+                "expires": info.get("expires"),
+                "is_test": False,
+                "protocols": [],
+                "names": [],
+                "last_seen": "",
+                "last_seen_ts": 0,
+            }
+
+        entry = merged[key]
+        proto = e["type"]
+        if proto not in entry["protocols"]:
+            entry["protocols"].append(proto)
+        entry["names"].append(e["name"])
+        if (e.get("last_seen_ts") or 0) > (entry.get("last_seen_ts") or 0):
+            entry["last_seen_ts"] = e.get("last_seen_ts", 0)
+            entry["last_seen"] = e.get("last_seen", "")
+
+    offline = list(merged.values())
 
     # Sort: most recently seen first, never-seen at the end
     offline.sort(key=lambda u: u.get("last_seen_ts", 0), reverse=True)
@@ -1083,9 +1233,14 @@ async def users_today():
     except Exception as e:
         logger.warning(f"AWG traffic fetch for new users: {e}")
 
-    # Get online users for speed
+    # Get online users for speed — build name->speed map from all protocol names
     online, _ = _get_online_users()
-    online_speed: dict[str, float] = {u["name"]: u.get("speed_mbps", 0) for u in online}
+    online_speed: dict[str, float] = {}
+    for u in online:
+        speed = u.get("speed_mbps", 0)
+        for nm in (u.get("names") or [u.get("name")]):
+            if nm:
+                online_speed[nm] = speed
 
     # Enrich each user
     for u in cleaned:

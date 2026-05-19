@@ -192,6 +192,54 @@ async def test_vless_inbound_count_guard(mock_get_user):
     assert result is False
 
 
+@pytest.mark.asyncio
+@patch("bot_xui.utils.generate_vless_link", return_value="vless://test-uuid@example.com:443")
+@patch("api.webhook.generate_hysteria2_link", return_value="hysteria2://test-uuid@example.com:54321?sni=example.com&insecure=0#tiin_12345")
+@patch("api.webhook.send_telegram_notification", new_callable=AsyncMock)
+@patch("api.webhook.send_telegram_photo_from_bytes", new_callable=AsyncMock)
+@patch("api.webhook.sync_expiry")
+@patch("api.webhook.upsert_vpn_key")
+@patch("api.webhook.get_subscription_until")
+@patch("api.webhook.activate_subscription")
+@patch("api.webhook.get_or_create_user", return_value=1)
+@patch("api.db.get_web_token", return_value="test-token-abc")
+async def test_vless_payment_sets_hysteria_link(
+    mock_web_token, mock_get_user, mock_activate, mock_get_sub, mock_upsert_key,
+    mock_sync_expiry, mock_send_photo, mock_send_notif,
+    mock_gen_hyst, mock_gen_vless,
+):
+    """process_successful_payment with vpn_type='vless' must set hysteria_link in vpn_keys."""
+    from api.webhook import process_successful_payment
+    from datetime import datetime
+
+    mock_get_sub.return_value = datetime(2026, 6, 1)
+
+    mock_xui = MagicMock()
+    mock_xui.get_vless_reality_inbound_id.return_value = 1
+    mock_xui.get_hysteria_inbound_id.return_value = 4
+    mock_xui.get_client_by_tg_id.return_value = None
+    mock_xui.add_or_extend_client.return_value = True
+    mock_xui.get_client_by_email.return_value = None  # no existing hysteria client
+    mock_xui.add_client.return_value = {"success": True, "subId": "sub123"}
+
+    with patch("bot_xui.utils.XUIClient", return_value=mock_xui):
+        result = await process_successful_payment(
+            "pay-vless-001",
+            {"tg_id": 12345, "tariff": "monthly_30d"},
+            "vless",
+        )
+
+    assert result is True
+    mock_upsert_key.assert_called_once()
+    call_kwargs = mock_upsert_key.call_args.kwargs
+    assert call_kwargs.get("hysteria_link") is not None, (
+        "hysteria_link must not be None for vless payments"
+    )
+    assert call_kwargs["hysteria_link"].startswith("hysteria2://"), (
+        f"hysteria_link should be a hysteria2:// link, got: {call_kwargs['hysteria_link']}"
+    )
+
+
 # ─────────────────────────────────────────────
 #  yookassa_webhook — tg_id type from web order
 # ─────────────────────────────────────────────

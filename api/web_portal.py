@@ -500,19 +500,24 @@ const APPS = {{
     android: [
         {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://play.google.com/store/apps/details?id=com.happproxy&hl=ru', scheme: 'happ://add/' }},
         {{ name: 'Hiddify', desc: 'Популярный, много функций', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
+        {{ name: 'v2rayNG', desc: 'Проверенный временем', icon: '🔶', store: 'https://play.google.com/store/apps/details?id=com.v2ray.ang', scheme: 'v2rayng://import/' }},
+        {{ name: 'Karing', desc: 'Современный и удобный', icon: '🔵', store: 'https://play.google.com/store/apps/details?id=io.nekohasekai.sagernet', scheme: 'karing://import/' }},
     ],
     ios: [
         {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://apps.apple.com/app/happ-proxy-utility/id6504287215', scheme: 'happ://add/' }},
         {{ name: 'Streisand', desc: 'Надёжный для iOS', icon: '🟣', store: 'https://apps.apple.com/app/streisand/id6450534064', scheme: 'streisand://import/' }},
     ],
     windows: [
+        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
         {{ name: 'Hiddify', desc: 'Для Windows и macOS', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
     ],
     macos: [
+        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
         {{ name: 'Hiddify', desc: 'Для macOS и Windows', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
     ],
     tv: [
         {{ name: 'VPN4TV', desc: 'Для Android TV', icon: '📺', store: 'https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify', scheme: 'hiddify://import/' }},
+        {{ name: 'Hiddify', desc: 'Универсальный', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
     ]
 }};
 

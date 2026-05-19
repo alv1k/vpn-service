@@ -467,6 +467,7 @@ async def activate_trial_by_email(req: TestActivateByEmailRequest):
 # ─────────────────────────────────────────────
 
 ALLOWED_EVENTS = {"visit", "click_proxy", "click_connect"}
+ALLOWED_ORIGINS = {"https://alekscko.beget.tech", "https://344988.snk.wtf"}
 
 
 class SiteEvent(BaseModel):
@@ -476,6 +477,10 @@ class SiteEvent(BaseModel):
 
 @web_api_router.post("/event")
 async def track_event(body: SiteEvent, request: Request):
+    origin = request.headers.get("origin", "")
+    if origin and origin not in ALLOWED_ORIGINS:
+        logger.warning(f"Event rejected: bad origin={origin} from {request.client.host}")
+        raise HTTPException(403, "Forbidden")
     if body.event not in ALLOWED_EVENTS:
         logger.warning(f"Invalid event received: {body.event} from {request.client.host}")
         raise HTTPException(400, "Unknown event")

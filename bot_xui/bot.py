@@ -607,8 +607,7 @@ async def promos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 WAITING_FEEDBACK: dict[int, float] = {}  # tg_id -> timestamp when feedback was requested
 _FEEDBACK_TIMEOUT = 600  # 10 minutes
 
-WAITING_EMAIL: dict[int, float] = {}  # tg_id -> timestamp when email was requested
-_EMAIL_TIMEOUT = 600  # 10 minutes
+
 
 # Bot command rate limiter: max 10 actions per 30 seconds per user
 import time as _time
@@ -659,41 +658,6 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
                 pass
 
     import time as _time
-    import re as _re
-
-    # Check if user is responding with email
-    email_ts = WAITING_EMAIL.get(tg_id)
-    if email_ts is not None and (_time.time() - email_ts) <= _EMAIL_TIMEOUT:
-        WAITING_EMAIL.pop(tg_id, None)
-        text = (update.message.text or "").strip()
-        if _re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', text):
-            from api.db import execute_query, get_web_token
-            execute_query(
-                "UPDATE users SET email = %s WHERE tg_id = %s AND (email IS NULL OR email = '')",
-                (text, tg_id),
-            )
-            # Send portal link to the email
-            wt = get_web_token(tg_id)
-            if wt:
-                from api.notifications import send_payment_success_email
-                portal_url = f"https://344988.snk.wtf/my/{wt}"
-                send_payment_success_email(
-                    to=text, tariff_name="", period="",
-                    portal_url=portal_url,
-                )
-            await update.message.reply_text(
-                f"✅ Email <b>{text}</b> сохранён!\n\n"
-                "Ссылка на личный кабинет отправлена на вашу почту.",
-                parse_mode="HTML",
-            )
-            logger.info(f"Email saved for tg_id={tg_id}: {text}")
-            return
-        else:
-            await update.message.reply_text(
-                "❌ Неверный формат email. Попробуйте ещё раз:",
-            )
-            WAITING_EMAIL[tg_id] = _time.time()  # reset timeout
-            return
 
     ts = WAITING_FEEDBACK.get(tg_id)
     if ts is None or (_time.time() - ts) > _FEEDBACK_TIMEOUT:
@@ -734,7 +698,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not _bot_rate_check(query.from_user.id):
-        await query.edit_message_text("⏳ Слишком много запросов. Подождите немного.")
+        await safe_edit_text(query, "⏳ Слишком много запросов. Подождите немного.")
         return
     data  = query.data
 

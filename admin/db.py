@@ -92,14 +92,15 @@ def recent_payments(limit: int = 20) -> list[dict]:
 
 
 def get_expiry_by_client_names(names: list[str]) -> dict[str, dict]:
-    """Return {client_name: {expires, first_name}} for given client names."""
+    """Return {client_name: {expires, first_name, is_test}} for given client names."""
     if not names:
         return {}
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     placeholders = ",".join(["%s"] * len(names))
     cur.execute(f"""
-        SELECT k.client_name, u.subscription_until, COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name, u.web_token
+        SELECT k.client_name, k.expires_at AS key_expires_at, u.subscription_until,
+               COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name, u.web_token
         FROM vpn_keys k
         JOIN users u ON k.tg_id = u.tg_id
         WHERE k.client_name IN ({placeholders})
@@ -110,16 +111,25 @@ def get_expiry_by_client_names(names: list[str]) -> dict[str, dict]:
     result = {}
     for r in rows:
         sub = r.get("subscription_until")
+        key_exp = r.get("key_expires_at")
+        # Determine expiry: prefer user subscription, fall back to key expiry (test keys)
+        expires = None
+        is_test = False
         if sub and hasattr(sub, "strftime"):
             expires = sub.strftime("%Y-%m-%d")
         elif sub:
             expires = str(sub)
-        else:
-            expires = None
+        elif key_exp and hasattr(key_exp, "strftime"):
+            expires = key_exp.strftime("%Y-%m-%d")
+            is_test = True
+        elif key_exp:
+            expires = str(key_exp)
+            is_test = True
         result[r["client_name"]] = {
             "expires": expires,
             "first_name": r.get("first_name") or "",
             "web_token": r.get("web_token") or "",
+            "is_test": is_test,
         }
     return result
 

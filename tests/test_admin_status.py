@@ -41,8 +41,14 @@ def test_offline_user_filtering(mock_time, mock_subprocess, mock_admin_db, mock_
                 import asyncio
                 result = asyncio.run(offline_users())
 
-                # 3. Assertions
-                names = [u["name"] for u in result]
-                assert "user1@email.com" not in names
-                assert "user2@email.com" in names
+                # 3. Assertions — offline users are merged by tg_id/user_id
+                # Each entry has "names" array; check that online user is excluded
+                all_names = []
+                for u in result:
+                    if u.get("names"):
+                        all_names.extend(u["names"])
+                    elif u.get("name"):
+                        all_names.append(u["name"])
+                assert "user1@email.com" not in all_names
+                assert "user2@email.com" in all_names
                 assert len(result) == 1
