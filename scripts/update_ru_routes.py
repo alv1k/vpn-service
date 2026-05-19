@@ -109,6 +109,57 @@ def compute_complement(exclude: list[ipaddress.IPv4Network]) -> list[ipaddress.I
     return list(ipaddress.collapse_addresses(sorted(result)))
 
 
+XRAY_CONFIG = "/usr/local/x-ui/bin/config.json"
+
+def update_xray_routing():
+    """Ensure xray config has RU split-tunneling rules (geoip:ru + geosite:ru -> direct)."""
+    import json as _json
+
+    with open(XRAY_CONFIG) as f:
+        cfg = _json.load(f)
+
+    routing = cfg.setdefault("routing", {})
+    rules = routing.setdefault("rules", [])
+
+    # Check if RU rules already exist
+    has_geoip_ru = any(
+        r.get("outboundTag") == "direct" and "geoip:ru" in r.get("ip", [])
+        for r in rules
+    )
+    has_geosite_ru = any(
+        r.get("outboundTag") == "direct" and "geosite:ru" in r.get("domain", [])
+        for r in rules
+    )
+
+    changed = False
+
+    if not has_geoip_ru:
+        # Insert RU geoip rule before the last rule (bittorrent block)
+        rules.insert(len(rules) - 1, {
+            "type": "field",
+            "outboundTag": "direct",
+            "ip": ["geoip:ru"]
+        })
+        changed = True
+        log.info("Added geoip:ru -> direct rule to xray config")
+
+    if not has_geosite_ru:
+        rules.insert(len(rules) - 1, {
+            "type": "field",
+            "outboundTag": "direct",
+            "domain": ["geosite:ru"]
+        })
+        changed = True
+        log.info("Added geosite:ru -> direct rule to xray config")
+
+    if changed:
+        with open(XRAY_CONFIG, "w") as f:
+            _json.dump(cfg, f, indent=2)
+        log.info("Updated xray config with RU split-tunneling rules")
+    else:
+        log.info("xray config already has RU split-tunneling rules")
+
+
 def update_amneziawg(ru_networks: list[ipaddress.IPv4Network]):
     """Update WG_ALLOWED_IPS in .env and restart container."""
     aggregated = aggregate_to_prefix(ru_networks, AWG_PREFIX_LEVEL)
@@ -135,7 +186,7 @@ def update_amneziawg(ru_networks: list[ipaddress.IPv4Network]):
 
     # Restart native AWG API to pick up new AllowedIPs from .env
     subprocess.run(
-        ["sudo", "systemctl", "restart", "awg-api"],
+        ["sudo", "-n", "/usr/bin/systemctl", "restart", "awg-api"],
         check=True, capture_output=True, text=True,
     )
     log.info("Restarted awg-api service with new AllowedIPs")
@@ -244,6 +295,13 @@ def main():
     except Exception as e:
         log.error(f"Failed to generate sing-box rule-set: {e}")
 
+    # Обновить xray config (VLESS/Hysteria split-tunneling)
+    try:
+        update_xray_routing()
+    except Exception as e:
+        log.error(f"xray routing update failed: {e}")
+        errors.append(f"xray: {e}")
+
     errors = []
 
     try:
@@ -263,7 +321,7 @@ def main():
     if errors:
         send_telegram(f"⚠️ <b>RU Routes Update — partial failure</b>\n" + "\n".join(errors))
     else:
-        send_telegram("✅ <b>RU Routes Updated</b>\nSplit tunneling refreshed for AmneziaWG + SoftEther")
+        send_telegram("✅ <b>RU Routes Updated</b>\nSplit tunneling refreshed for AmneziaWG + SoftEther + VLESS/Hysteria")
 
 
 if __name__ == "__main__":

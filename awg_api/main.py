@@ -3,6 +3,8 @@ AWG 2.0 API — drop-in replacement for wg-easy REST API.
 
 Implements the same endpoints so existing bot code works without changes.
 """
+import asyncio
+import json
 import logging
 import random
 import secrets
@@ -13,11 +15,11 @@ from io import BytesIO
 import os
 
 import qrcode
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, JSONResponse
 
 from . import db, awg_manager
-from admin.routes import router as admin_router, get_admin_page_route
+from admin.routes import router as admin_router, get_admin_page_route, _admin_ws_connections, _ws_authenticate, _broadcast_ws, _get_online_users
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("awg_api")
@@ -77,8 +79,25 @@ def _client_to_json(c: dict) -> dict:
     }
 
 
+_broadcast_task: asyncio.Task | None = None
+
+
+async def _periodic_broadcast():
+    """Push online user snapshot to all WS clients every 10 seconds."""
+    while True:
+        await asyncio.sleep(10)
+        if not _admin_ws_connections:
+            continue
+        try:
+            online, _ = _get_online_users()
+            await _broadcast_ws({"type": "online", "data": online})
+        except Exception as e:
+            logger.warning(f"broadcast error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _broadcast_task
     # Startup
     logger.info("Starting AWG 2.0 API")
     db.init_db()
@@ -101,12 +120,51 @@ async def lifespan(app: FastAPI):
         db.save_server_config(cfg)
         logger.info(f"Server config created: pub={pub}")
 
+    _broadcast_task = asyncio.create_task(_periodic_broadcast())
+    logger.info("WS broadcast task started")
+
     yield
     # Shutdown
+    if _broadcast_task:
+        _broadcast_task.cancel()
     logger.info("AWG 2.0 API shutting down")
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.websocket("/api/admin/ws")
+async def admin_websocket(websocket: WebSocket):
+    """WebSocket for real-time admin panel updates."""
+    if not await _ws_authenticate(websocket):
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
+    await websocket.accept()
+    _admin_ws_connections.add(websocket)
+
+    # Send initial snapshot
+    try:
+        online, _ = _get_online_users()
+        await websocket.send_text(json.dumps({
+            "type": "online",
+            "data": online,
+        }))
+    except Exception:
+        pass
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            if msg.get("type") == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+    except WebSocketDisconnect:
+        _admin_ws_connections.discard(websocket)
+    except Exception:
+        _admin_ws_connections.discard(websocket)
+
+
 app.include_router(admin_router)
 
 

@@ -196,6 +196,10 @@ async def safe_edit_text(query, text: str, reply_markup=None, parse_mode: str = 
     """
     from telegram import InputMediaDocument
 
+    if not text or not text.strip():
+        logger.warning("safe_edit_text: empty text provided, skipping.")
+        return False
+
     if query.message.photo or query.message.video or query.message.document:
         try:
             # Удаляем сообщение с медиа и отправляем чистый текст

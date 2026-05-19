@@ -201,6 +201,8 @@
     .badge.paid { background: #22c55e22; color: var(--green); }
     .badge.pending { background: #f59e0b22; color: var(--orange); }
     .badge.awg { background: #a78bfa22; color: #a78bfa; }
+    .badge.multi { background: #22c55e22; color: var(--green); }
+    .badge.hyst { background: #ec489922; color: #ec4899; }
 
     .mono { font-family: monospace; font-size: 12px; }
     .trunc {
@@ -782,9 +784,65 @@
         + ' ' + d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit', timeZone:'UTC'});
     }
 
-    // ── Online (SSE) ──────────────────────────────────────────────────────────
+    // ── WebSocket ──────────────────────────────────────────────────────────────
 
-    let _onlineSSE = null;
+    let _ws = null;
+    let _wsReconnectTimer = null;
+
+    function startWebSocket() {
+      if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) return;
+
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      _ws = new WebSocket(`${proto}//${location.host}${B}/api/admin/ws`);
+
+      _ws.onopen = () => {
+        console.log('WS connected');
+        if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
+      };
+
+      _ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          switch (msg.type) {
+            case 'online':
+              _onlineUsers = msg.data;
+              _renderOnline();
+              break;
+            case 'pong':
+              break;
+            default:
+              console.log('WS message:', msg.type, msg.data);
+          }
+        } catch (err) {
+          console.error('WS parse error:', err);
+        }
+      };
+
+      _ws.onclose = (e) => {
+        console.warn('WS closed:', e.code, e.reason);
+        _ws = null;
+        // Auto-reconnect after 5 seconds
+        if (!_wsReconnectTimer) {
+          _wsReconnectTimer = setTimeout(() => {
+            _wsReconnectTimer = null;
+            startWebSocket();
+          }, 5000);
+        }
+      };
+
+      _ws.onerror = (e) => {
+        console.error('WS error:', e);
+      };
+    }
+
+    function wsSend(msg) {
+      if (_ws && _ws.readyState === WebSocket.OPEN) {
+        _ws.send(JSON.stringify(msg));
+      }
+    }
+
+    // Keepalive ping every 30 seconds
+    setInterval(() => wsSend({ type: 'ping' }), 30000);
 
     function fmtUTC9(timeStr) {
       if (!timeStr || timeStr === 'connected') return timeStr || '—';
@@ -796,11 +854,35 @@
     }
 
     function isOnline(name, type) {
-      return _onlineUsers.some(u => u.name === name && u.type === type);
+      // Check if name belongs to any online user (by names array or direct name match)
+      for (const u of _onlineUsers) {
+        if (u.names && u.names.includes(name)) return true;
+        if (u.name === name) return true;
+      }
+      // Hysteria _h suffixed entries may be merged into parent vless entry
+      if (name.endsWith("_h")) {
+        const base = name.slice(0, -2);
+        for (const u of _onlineUsers) {
+          if (u.names && u.names.includes(base)) return true;
+          if (u.name === base) return true;
+        }
+      }
+      return false;
     }
 
     function onlineDot(name, type) {
       return isOnline(name, type) ? '<span class="pulse-dot"></span>' : '';
+    }
+
+    function _protoBadgeClass(proto) {
+      if (proto === 'vless') return 'on';
+      if (proto === 'awg') return 'awg';
+      if (proto === 'hysteria') return 'hyst';
+      return 'pending';
+    }
+
+    function _protoLabel(proto) {
+      return proto.toUpperCase();
     }
 
     function _renderOnline() {
@@ -813,24 +895,27 @@
       if (countEl) countEl.textContent = `(${online.length})`;
       if (tableEl) {
         tableEl.innerHTML = online.length
-          ? online.map(u => `
-              <tr>
-                <td>
-                  <span class="pulse-dot"></span>
-                  <span class="badge ${u.type === 'vless' ? 'on' : u.type === 'awg' ? 'awg' : 'pending'}">
-                    <span class="type-full">${u.type.toUpperCase()}</span><span class="type-short">${u.type[0].toUpperCase()}</span>
-                  </span>
-                </td>
+          ? online.map(u => {
+              const protos = u.protocols || (u.type ? [u.type] : []);
+              const badges = protos.map(p =>
+                `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:2px">
+                  <span class="type-full">${_protoLabel(p)}</span><span class="type-short">${p[0].toUpperCase()}</span>
+                </span>`
+              ).join('');
+              const displayName = u.names ? u.names[0] : u.name;
+              return `<tr>
+                <td><span class="pulse-dot"></span>${badges}</td>
                 <td>${portalLink(u.web_token, u.first_name)}</td>
-                <td class="col-online-name">${u.name}</td>
+                <td class="col-online-name">${displayName}</td>
                 <td class="mono">${u.speed_mbps > 0
                     ? '<span style="color:var(--green)">' + u.speed_mbps + '<span class="speed-unit"> Mbps</span></span>'
                     : '<span style="color:var(--muted)">—</span>'}</td>
                 <td>${u.ip_count > 1
                     ? '<span style="color:var(--orange)">' + u.ip_count + '</span>'
                     : u.ip_count}</td>
-                <td>${u.expires ? fmtDate(u.expires) : '—'}</td>
-              </tr>`).join('')
+                <td>${u.expires ? fmtDate(u.expires) + (u.is_test ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>' : '') : '—'}</td>
+              </tr>`;
+            }).join('')
           : '<tr><td colspan="6" style="color:var(--muted);text-align:center">No active connections</td></tr>';
       }
     }
@@ -843,18 +928,6 @@
       } catch (e) {
         console.warn('online refresh error', e);
       }
-    }
-
-    function startOnlineSSE() {
-      if (_onlineSSE) return;
-      _onlineSSE = new EventSource(`${B}/api/admin/online/stream`);
-      _onlineSSE.addEventListener('online', (e) => {
-        _onlineUsers = JSON.parse(e.data);
-        _renderOnline();
-      });
-      _onlineSSE.onerror = () => {
-        console.warn('SSE reconnecting...');
-      };
     }
 
     function fmtDt(s) {
@@ -883,16 +956,19 @@
           const lastSeen = u.last_seen
             ? fmtUTC9_full(u.last_seen)
             : '<span style="color:var(--muted)">never</span>';
+          const protos = u.protocols || (u.type ? [u.type] : []);
+          const badges = protos.map(p =>
+            `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:2px">
+              <span class="type-full">${_protoLabel(p)}</span><span class="type-short">${p[0].toUpperCase()}</span>
+            </span>`
+          ).join('');
+          const displayName = u.names ? u.names[0] : u.name;
           return `<tr>
-            <td>
-              <span class="badge ${u.type === 'vless' ? 'on' : u.type === 'awg' ? 'awg' : 'pending'}">
-                <span class="type-full">${u.type.toUpperCase()}</span><span class="type-short">${u.type[0].toUpperCase()}</span>
-              </span>
-            </td>
+            <td>${badges}</td>
             <td>${portalLink(u.web_token, u.first_name)}</td>
-            <td class="col-online-name">${u.name}</td>
+            <td class="col-online-name">${displayName}</td>
             <td>${lastSeen}</td>
-            <td>${u.expires ? fmtDate(u.expires) : '—'}</td>
+             <td>${u.expires ? fmtDate(u.expires) + (u.is_test ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>' : '') : '—'}</td>
           </tr>`;
         }).join('');
       } catch (e) {
@@ -1784,14 +1860,9 @@
 
     const AWG_PASS = '{{AWG_PASSWORD}}';
     loadDashboard();
-    startOnlineSSE();
+    startWebSocket();
 
-    // Auto-refresh dashboard every 30 seconds
-    setInterval(() => {
-      if (document.getElementById('s-dashboard').classList.contains('active')) loadDashboard();
-    }, 30000);
-
-    // Auto-refresh dashboard at 00:00 UTC+9
+    // Auto-refresh dashboard at 00:00 UTC+9 (keep for date-boundary refresh)
     (function scheduleUtc9Midnight() {
       const now = new Date();
       const utc9 = new Date(now.getTime() + 9 * 3600000);
