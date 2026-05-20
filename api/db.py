@@ -921,14 +921,26 @@ def disable_autopay_by_id(user_id: int):
 
 def get_autopay_users_due(days_before: int = 1) -> list[dict]:
     """Get users whose subscription expires within `days_before` days and have autopay enabled."""
+    if days_before == 0:
+        # Expires today: from start of day to end of day
+        where_clause = (
+            "WHERE autopay_enabled = 1 AND payment_method_id IS NOT NULL "
+            "AND subscription_until IS NOT NULL "
+            "AND subscription_until BETWEEN CURDATE() AND CURDATE() + INTERVAL 1 DAY"
+        )
+        params = ()
+    else:
+        where_clause = (
+            "WHERE autopay_enabled = 1 AND payment_method_id IS NOT NULL "
+            "AND subscription_until IS NOT NULL "
+            "AND subscription_until BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
+        )
+        params = (days_before,)
     return execute_query(
         "SELECT id, tg_id, email, payment_method_id, autopay_tariff, autopay_vpn_type, "
         "subscription_until, permanent_discount "
-        "FROM users "
-        "WHERE autopay_enabled = 1 AND payment_method_id IS NOT NULL "
-        "AND subscription_until IS NOT NULL "
-        "AND subscription_until BETWEEN NOW() AND NOW() + INTERVAL %s DAY",
-        (days_before,), fetch='all',
+        "FROM users " + where_clause,
+        params, fetch='all',
     )
 
 

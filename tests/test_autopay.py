@@ -29,7 +29,48 @@ async def test_no_users_due(mock_due):
     from bot_xui.autopay import process_autopayments
     bot = MagicMock()
     await process_autopayments(bot)
-    mock_due.assert_called_once_with(days_before=1)
+    # Called twice: days_before=1 (notify) and days_before=0 (charge)
+    assert mock_due.call_count == 2
+    mock_due.assert_any_call(days_before=1)
+    mock_due.assert_any_call(days_before=0)
+
+
+# ═════════════════════════════════════════════
+#  Phase 1: upcoming notification
+# ═════════════════════════════════════════════
+
+@pytest.mark.asyncio
+@patch("bot_xui.autopay.log_autopay")
+@patch("bot_xui.autopay.create_payment")
+@patch("bot_xui.autopay.Payment")
+@patch("bot_xui.autopay.get_autopay_users_due")
+async def test_phase1_notify_upcoming(mock_due, mock_pay_cls, mock_create, mock_log):
+    """Phase 1: user notified about upcoming charge, payment created."""
+    from bot_xui.autopay import process_autopayments
+
+    user = _make_user()
+    # Phase 1 (notify): days_before=1 returns the user, Phase 2: empty
+    mock_due.side_effect = [[user], []]
+
+    mock_payment = MagicMock()
+    mock_payment.id = "pay-auto-1"
+    mock_pay_cls.create.return_value = mock_payment
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    await process_autopayments(bot)
+
+    # Payment created in YooKassa
+    mock_pay_cls.create.assert_called_once()
+    mock_create.assert_called_once()
+    mock_log.assert_called_once()
+
+    # User notified about upcoming charge
+    bot.send_message.assert_called_once()
+    text = bot.send_message.call_args[1]["text"]
+    assert "Автопродление завтра" in text
+    assert "списано" in text
 
 
 # ═════════════════════════════════════════════
@@ -46,7 +87,8 @@ async def test_successful_charge(mock_due, mock_pay_cls, mock_create, mock_log):
     from bot_xui.autopay import process_autopayments
 
     user = _make_user()
-    mock_due.return_value = [user]
+    # Phase 2 (charge): days_before=0 returns the user
+    mock_due.side_effect = [[], [user]]
 
     mock_payment = MagicMock()
     mock_payment.id = "pay-auto-1"
@@ -91,7 +133,8 @@ async def test_discount_applied(mock_due, mock_pay_cls, mock_create, mock_log):
     from bot_xui.tariffs import TARIFFS
 
     user = _make_user(discount=20)  # 20% off
-    mock_due.return_value = [user]
+    # Phase 2 (charge): days_before=0 returns the user
+    mock_due.side_effect = [[], [user]]
 
     mock_payment = MagicMock()
     mock_payment.id = "pay-disc"
@@ -120,7 +163,8 @@ async def test_invalid_tariff_disables_autopay(mock_due, mock_disable):
     from bot_xui.autopay import process_autopayments
 
     user = _make_user(tariff="nonexistent_tariff")
-    mock_due.return_value = [user]
+    # Phase 1 (notify): days_before=1 returns the user
+    mock_due.side_effect = [[user], []]
 
     bot = MagicMock()
     await process_autopayments(bot)
@@ -143,7 +187,8 @@ async def test_payment_failure_disables_and_notifies(mock_due, mock_pay_cls,
     from bot_xui.autopay import process_autopayments
 
     user = _make_user()
-    mock_due.return_value = [user]
+    # Phase 2 (charge): days_before=0 returns the user
+    mock_due.side_effect = [[], [user]]
     mock_pay_cls.create.side_effect = Exception("Card declined")
 
     bot = MagicMock()
@@ -178,7 +223,8 @@ async def test_web_user_failure_disables_by_id(mock_due, mock_pay_cls,
     from bot_xui.autopay import process_autopayments
 
     user = _make_user(tg_id=0)
-    mock_due.return_value = [user]
+    # Phase 2 (charge): days_before=0 returns the user
+    mock_due.side_effect = [[], [user]]
     mock_pay_cls.create.side_effect = Exception("fail")
 
     bot = MagicMock()

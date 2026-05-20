@@ -1031,6 +1031,27 @@ async def yookassa_webhook(request: Request):
 
         success = await process_successful_payment(payment_id, payment_data, vpn_type)
 
+        # Update autopay_log and notify user if this was an autopayment
+        if success and metadata.get("is_autopayment") == "true":
+            from api.db import execute_query as _eq
+            _eq("UPDATE autopay_log SET status = 'success' WHERE payment_id = %s AND status = 'pending'", (payment_id,))
+            logger.info(f"Autopay log updated to success for payment {payment_id}")
+            # Notify user about successful autopayment
+            if tg_id:
+                try:
+                    from bot_xui.tariffs import TARIFFS
+                    tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
+                    await send_telegram_notification(
+                        tg_id,
+                        f"✅ <b>Автопродление успешно!</b>\n\n"
+                        f"📦 Тариф: {tariff_name}\n"
+                        f"💰 Списано: {payment_data.get('amount', '')} ₽\n\n"
+                        f"Подписка продлена. Конфиг обновлён автоматически.\n"
+                        f"<i>Управление автопродлением: /autopay</i>",
+                    )
+                except Exception:
+                    logger.warning(f"Failed to send autopay success notification for tg:{tg_id}", exc_info=True)
+
         if not success:
             logger.error(f"❌ Failed to process payment {payment_id}")
             update_payment_status(payment_id, "pending")  # revert so YooKassa retries
