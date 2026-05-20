@@ -556,6 +556,9 @@ async def show_single_config(query, client_name: str, xui):
     bio.seek(0)
 
     from config import SERVER_LOCATION
+    # Subscription link is always included — it's the primary way to connect
+    sub_link_text = f"📎 <b>Ссылка подписки</b> (VLESS + Hysteria в одной):\n<code>{sub_url}</code>"
+
     caption = (
         f"{sub_info}\n\n"
         f"{pretty_emoji} <b>{pretty_label}</b>  {status[0]} {status[1]}\n"
@@ -568,15 +571,20 @@ async def show_single_config(query, client_name: str, xui):
         f"   <i>Стабильный, для всех платформ</i>\n\n"
         f"🚀 <b>Hysteria 2</b>\n"
         f"   <i>Скоростной, обход жёстких блокировок</i>\n\n"
-        f"📎 <b>Ссылка подписки</b> (VLESS + Hysteria в одной):\n"
-        f"<code>{sub_url}</code>\n\n"
+        f"{sub_link_text}\n\n"
         f"💡 <i>Скопируйте ссылку или отсканируйте QR-код</i>"
     )
 
+    # Telegram caption limit is 1024 chars; append standalone links only if they fit
+    extra_links = ""
     if vless_link:
-        caption += f"\n\n🟢 <b>VLESS standalone:</b>\n<code>{vless_link}</code>"
+        extra_links += f"\n\n🟢 <b>VLESS standalone:</b>\n<code>{vless_link}</code>"
     if hysteria_link:
-        caption += f"\n\n🚀 <b>Hysteria 2 standalone:</b>\n<code>{hysteria_link}</code>"
+        extra_links += f"\n\n🚀 <b>Hysteria 2 standalone:</b>\n<code>{hysteria_link}</code>"
+
+    if len(caption) + len(extra_links) <= 950:
+        caption += extra_links
+    # If too long: sub_url subscription link is always kept, standalone links dropped
 
     keyboard = [
         [InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")],
