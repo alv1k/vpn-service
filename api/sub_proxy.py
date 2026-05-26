@@ -62,10 +62,18 @@ def _pick_vless_key(user: dict) -> dict | None:
     return max(pool, key=lambda k: k.get("expires_at") or datetime.min)
 
 
+class XUIError(Exception):
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        super().__init__(f"XUI returned {status_code}")
+
+
 async def _fetch_xui(url: str) -> bytes:
     """Получает подписку из XUI."""
     async with httpx.AsyncClient(timeout=10, verify=False) as client:
         resp = await client.get(url)
+        if resp.status_code in (400, 403, 404):
+            raise XUIError(resp.status_code)
         resp.raise_for_status()
         return resp.content
 
@@ -81,7 +89,6 @@ async def proxy_subscription(token: str):
     if not key:
         raise HTTPException(status_code=404, detail="No active subscription")
 
-    xui_url = key["subscription_link"]
     xui_url = key["subscription_link"]
     expires_at = key.get("expires_at")
 
@@ -128,6 +135,13 @@ async def proxy_subscription(token: str):
         
         raw_body = base64.b64encode(decoded_sub.encode('utf-8'))
 
+    except XUIError as e:
+        logger.warning(f"sub_proxy: XUI client not found for {token[:8]}…: HTTP {e.status_code}")
+        async with _CACHE_LOCK:
+            cached = _CACHE.get(token)
+            if cached:
+                return Response(content=cached[1], headers=cached[2])
+        raise HTTPException(status_code=410, detail="Subscription expired or removed")
     except Exception as e:
         logger.error(f"sub_proxy: XUI fetch failed for {token[:8]}…: {e}")
         async with _CACHE_LOCK:

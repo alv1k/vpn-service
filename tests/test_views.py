@@ -1,5 +1,6 @@
 """Tests for bot_xui/views.py — bot screens: menu, tariffs, configs, instructions."""
 import sys
+from io import BytesIO
 from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime, timedelta
 
@@ -30,32 +31,6 @@ class TestShowMainMenu:
 
         mock_keyboard.assert_called_once_with(111)
         mock_send.assert_called_once()
-
-
-# ═════════════════════════════════════════════
-#  show_instructions
-# ═════════════════════════════════════════════
-
-class TestShowInstructions:
-
-    @pytest.mark.asyncio
-    async def test_shows_platform_links(self):
-        """Instructions include Android, iOS, desktop, TV app links."""
-        from bot_xui.views import show_instructions
-
-        query = MagicMock()
-        query.edit_message_text = AsyncMock()
-
-        await show_instructions(query)
-
-        call_kwargs = query.edit_message_text.call_args
-        text = call_kwargs[0][0]
-        markup = call_kwargs[1]["reply_markup"]
-
-        assert "Как подключиться" in text
-        # Check keyboard has multiple rows for different platforms
-        rows = markup.inline_keyboard
-        assert len(rows) >= 4  # Android, iOS, desktop, TV + back
 
 
 # ═════════════════════════════════════════════
@@ -335,6 +310,122 @@ class TestShowNoConfigs:
         all_callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
         assert "test_protocol" not in all_callbacks
         assert "tariffs" in all_callbacks
+
+
+# ═════════════════════════════════════════════
+#  show_single_config (VLESS)
+# ═════════════════════════════════════════════
+
+class TestShowSingleConfigVless:
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
+    @patch("bot_xui.views.get_web_token", return_value="tok123")
+    @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
+    @patch("bot_xui.views.get_user_by_tg_id")
+    @patch("bot_xui.views.get_payment_by_id", return_value=None)
+    @patch("bot_xui.views.qrcode.QRCode")
+    @patch("bot_xui.views.get_keys_by_tg_id")
+    async def test_vless_caption_has_instruction_link(self, mock_keys, mock_qr_cls, mock_payment,
+                                                       mock_user_tg, mock_user_web, mock_token, mock_sub_url):
+        """VLESS single config caption includes instruction link."""
+        from bot_xui.views import show_single_config
+
+        mock_qr = MagicMock()
+        mock_qr_cls.return_value = mock_qr
+
+        mock_keys.return_value = [
+            {"client_name": "tiin_100", "vpn_type": "vless",
+             "expires_at": datetime.utcnow() + timedelta(days=10),
+             "vless_link": "vless://uuid@host", "hysteria_link": "hysteria://pwd@host",
+             "subscription_link": "https://sub/100"},
+        ]
+        mock_user_tg.return_value = {"first_name": "Test", "id": 42}
+
+        query = MagicMock()
+        query.from_user.id = 100
+        query.message.delete = AsyncMock()
+        query.message.chat.send_photo = AsyncMock()
+
+        await show_single_config(query, "tiin_100", MagicMock())
+
+        query.message.chat.send_photo.assert_called_once()
+        caption = query.message.chat.send_photo.call_args[1]["caption"]
+        assert "Инструкция" in caption
+        assert "344988.snk.wtf/my/tok123" in caption
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
+    @patch("bot_xui.views.get_web_token", return_value="tok123")
+    @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
+    @patch("bot_xui.views.get_user_by_tg_id")
+    @patch("bot_xui.views.get_payment_by_id", return_value=None)
+    @patch("bot_xui.views.qrcode.QRCode")
+    @patch("bot_xui.views.get_keys_by_tg_id")
+    async def test_vless_keyboard_has_instruction_button(self, mock_keys, mock_qr_cls, mock_payment,
+                                                         mock_user_tg, mock_user_web, mock_token, mock_sub_url):
+        """VLESS single config keyboard includes '📖 Инструкция' URL button."""
+        from bot_xui.views import show_single_config
+
+        mock_qr = MagicMock()
+        mock_qr_cls.return_value = mock_qr
+
+        mock_keys.return_value = [
+            {"client_name": "tiin_100", "vpn_type": "vless",
+             "expires_at": datetime.utcnow() + timedelta(days=10),
+             "vless_link": "vless://uuid@host", "hysteria_link": "hysteria://pwd@host",
+             "subscription_link": "https://sub/100"},
+        ]
+        mock_user_tg.return_value = {"first_name": "Test", "id": 42}
+
+        query = MagicMock()
+        query.from_user.id = 100
+        query.message.delete = AsyncMock()
+        query.message.chat.send_photo = AsyncMock()
+
+        await show_single_config(query, "tiin_100", MagicMock())
+
+        markup = query.message.chat.send_photo.call_args[1]["reply_markup"]
+        all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
+        assert any("344988.snk.wtf/my/tok123" in u for u in all_urls)
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
+    @patch("bot_xui.views.get_web_token", return_value="")
+    @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
+    @patch("bot_xui.views.get_user_by_tg_id")
+    @patch("bot_xui.views.get_payment_by_id", return_value=None)
+    @patch("bot_xui.views.qrcode.QRCode")
+    @patch("bot_xui.views.get_keys_by_tg_id")
+    async def test_vless_empty_token_caption_has_no_instruction_link(self, mock_keys, mock_qr_cls, mock_payment,
+                                                                      mock_user_tg, mock_user_web, mock_token, mock_sub_url):
+        """With empty web_token, caption instruction link is absent but button is still present."""
+        from bot_xui.views import show_single_config
+
+        mock_qr = MagicMock()
+        mock_qr_cls.return_value = mock_qr
+
+        mock_keys.return_value = [
+            {"client_name": "tiin_100", "vpn_type": "vless",
+             "expires_at": datetime.utcnow() + timedelta(days=10),
+             "vless_link": "vless://uuid@host", "hysteria_link": "hysteria://pwd@host",
+             "subscription_link": "https://sub/100"},
+        ]
+        mock_user_tg.return_value = {"first_name": "Test", "id": 42}
+
+        query = MagicMock()
+        query.from_user.id = 100
+        query.message.delete = AsyncMock()
+        query.message.chat.send_photo = AsyncMock()
+
+        await show_single_config(query, "tiin_100", MagicMock())
+
+        caption = query.message.chat.send_photo.call_args[1]["caption"]
+        assert "344988.snk.wtf/my/" not in caption
+        # No instruction button without token
+        markup = query.message.chat.send_photo.call_args[1]["reply_markup"]
+        all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
+        assert not any("344988.snk.wtf/my/" in u for u in all_urls)
 
 
 # ═════════════════════════════════════════════

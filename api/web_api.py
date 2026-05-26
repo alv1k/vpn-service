@@ -403,7 +403,7 @@ async def activate_test(req: TestActivateRequest):
         remark=f"🇩🇪 {SERVER_LOCATION} | VLESS",
     )
 
-    sub_url = xui.get_subscription_url_by_uuid(client_uuid)
+    sub_url = xui.get_client_subscription_url(tg_id=0) or ""
 
     create_vpn_key(
         tg_id=0, payment_id=None,

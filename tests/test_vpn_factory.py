@@ -26,6 +26,77 @@ def test_make_qr_bytes_returns_png():
 #  create_vless_config
 # ═════════════════════════════════════════════
 
+class TestCreateXuiMultiConfig:
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://fake")
+    @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://fake")
+    @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
+    async def test_success(self, mock_remark, mock_hyst, mock_vless):
+        """Creates VLESS+Hysteria clients and returns config dict."""
+        from bot_xui.vpn_factory import create_xui_multi_config
+
+        xui = MagicMock()
+        xui.add_client.side_effect = [
+            {"success": True, "subId": "abc123"},
+            {"success": True},
+        ]
+
+        result = await create_xui_multi_config(tg_id=55555, xui=xui)
+
+        assert result["client_email"] == "tiin_55555"
+        assert len(result["client_uuid"]) == 36
+        assert result["vless_link"] == "vless://fake"
+        assert result["hysteria_link"] == "hysteria2://fake"
+        assert xui.add_client.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://fake")
+    @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://fake")
+    @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
+    async def test_duplicate_email_reuses_sub_id(self, mock_remark, mock_hyst, mock_vless):
+        """When XUI returns Duplicate email, fetches existing subId instead of failing."""
+        from bot_xui.vpn_factory import create_xui_multi_config
+
+        xui = MagicMock()
+        xui.add_client.side_effect = [
+            {"success": False, "msg": "Duplicate email: tiin_55555\n"},
+            {"success": True},
+        ]
+        xui.get_client_subscription_url.return_value = "https://sub/existing_sub"
+
+        result = await create_xui_multi_config(tg_id=55555, xui=xui)
+
+        assert result["client_email"] == "tiin_55555"
+        xui.get_client_subscription_url.assert_called_once_with(55555)
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.generate_vless_link")
+    @patch("bot_xui.vpn_factory.generate_hysteria2_link")
+    @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
+    async def test_duplicate_email_no_sub_id_raises(self, mock_remark, mock_hyst, mock_vless):
+        """When Duplicate email and no subId found, raises RuntimeError."""
+        from bot_xui.vpn_factory import create_xui_multi_config
+
+        xui = MagicMock()
+        xui.add_client.return_value = {"success": False, "msg": "Duplicate email: tiin_55555\n"}
+        xui.get_client_subscription_url.return_value = None
+
+        with pytest.raises(RuntimeError, match="не удалось получить subId"):
+            await create_xui_multi_config(tg_id=55555, xui=xui)
+
+    @pytest.mark.asyncio
+    async def test_vless_creation_failure_raises(self):
+        """When VLESS add_client fails (non-duplicate), raises RuntimeError."""
+        from bot_xui.vpn_factory import create_xui_multi_config
+
+        xui = MagicMock()
+        xui.add_client.return_value = {"success": False, "msg": "some error"}
+
+        with pytest.raises(RuntimeError, match="Не удалось создать VLESS"):
+            await create_xui_multi_config(tg_id=111, xui=xui)
+
+
 class TestCreateVlessConfig:
 
     @pytest.mark.asyncio
@@ -197,24 +268,27 @@ class TestHandleTestVless:
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.get_web_token", return_value="tok123")
+    @patch("bot_xui.vpn_factory.sync_expiry")
     @patch("bot_xui.vpn_factory.set_vless_test_activated")
     @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_success(self, mock_is_act, mock_create, mock_qr,
-                           mock_key, mock_set_act, mock_token):
-        """Happy path: config created, QR sent, flag set."""
+                           mock_key, mock_set_act, mock_sync, mock_token):
+        """Happy path: config created, QR sent, flag set, expiry synced."""
         from bot_xui.vpn_factory import handle_test_vless
 
+        expires_at = datetime.now(timezone.utc)
         mock_create.return_value = {
             "client_email": "tiin_111", "client_uuid": "uuid-1",
-            "vless_link": "vless://test", "hysteria_link": "hysteria://test", "expires_at": datetime.now(timezone.utc),
+            "vless_link": "vless://test", "hysteria_link": "hysteria://test", "expires_at": expires_at,
         }
 
         query = MagicMock()
         query.from_user.id = 111
-        query.edit_message_text = AsyncMock()
+        query.message.delete = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
         query.message.reply_photo = AsyncMock()
 
         xui = MagicMock()
@@ -225,6 +299,9 @@ class TestHandleTestVless:
         mock_create.assert_called_once()
         mock_key.assert_called_once()
         mock_set_act.assert_called_once_with(111)
+        mock_sync.assert_called_once_with(111, expires_at)
+        query.message.delete.assert_called_once()
+        query.message.chat.send_message.assert_called_once()
         query.message.reply_photo.assert_called_once()
 
     @pytest.mark.asyncio
@@ -251,7 +328,8 @@ class TestHandleTestVless:
 
         query = MagicMock()
         query.from_user.id = 333
-        query.edit_message_text = AsyncMock()
+        query.message.delete = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
         query.message.reply_text = AsyncMock()
 
         xui = MagicMock()
@@ -283,8 +361,10 @@ class TestHandleTestAwg:
 
         query = MagicMock()
         query.from_user.id = 444
-        query.edit_message_text = AsyncMock()
+        query.message.delete = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
         query.message.reply_document = AsyncMock()
+        query.message.reply_text = AsyncMock()
 
         xui = MagicMock()
         await handle_test_awg(query, xui)
@@ -292,6 +372,7 @@ class TestHandleTestAwg:
         mock_create.assert_called_once_with(444)
         mock_key.assert_called_once()
         mock_set_act.assert_called_once_with(444)
+        query.message.delete.assert_called_once()
         query.message.reply_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -303,7 +384,8 @@ class TestHandleTestAwg:
 
         query = MagicMock()
         query.from_user.id = 555
-        query.edit_message_text = AsyncMock()
+        query.message.delete = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
         query.message.reply_text = AsyncMock()
 
         xui = MagicMock()
@@ -375,17 +457,20 @@ class TestEnsureTestSubscription:
         assert result is None
 
     @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.sync_expiry")
     @patch("bot_xui.vpn_factory.set_vless_test_activated")
     @patch("bot_xui.vpn_factory.upsert_vpn_key")
-    @patch("bot_xui.vpn_factory.create_vless_config")
+    @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_creates_and_marks_activated(self, mock_is_act, mock_create,
-                                                mock_key, mock_set_act):
-        """Creates config, stores key, marks activated, returns config dict."""
+                                                mock_key, mock_set_act, mock_sync):
+        """Creates config, stores key, marks activated, syncs expiry, returns config dict."""
         from bot_xui.vpn_factory import ensure_test_subscription
+        expires_at = datetime.now(timezone.utc)
         mock_create.return_value = {
             "client_email": "tiin_222", "client_uuid": "uuid-x",
-            "vless_link": "vless://test", "expires_at": datetime.now(timezone.utc),
+            "vless_link": "vless://test", "hysteria_link": "hysteria://test",
+            "expires_at": expires_at,
         }
         xui = MagicMock()
         xui.get_client_subscription_url.return_value = "https://sub/222"
@@ -397,6 +482,7 @@ class TestEnsureTestSubscription:
         assert result["sub_url"] == "https://sub/222"
         mock_key.assert_called_once()
         mock_set_act.assert_called_once_with(222)
+        mock_sync.assert_called_once_with(222, expires_at)
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.create_vless_config", side_effect=RuntimeError("XUI down"))
@@ -406,6 +492,137 @@ class TestEnsureTestSubscription:
         from bot_xui.vpn_factory import ensure_test_subscription
         result = await ensure_test_subscription(tg_id=333, xui=MagicMock())
         assert result is None
+
+
+# ═════════════════════════════════════════════
+#  activate_test_period
+# ═════════════════════════════════════════════
+
+class TestActivateTestPeriod:
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=True)
+    async def test_already_activated_shows_error(self, mock_is_act):
+        """Already activated user sees error message."""
+        from bot_xui.vpn_factory import activate_test_period
+
+        query = MagicMock()
+        query.from_user.id = 111
+        query.message.delete = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
+
+        await activate_test_period(query, MagicMock())
+
+        query.message.chat.send_message.assert_called_once()
+        text = query.message.chat.send_message.call_args[0][0]
+        assert "уже был активирован" in text
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.make_back_keyboard")
+    @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
+    async def test_active_subscription_shows_configs(self, mock_is_act, mock_keys, mock_back):
+        """User with active VLESS subscription is redirected to configs."""
+        from bot_xui.vpn_factory import activate_test_period
+
+        mock_keys.return_value = [
+            {"vpn_type": "vless", "expires_at": datetime.utcnow() + timedelta(days=5)},
+        ]
+        mock_back.return_value = "back_keyboard"
+        query = MagicMock()
+        query.from_user.id = 111
+        query.message.delete = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
+
+        await activate_test_period(query, MagicMock())
+        query.message.chat.send_message.assert_called_once()
+        text = query.message.chat.send_message.call_args[0][0]
+        assert "активная подписка" in text
+
+    @pytest.mark.asyncio
+    @patch("api.db.get_web_token", return_value="tok123")
+    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.vpn_factory.ensure_test_subscription")
+    @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
+    async def test_success_sends_qr_and_instructions(self, mock_is_act, mock_keys,
+                                                      mock_ensure, mock_qr, mock_token):
+        """Success: QR sent with instruction link and button."""
+        from bot_xui.vpn_factory import activate_test_period
+
+        mock_ensure.return_value = {
+            "client_email": "tiin_111", "client_uuid": "uuid-1",
+            "vless_link": "vless://test", "hysteria_link": "hysteria://test",
+            "expires_at": datetime.now(timezone.utc),
+            "sub_url": "https://sub/111",
+        }
+
+        query = MagicMock()
+        query.from_user.id = 111
+        query.message.delete = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
+        query.message.reply_photo = AsyncMock()
+
+        await activate_test_period(query, MagicMock())
+
+        query.message.delete.assert_called_once()
+        query.message.reply_photo.assert_called_once()
+        caption = query.message.reply_photo.call_args[1]["caption"]
+        assert "Тестовый период активирован" in caption
+        assert "Ссылка подписки" in caption
+        assert "https://sub/111" in caption
+
+    @pytest.mark.asyncio
+    @patch("api.db.get_web_token", return_value="tok123")
+    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.vpn_factory.ensure_test_subscription")
+    @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
+    async def test_keyboard_has_instruction_button(self, mock_is_act, mock_keys,
+                                                    mock_ensure, mock_qr, mock_token):
+        """Keyboard includes '📖 Инструкция' URL button."""
+        from bot_xui.vpn_factory import activate_test_period
+
+        mock_ensure.return_value = {
+            "client_email": "tiin_111", "client_uuid": "uuid-1",
+            "vless_link": "vless://test", "hysteria_link": "hysteria://test",
+            "expires_at": datetime.now(timezone.utc),
+            "sub_url": "https://sub/111",
+        }
+
+        query = MagicMock()
+        query.from_user.id = 111
+        query.message.delete = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
+        query.message.reply_photo = AsyncMock()
+
+        await activate_test_period(query, MagicMock())
+
+        markup = query.message.reply_photo.call_args[1]["reply_markup"]
+        all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
+        assert any("344988.snk.wtf/my/tok123" in u for u in all_urls)
+        all_callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert "tariffs" in all_callbacks
+
+    @pytest.mark.asyncio
+    @patch("bot_xui.vpn_factory.ensure_test_subscription", return_value=None)
+    @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
+    @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
+    async def test_failure_shows_error(self, mock_is_act, mock_keys, mock_ensure):
+        """Failed activation shows error and suggests support."""
+        from bot_xui.vpn_factory import activate_test_period
+
+        query = MagicMock()
+        query.from_user.id = 111
+        query.message.delete = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
+        query.message.reply_text = AsyncMock()
+
+        await activate_test_period(query, MagicMock())
+
+        query.message.reply_text.assert_called_once()
+        text = query.message.reply_text.call_args[0][0]
+        assert "Не удалось активировать" in text
 
 
 # ═════════════════════════════════════════════

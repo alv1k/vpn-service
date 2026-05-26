@@ -129,9 +129,9 @@ class XUIClient:
 
             logger.info(f"duration_ms: {duration_ms}, new_expiry: {new_expiry}")
 
-            client_id = client.get('id')
+            client_id = client.get('id') or client.get('auth')
             if not client_id:
-                logger.error(f"Client has no 'id' field: {client.get('email', 'unknown')}")
+                logger.error(f"Client has no 'id' or 'auth' field: {client.get('email', 'unknown')}")
                 return False
 
             updated_client = {**client, 'expiryTime': new_expiry}

@@ -79,6 +79,24 @@ def get_all_keys():
     return keys_by_tg
 
 
+def get_hysteria_clients_from_panel(xui):
+    """Получить tg_id пользователей, у которых есть hysteria2 конфиг в x-ui. Возвращает set(tg_id)."""
+    hysteria_tg_ids = set()
+    try:
+        inbounds = xui.get_inbounds()
+        for ib in inbounds:
+            if ib.get('protocol') != 'hysteria':
+                continue
+            settings = json.loads(ib.get('settings', '{}'))
+            for client in settings.get('clients', []):
+                tg_id = client.get('tgId')
+                if tg_id:
+                    hysteria_tg_ids.add(int(tg_id))
+    except Exception as e:
+        log.warning(f"Hysteria client collection error: {e}")
+    return hysteria_tg_ids
+
+
 def get_all_payments():
     """Все оплаченные платежи, сгруппированные по tg_id."""
     rows = execute_query(
@@ -113,18 +131,20 @@ def _get_client_name_to_tg_id():
 
 
 def get_traffic_from_panel(xui):
-    """Получить трафик ВСЕХ клиентов: VLESS (3x-ui) + AWG + SoftEther. Возвращает {tg_id: {upload, download, enabled}}."""
+    """Получить трафик ВСЕХ клиентов: VLESS + Hysteria2 (3x-ui) + AWG + SoftEther. Возвращает {tg_id: {upload, download, enabled}}."""
     traffic = {}
 
-    # ── VLESS (3x-ui) ──
+    # ── VLESS + Hysteria2 (3x-ui) ──
     inbounds = xui.get_inbounds()
+    # Build email→tg_id map ONCE from all inbounds (covers both VLESS and hysteria clients)
+    email_to_tg = {}
     for ib in inbounds:
         settings = json.loads(ib.get('settings', '{}'))
-        email_to_tg = {}
         for client in settings.get('clients', []):
             if client.get('tgId'):
                 email_to_tg[client.get('email')] = int(client['tgId'])
 
+    for ib in inbounds:
         for cs in ib.get('clientStats', []):
             tg_id = email_to_tg.get(cs.get('email'))
             if tg_id:
@@ -214,12 +234,15 @@ DELAY = {
     'multi_config_partial': 7,# 7 дней без трафика
     'never_activated': 1,     # 1 день после регистрации
     'vless_only_inactive': 1,  # VLESS-only офлайн 1+ день — предложить AWG
+    'awg_inactive': 1,         # есть AWG конфиг, офлайн 1+ день — напомнить о себе
     'recently_inactive': 1,   # не заходил 1-3 дня (был активен)
 }
 
 
-def classify_users(users, keys_by_tg, payments_by_tg, traffic):
+def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=None):
     """Классифицировать пользователей по сценариям возврата."""
+    if hysteria_tg_ids is None:
+        hysteria_tg_ids = set()
     results = {
         'zero_traffic': [],        # 0 MB — не подключался
         'low_traffic': [],         # < 5 MB — попробовал, не заработало
@@ -232,7 +255,8 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
         'panel_db_mismatch': [],   # активен в БД, деактивирован в панели
         'never_activated': [],     # зарегистрировался, тест не активировал, ключей нет
         'vless_only_inactive': [],  # VLESS-only, офлайн 1+ день, нет AWG — предложить AWG
-        'recently_inactive': [],   # был онлайн 1-3 дня назад, перестал заходить
+        'awg_inactive': [],        # есть AWG конфиг, офлайн 1+ день — напомнить о себе
+        'recently_inactive': [],   # не заходил 1-3 дня (был активен)
     }
 
     for user in users:
@@ -249,17 +273,21 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
         has_active_key = any(
             k['expires_at'] and k['expires_at'] > NOW for k in user_keys
         )
-        has_vless = any(k['vpn_type'] == 'vless' for k in user_keys)
+        has_vless = any(k['vpn_type'] == 'vless' for k in user_keys) or tg_id in hysteria_tg_ids
+        has_awg = any(k['vpn_type'] == 'awg' for k in user_keys)
 
         key_age = _key_age_days(user_keys) if user_keys else 0
 
+        vpn_types = list(set(k['vpn_type'] for k in user_keys))
+        if tg_id in hysteria_tg_ids and 'hysteria' not in vpn_types:
+            vpn_types.append('hysteria')
         info = {
             'tg_id': tg_id,
             'name': user.get('first_name', ''),
             'sub_until': sub_until,
             'total_mb': round(total_bytes / MB, 2),
             'keys': len(user_keys),
-            'vpn_types': list(set(k['vpn_type'] for k in user_keys)),
+            'vpn_types': vpn_types,
             'paid_count': len(user_payments),
         }
 
@@ -318,12 +346,19 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic):
 
         # Сценарий: VLESS-only пользователь ушёл в офлайн — предложить AWG
         last_online_ms = user_traffic.get('last_online', 0)
-        has_awg = any(k['vpn_type'] == 'awg' for k in user_keys)
         if has_active_key and has_vless and not has_awg and last_online_ms > 0:
             last_online_dt = datetime.utcfromtimestamp(last_online_ms / 1000)
             days_offline = (NOW - last_online_dt).days
             if days_offline >= DELAY['vless_only_inactive']:
                 results['vless_only_inactive'].append({**info, 'days_offline': days_offline})
+                continue
+
+        # Сценарий: Есть AWG конфиг, но пользователь ушёл в офлайн — напомнить о себе
+        if has_active_key and has_awg and last_online_ms > 0:
+            last_online_dt = datetime.utcfromtimestamp(last_online_ms / 1000)
+            days_offline = (NOW - last_online_dt).days
+            if days_offline >= DELAY['awg_inactive']:
+                results['awg_inactive'].append({**info, 'days_offline': days_offline})
                 continue
 
         # Сценарий: Был онлайн 1-3 дня назад, перестал заходить
@@ -418,6 +453,13 @@ MESSAGES = {
         "Нажмите кнопку ниже — мы выдадим вам конфиг AmneziaWG "
         "в дополнение к текущему VLESS."
     ),
+    'awg_inactive': (
+        "👋 Привет!\n\n"
+        "Заметили, что вы давно не подключались к VPN. "
+        "Всё ли в порядке?\n\n"
+        "Если возникли вопросы или проблемы с подключением — "
+        "напишите нам, поможем! 💬"
+    ),
     'recently_inactive': (
         "👋 Мы скучаем!\n\n"
         "Заметили, что вы давно не заходили. "
@@ -428,16 +470,19 @@ MESSAGES = {
 }
 
 
-def get_buttons_for_scenario(scenario):
+def get_buttons_for_scenario(scenario, tg_id=None):
+    from api.db import get_web_token
+    token = get_web_token(tg_id) if tg_id else None
+    instr_url = f"https://344988.snk.wtf/my/{token}" if token else "https://344988.snk.wtf/my/"
     if scenario in ('zero_traffic', 'low_traffic', 'panel_db_mismatch'):
         return [
             [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
-            [{"text": "📋 Инструкция", "callback_data": "instructions"}],
+            [{"text": "📋 Инструкция", "url": instr_url}],
         ]
     elif scenario == 'test_no_connect':
         return [
             [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
-            [{"text": "📋 Инструкция", "callback_data": "instructions"}],
+            [{"text": "📋 Инструкция", "url": instr_url}],
             [{"text": "💎 Тарифы", "callback_data": "tariffs"}],
         ]
     elif scenario in ('expired_fresh', 'expired_old', 'test_no_purchase'):
@@ -456,6 +501,11 @@ def get_buttons_for_scenario(scenario):
         return [
             [{"text": "⚡ Получить AmneziaWG конфиг", "callback_data": "get_awg_config"}],
             [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
+        ]
+    elif scenario == 'awg_inactive':
+        return [
+            [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
+            [{"text": "💬 Написать нам", "url": "https://t.me/tiin_service_bot"}],
         ]
     elif scenario == 'recently_inactive':
         return [
@@ -495,7 +545,7 @@ def print_report(results):
                 extra += f" | офлайн {u['days_offline']}д"
             print(
                 f"  tg_id={str(u['tg_id'] or 0):<12} "
-                f"name={str(u['name'] or ''):<15} "
+                f"name={str(u.get('name') or ''):<15} "
                 f"traffic={u['total_mb']:.1f}MB "
                 f"keys={u['keys']} "
                 f"types={u['vpn_types']} "
@@ -551,10 +601,9 @@ async def send_messages(results):
         if not msg_template:
             continue
 
-        buttons = get_buttons_for_scenario(scenario)
-
         for u in users:
             tg_id = u['tg_id']
+            buttons = get_buttons_for_scenario(scenario, tg_id)
             if not tg_id:
                 log.info(f"⏭ Skip user_id={u.get('id','?')} [{scenario}] — no tg_id")
                 skipped += 1
@@ -583,6 +632,7 @@ async def send_messages(results):
                 text=msg,
                 parse_mode="HTML",
                 buttons=buttons if buttons else None,
+                source="cron_winback", scenario=scenario,
             )
             if ok:
                 sent += 1
@@ -609,10 +659,11 @@ def main():
     keys_by_tg = get_all_keys()
     payments_by_tg = get_all_payments()
     traffic = get_traffic_from_panel(xui)
+    hysteria_tg_ids = get_hysteria_clients_from_panel(xui)
 
-    log.info(f"Пользователей: {len(users)}, с ключами: {len(keys_by_tg)}, с трафиком: {len(traffic)}")
+    log.info(f"Пользователей: {len(users)}, с ключами: {len(keys_by_tg)}, с трафиком: {len(traffic)}, с hysteria2: {len(hysteria_tg_ids)}")
 
-    results = classify_users(users, keys_by_tg, payments_by_tg, traffic)
+    results = classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids)
     print_report(results)
 
     if send_mode:

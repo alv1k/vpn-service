@@ -24,6 +24,27 @@ async def process_autopayments(bot):
     - Phase 1 (days_before=1): notify user that charge will happen tomorrow, create pending payment
     - Phase 2 (days_before=0): charge the saved payment method
     """
+    # Prevent concurrent runs (e.g. bot restart + cron overlap)
+    import fcntl, os
+    lock_path = "/tmp/tiin_autopay.lock"
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError):
+        logger.warning("[AUTOPAY] Another autopay process is running, skipping")
+        return
+
+    try:
+        await _process_autopayments_locked(bot)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        try: os.unlink(lock_path)
+        except: pass
+
+
+async def _process_autopayments_locked(bot):
+    """Actual autopay logic (called under file lock)."""
     Configuration.account_id = YOO_KASSA_SHOP_ID
     Configuration.secret_key = YOO_KASSA_SECRET_KEY
 
@@ -77,6 +98,12 @@ async def process_autopayments(bot):
                         ),
                         parse_mode="HTML",
                     )
+                    try:
+                        from api.db import log_message_sent
+                        log_message_sent(tg_id=tg_id, source="cron_autopay",
+                                         scenario="autopay_reminder", status='sent')
+                    except Exception:
+                        pass
                 logger.info(f"[AUTOPAY] Phase 1: notified tg:{tg_id}, payment {payment.id}")
             except Exception as e:
                 logger.error(f"[AUTOPAY] Phase 1 failed for user {user_id}: {e}")
@@ -130,6 +157,12 @@ async def process_autopayments(bot):
                         ),
                         parse_mode="HTML",
                     )
+                    try:
+                        from api.db import log_message_sent
+                        log_message_sent(tg_id=tg_id, source="cron_autopay",
+                                         scenario="autopay_charge", status='sent')
+                    except Exception:
+                        pass
                 logger.info(f"[AUTOPAY] Phase 2: charged tg:{tg_id}, payment {payment.id}")
             except Exception as e:
                 logger.error(f"[AUTOPAY] Phase 2 failed for user {user_id}: {e}")
@@ -151,6 +184,12 @@ async def process_autopayments(bot):
                             parse_mode="HTML",
                             reply_markup={"inline_keyboard": [[{"text": "💎 Тарифы", "callback_data": "tariffs"}]]},
                         )
+                        try:
+                            from api.db import log_message_sent
+                            log_message_sent(tg_id=tg_id, source="cron_autopay",
+                                             scenario="autopay_failed", status='sent')
+                        except Exception:
+                            pass
                     except Exception:
                         pass
 

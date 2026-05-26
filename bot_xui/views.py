@@ -101,46 +101,6 @@ async def show_main_menu(query, xui=None):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Инструкция
-# ──────────────────────────────────────────────────────────────────────────────
-
-_INSTRUCTION_APPS_ANDROID = [
-    ("Hiddify", "https://play.google.com/store/apps/details?id=app.hiddify.com"),
-    ("Happ",    "https://play.google.com/store/apps/details?id=com.happproxy&hl=ru"),
-]
-_INSTRUCTION_APPS_IOS = [
-    ("Happ",      "https://apps.apple.com/app/happ-proxy-utility/id6504287215"),
-    ("Streisand", "https://apps.apple.com/app/streisand/id6450534064"),
-]
-_INSTRUCTION_APPS_DESKTOP = [
-    ("Hiddify (Win/Mac)", "https://github.com/hiddify/hiddify-app/releases"),
-    ("SoftEther (Win)",   "https://www.softether-download.com/en.aspx?product=softether"),
-]
-_INSTRUCTION_APPS_TV = [
-    ("VPN4TV", "https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify"),
-]
-
-async def show_instructions(query):
-    caption = (
-        "📖 <b>Как подключиться</b>\n\n"
-        "<b>1.</b> Скачайте приложение для вашего устройства\n"
-        "<b>2.</b> Откройте <b>Мои конфиги</b> → скопируйте ссылку или QR\n"
-        "<b>3.</b> Вставьте в приложение и подключитесь\n\n"
-        "👇 <b>Выберите ваше устройство:</b>"
-    )
-    keyboard = [
-        [InlineKeyboardButton(f"🤖 {label}", url=url) for label, url in _INSTRUCTION_APPS_ANDROID],
-        [InlineKeyboardButton(f"🍏 {label}", url=url) for label, url in _INSTRUCTION_APPS_IOS],
-        [InlineKeyboardButton(f"💻 {label}", url=url) for label, url in _INSTRUCTION_APPS_DESKTOP],
-        [InlineKeyboardButton(f"📺 {label}", url=url) for label, url in _INSTRUCTION_APPS_TV],
-        [InlineKeyboardButton("🖥 Windows XP/7 (SoftEther)", callback_data="test_protocol_choose")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
-    ]
-
-    await query.edit_message_text(caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # Тарифы
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -493,7 +453,10 @@ async def show_single_config(query, client_name: str, xui):
             f"Логин: <pre>{creds.get('username', '')}</pre>\n"
             f"Пароль: <pre>{creds.get('password', '')}</pre>\n"
         )
-        await query.message.delete()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
 
         # Отправляем .vpn файл если есть
         vpn_file_content = key.get("vpn_file")
@@ -531,7 +494,10 @@ async def show_single_config(query, client_name: str, xui):
         conf_bio = BytesIO(conf_text.encode("utf-8"))
         conf_bio.name = f"{key['client_name']}.conf"
 
-        await query.message.delete()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         await query.message.chat.send_document(
             document=conf_bio,
             caption=caption,
@@ -575,6 +541,10 @@ async def show_single_config(query, client_name: str, xui):
         f"💡 <i>Скопируйте ссылку или отсканируйте QR-код</i>"
     )
 
+    instr_token = get_web_token(tg_id)
+    if instr_token:
+        caption += f'\n\n📖 <a href="https://344988.snk.wtf/my/{instr_token}">Инструкция по подключению</a>'
+
     # Telegram caption limit is 1024 chars; append standalone links only if they fit
     extra_links = ""
     if vless_link:
@@ -584,16 +554,30 @@ async def show_single_config(query, client_name: str, xui):
 
     if len(caption) + len(extra_links) <= 950:
         caption += extra_links
+    else:
+        logger.info(f"show_single_config: standalone links dropped, caption={len(caption)}, extra={len(extra_links)}, total={len(caption)+len(extra_links)}")
     # If too long: sub_url subscription link is always kept, standalone links dropped
+
+    logger.info(f"show_single_config: sending photo caption, length={len(caption)}")
+
+    # Telegram caption limit is 1024 chars — truncate if needed
+    if len(caption) > 1024:
+        caption = caption[:1020] + "…"
+        logger.warning(f"show_single_config: caption truncated to 1024 chars")
 
     keyboard = [
         [InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")],
     ]
+    if instr_token:
+        keyboard.append([InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{instr_token}")])
     if is_test_tariff:
         keyboard.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])
     keyboard.append([InlineKeyboardButton("🔙 К списку", callback_data="my_configs")])
 
-    await query.message.delete()
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
     await query.message.chat.send_photo(
         photo=bio,
         caption=caption,

@@ -166,7 +166,18 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
              res_vless = {"success": False}
              
     if not res_vless.get("success"):
-        raise RuntimeError("Не удалось создать VLESS клиента")
+        msg = res_vless.get("msg", "")
+        if "Duplicate email" in msg:
+            # Клиент уже существует — просто получаем его subId
+            logger.info(f"VLESS client for {client_email} already exists, reusing")
+            sub_url = xui.get_client_subscription_url(tg_id)
+            if sub_url:
+                sub_id = sub_url.split('/')[-1]
+                res_vless = {"success": True, "subId": sub_id}
+            else:
+                raise RuntimeError(f"Клиент {client_email} уже существует, но не удалось получить subId")
+        else:
+            raise RuntimeError(f"Не удалось создать VLESS клиента: {msg}")
 
     sub_id = res_vless["subId"]
 
@@ -312,7 +323,11 @@ async def handle_test_awg(query, xui: XUIClient):
         from bot_xui.views import show_configs
         await show_configs(query, xui)
         return
-    await query.edit_message_text("⏳ Создаю тестовый AmneziaWG конфиг...")
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    await query.message.chat.send_message("⏳ Создаю тестовый AmneziaWG конфиг...")
 
     try:
         data = await create_awg_config(tg_id)
@@ -346,7 +361,7 @@ async def handle_test_awg(query, xui: XUIClient):
 
         set_awg_test_activated(tg_id)
 
-        await query.edit_message_text(
+        await query.message.reply_text(
             "✅ Конфиг создан!\n\nПроверьте сообщение выше ☝️",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")]
@@ -531,7 +546,11 @@ async def handle_test_vless(query, xui: XUIClient):
         from bot_xui.views import show_configs
         await show_configs(query, xui)
         return
-    await query.edit_message_text("⏳ Создаю тестовый конфиг (VLESS + Hysteria)...")
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    await query.message.chat.send_message("⏳ Создаю тестовый конфиг (VLESS + Hysteria)...")
 
     try:
         data = await create_xui_multi_config(tg_id, xui)
@@ -561,10 +580,14 @@ async def handle_test_vless(query, xui: XUIClient):
                 f"💬 Поддержка: кнопка «Написать нам» в меню"
             ),
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{get_web_token(tg_id) or ''}")],
+                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
+            ]),
         )
 
         set_vless_test_activated(tg_id)
-
+        sync_expiry(tg_id, data["expires_at"])
 
     except Exception as e:
         logger.error(f"XUI multi-config error: {e}")
@@ -592,6 +615,7 @@ async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
             subscription_link=sub_url,
         )
         set_vless_test_activated(tg_id)
+        sync_expiry(tg_id, data["expires_at"])
         logger.info(f"Auto-granted test Multi-XUI for tg_id={tg_id}")
         return {**data, "sub_url": sub_url}
     except Exception as e:
@@ -642,25 +666,33 @@ async def activate_test_period(query, xui):
     from datetime import datetime
     from bot_xui.vpn_factory import ensure_test_subscription, make_qr_bytes
     from api.db import get_web_token
-    
+
     tg_id = query.from_user.id
-    
+
     # Проверяем, не активирован ли уже тест
     if is_vless_test_activated(tg_id):
-        await query.edit_message_text(
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await query.message.chat.send_message(
             "❌ Тестовый период уже был активирован ранее.\n\n"
             "Ты можешь приобрести тариф, чтобы продолжить пользоваться VPN.",
             reply_markup=make_back_keyboard()
         )
         return
-    
-    # Проверяем, нет ли уже активной подписки
+
+    # Проверяем, нет ли уже активного VLESS ключа
     keys = get_keys_by_tg_id(tg_id)
     now = datetime.utcnow()
-    active_keys = [k for k in keys if k.get("expires_at") and k["expires_at"] > now]
-    
-    if active_keys:
-        await query.edit_message_text(
+    active_vless_keys = [k for k in keys if k.get("vpn_type") == "vless" and k.get("expires_at") and k["expires_at"] > now]
+
+    if active_vless_keys:
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await query.message.chat.send_message(
             "✅ У тебя уже есть активная подписка!\n\n"
             "Ты можешь посмотреть свои конфиги в разделе «🔑 Мои конфиги».",
             reply_markup=make_back_keyboard()
@@ -668,10 +700,13 @@ async def activate_test_period(query, xui):
         return
     
     # Отправляем сообщение о начале активации
-    await query.edit_message_text(
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    await query.message.chat.send_message(
         "🎁 Активируем тестовый период...\n\n"
         "⏳ Пожалуйста, подожди несколько секунд.",
-        reply_markup=None
     )
     
     # Создаем тестовую подписку
@@ -701,13 +736,18 @@ async def activate_test_period(query, xui):
                 f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
                 f"📎 Ссылка подписки:\n<code>{result['sub_url']}</code>\n\n"
                 f"📲 <b>Как подключиться:</b>\n"
-                f"• Скачай приложение и скопируй ссылку\n"
-                f"• Вставь в приложение и наслаждайся!\n\n"
-                f'📖 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Подробная инструкция</a>\n\n'
+                f"1. Скачай приложение (кнопка 👇)\n"
+                f"2. Скопируй <b>ссылку подписки</b> или отсканируй <b>QR</b>\n"
+                f"3. Вставь в приложение нажав «+»\n"
+                f"4. Подключись! ✅\n\n"
                 f"💎 После окончания теста выбери тариф для продолжения."
             ),
             parse_mode="HTML",
-            reply_markup=make_back_keyboard("💎 Выбрать тариф", "tariffs")
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{get_web_token(tg_id) or ''}")],
+                [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
+                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
+            ])
         )
     except Exception as e:
         logger.error(f"Failed to send test config: {e}")
@@ -849,7 +889,11 @@ async def handle_test_softether(query):
         from bot_xui.views import show_configs
         await show_configs(query, xui)
         return
-    await query.edit_message_text("⏳ Создаю тестовый SoftEther конфиг...")
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    await query.message.chat.send_message("⏳ Создаю тестовый SoftEther конфиг...")
 
     try:
         data = create_softether_config(tg_id, hours=TARIFFS["test_24h"]["hours"])
@@ -891,7 +935,7 @@ async def handle_test_softether(query):
         await query.message.reply_text(
             "✅ Конфиг создан! Выберите действие:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📑 Инструкция и ссылки", callback_data="instructions")],
+                [InlineKeyboardButton("📑 Инструкция и ссылки", url=f"https://344988.snk.wtf/my/{get_web_token(tg_id) or ''}")],
                 [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")],
             ]),
         )

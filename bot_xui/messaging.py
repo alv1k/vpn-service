@@ -20,6 +20,8 @@ async def send_message_by_tg_id(
     parse_mode: Optional[str] = None,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
     bot: Optional[Bot] = None,
+    source: str = "bot_command",
+    scenario: str = None,
 ) -> bool:
     """Отправка сообщения пользователю по tg_id через python-telegram-bot."""
     try:
@@ -30,20 +32,29 @@ async def send_message_by_tg_id(
             reply_markup=reply_markup,
         )
         try:
-            from api.db import execute_query
+            from api.db import execute_query, log_message_sent
             execute_query("UPDATE users SET bot_blocked = 0 WHERE tg_id = %s AND bot_blocked = 1", (tg_id,))
+            log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='sent')
         except Exception:
             pass
         return True
     except Exception as e:
         err = str(e).lower()
-        if "blocked" in err or "deactivated" in err:
+        status = 'blocked' if ("blocked" in err or "deactivated" in err) else 'failed'
+        if status == 'blocked':
             try:
-                from api.db import execute_query
+                from api.db import execute_query, log_message_sent
                 execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
+                log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='blocked', error_text=str(e)[:255])
                 logger.info(f"[send_message] Пользователь {tg_id} заблокировал бота — помечен в БД")
             except Exception as db_err:
                 logger.error(f"[send_message] Не удалось пометить {tg_id}: {db_err}")
+        else:
+            try:
+                from api.db import log_message_sent
+                log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='failed', error_text=str(e)[:255])
+            except Exception:
+                pass
         logger.error(f"[send_message] Ошибка отправки для {tg_id}: {e}")
         return False
 
@@ -53,6 +64,8 @@ async def send_link_safely(
     text: str,
     buttons: Optional[List[List[Dict[str, str]]]] = None,
     parse_mode: Optional[str] = None,
+    source: str = "webhook",
+    scenario: str = None,
 ) -> bool:
     """
     Отправка через сырой HTTP (httpx) — используется из вебхука/воркера,
@@ -75,11 +88,26 @@ async def send_link_safely(
 
         if response.status_code == 200:
             logger.info(f"✅ Message sent to {tg_id}")
+            try:
+                from api.db import log_message_sent
+                log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='sent')
+            except Exception:
+                pass
             return True
 
         logger.warning(f"⚠️ sendMessage failed: {response.text}")
+        try:
+            from api.db import log_message_sent
+            log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='failed', error_text=response.text[:255])
+        except Exception:
+            pass
         return False
 
     except Exception as e:
         logger.error(f"❌ send_link_safely error: {e}")
+        try:
+            from api.db import log_message_sent
+            log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='failed', error_text=str(e)[:255])
+        except Exception:
+            pass
         return False

@@ -153,12 +153,33 @@ def send_message_to_user(tg_id: int) -> bool:
         resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code == 200:
             logger.info(f"✅ Отправлено tg_id={tg_id}")
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+                from api.db import log_message_sent
+                log_message_sent(tg_id=tg_id, source="broadcast_script", status='sent',
+                                 message_text=MESSAGE[:500] if MESSAGE else None)
+            except Exception:
+                pass
             return True
         else:
             logger.warning(f"❌ Ошибка {resp.status_code} для tg_id={tg_id}: {resp.text}")
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+                from api.db import log_message_sent
+                log_message_sent(tg_id=tg_id, source="broadcast_script", status='failed',
+                                 error_text=resp.text[:255])
+            except Exception:
+                pass
             return False
     except Exception as e:
         logger.error(f"❌ Исключение для tg_id={tg_id}: {e}")
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+            from api.db import log_message_sent
+            log_message_sent(tg_id=tg_id, source="broadcast_script", status='failed',
+                             error_text=str(e)[:255])
+        except Exception:
+            pass
         return False
 
 

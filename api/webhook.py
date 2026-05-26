@@ -429,6 +429,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             hysteria_email = f"{client_name}_h"
             existing_hysteria = xui.get_client_by_email(hysteria_email)
             
+            hysteria_ok = False
             if existing_hysteria and existing_hysteria['inbound_id'] == hysteria_inbound_id:
                 import time as _time
                 now_ms = int(_time.time() * 1000)
@@ -439,8 +440,23 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     duration_ms
                 )
                 if not hyst_result:
-                    raise RuntimeError(f"Failed to extend Hysteria client {hysteria_email}")
-                logger.info(f"Hysteria client {hysteria_email} extended to {hyst_result}")
+                    logger.critical(f"⚠️ Failed to extend Hysteria client {hysteria_email} — payment {payment_id} will proceed with VLESS only")
+                    try:
+                        from config import ADMIN_TG_ID
+                        await send_telegram_notification(
+                            ADMIN_TG_ID,
+                            f"⚠️ <b>Hysteria extend failed</b>\n\n"
+                            f"Email: {hysteria_email}\n"
+                            f"Payment: {payment_id}\n"
+                            f"tg_id: {tg_id}\n"
+                            f"User gets VLESS only.",
+                            source="webhook", scenario="hysteria_extend_failed",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    logger.info(f"Hysteria client {hysteria_email} extended to {hyst_result}")
+                    hysteria_ok = True
             else:
                 hyst_add = xui.add_client(
                     inbound_id=hysteria_inbound_id,
@@ -451,17 +467,35 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     sub_id=sub_id
                 )
                 if not hyst_add.get("success"):
-                    raise RuntimeError(f"Failed to create Hysteria client {hysteria_email}")
-                logger.info(f"Hysteria client {hysteria_email} created in inbound {hysteria_inbound_id}")
+                    logger.critical(f"⚠️ Failed to create Hysteria client {hysteria_email} — payment {payment_id} will proceed with VLESS only")
+                    try:
+                        from config import ADMIN_TG_ID
+                        await send_telegram_notification(
+                            ADMIN_TG_ID,
+                            f"⚠️ <b>Hysteria create failed</b>\n\n"
+                            f"Email: {hysteria_email}\n"
+                            f"Payment: {payment_id}\n"
+                            f"tg_id: {tg_id}\n"
+                            f"User gets VLESS only.",
+                            source="webhook", scenario="hysteria_create_failed",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    logger.info(f"Hysteria client {hysteria_email} created in inbound {hysteria_inbound_id}")
+                    hysteria_ok = True
 
-            hysteria_link = generate_hysteria2_link(
-                auth=client_id,
-                domain=VLESS_DOMAIN,
-                port=HYSTERIA_PORT,
-                client_name=client_name,
-                sni=HYSTERIA_SNI,
-                insecure=0,
-            )
+            if hysteria_ok:
+                hysteria_link = generate_hysteria2_link(
+                    auth=client_id,
+                    domain=VLESS_DOMAIN,
+                    port=HYSTERIA_PORT,
+                    client_name=client_name,
+                    sni=HYSTERIA_SNI,
+                    insecure=0,
+                )
+            else:
+                hysteria_link = None
 
             # ===== ПОЛУЧАЕМ / ГЕНЕРИРУЕМ subId ДЛЯ ПОДПИСКИ (Fallback) =====
             if not sub_id:
@@ -693,6 +727,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                             f"⏱ <b>{TARIFFS[tariff_key].get('name', tariff_key)}</b> · "
                             f"{TARIFFS[tariff_key].get('period', '30 дней')} · "
                             f"{TARIFFS[tariff_key].get('device_limit', 10)} устр.",
+                    source="webhook", scenario="payment_success_qr",
                 )
 
                 # Ссылка на подписку + кнопки
@@ -706,9 +741,10 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     buttons.append([{"text": "🪄 Гид по подключению", "url": portal_url}])
                 buttons.append([{"text": "📲 Happ: настроить маршрутизацию", "url": "https://344988.snk.wtf/happ-routing"}])
                 buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
-                await send_telegram_notification(tg_id, message, buttons)
-                
-                
+                await send_telegram_notification(tg_id, message, buttons,
+                    source="webhook", scenario="payment_success_vless")
+
+
             elif vpn_type == "softether":
                 # Отправляем SoftEther как текст с данными подключения
                 from bot_xui.vpn_factory import _softether_credentials_text
@@ -721,7 +757,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 if portal_url:
                     se_buttons.append([{"text": "🪄 Гид по подключению", "url": portal_url}])
                 se_buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
-                await send_telegram_notification(tg_id, message, se_buttons)
+                await send_telegram_notification(tg_id, message, se_buttons,
+                    source="webhook", scenario="payment_success_softether")
 
             else:
                 # Отправляем AmneziaWG как файл
@@ -736,7 +773,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 if portal_url:
                     caption += f'\n\n<a href="{portal_url}">🪄 Гид по подключению</a>'
 
-                await send_telegram_document(tg_id, client_config.encode(), filename, caption)
+                await send_telegram_document(tg_id, client_config.encode(), filename, caption,
+                    source="webhook", scenario="payment_success_awg")
 
             logger.info("📤 Config sent to Telegram")
 
@@ -766,14 +804,17 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         logger.exception(f"❌ Critical error processing payment {payment_id}")
         return False
 
-async def send_telegram_notification(tg_id: int, message: str, buttons: list = None):
+async def send_telegram_notification(tg_id: int, message: str, buttons: list = None,
+                                        source: str = "webhook", scenario: str = None):
     """
     Отправка уведомления в Telegram через HTTP API
-    
+
     Args:
         tg_id: Telegram ID пользователя
         message: Текст сообщения
         buttons: Список кнопок (опционально)
+        source: источник отправки для message_log
+        scenario: тип сообщения для message_log
     """
     if not tg_id:
         return
@@ -783,7 +824,7 @@ async def send_telegram_notification(tg_id: int, message: str, buttons: list = N
         "text": message,
         "parse_mode": "HTML"
     }
-    
+
     # Добавляем кнопки если они есть
     if buttons:
         keyboard = {
@@ -794,16 +835,37 @@ async def send_telegram_notification(tg_id: int, message: str, buttons: list = N
     async with httpx.AsyncClient(timeout=5) as client:
         try:
             response = await client.post(TELEGRAM_API, data=data)
-            
+
             if response.status_code == 200:
                 logger.info(f"📨 Notification sent to user: {tg_id}")
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                                     message_text=message[:500] if message else None, status='sent')
+                except Exception:
+                    pass
             else:
                 logger.warning(f"⚠️ Telegram API returned {response.status_code}")
-                
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                                     message_text=message[:500] if message else None, status='failed',
+                                     error_text=f"HTTP {response.status_code}"[:255])
+                except Exception:
+                    pass
+
         except Exception as e:
             logger.error(f"❌ Failed to send Telegram notification: {e}")
+            try:
+                from api.db import log_message_sent
+                log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                                 message_text=message[:500] if message else None, status='failed',
+                                 error_text=str(e)[:255])
+            except Exception:
+                pass
 
-async def send_telegram_document(tg_id: int, file_bytes: bytes, filename: str, caption: str = ""):
+async def send_telegram_document(tg_id: int, file_bytes: bytes, filename: str, caption: str = "",
+                                    source: str = "webhook", scenario: str = None):
     """Отправка документа в Telegram через HTTP API"""
     if not tg_id:
         return False
@@ -822,57 +884,93 @@ async def send_telegram_document(tg_id: int, file_bytes: bytes, filename: str, c
 
             if response.status_code == 200:
                 logger.info(f"Document sent to user: {tg_id}")
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                                     message_text=filename, status='sent')
+                except Exception:
+                    pass
                 return True
             else:
                 logger.warning(f"Telegram API returned {response.status_code}: {response.text}")
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                                     message_text=filename, status='failed',
+                                     error_text=f"HTTP {response.status_code}"[:255])
+                except Exception:
+                    pass
                 return False
         except Exception as e:
             logger.error(f"Failed to send Telegram document: {e}")
+            try:
+                from api.db import log_message_sent
+                log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                                 message_text=filename, status='failed', error_text=str(e)[:255])
+            except Exception:
+                pass
             return False
 
 
-async def send_telegram_photo_from_bytes(tg_id: int, image_bytes: BytesIO, caption: str = ""):
+async def send_telegram_photo_from_bytes(tg_id: int, image_bytes: BytesIO, caption: str = "",
+                                           source: str = "webhook", scenario: str = None):
     """
-    Отправка фото в Telegram через HTTP API из BytesIO    
+    Отправка фото в Telegram через HTTP API из BytesIO
     """
     if not tg_id:
         return
-    
-    # Меняем endpoint на sendPhoto
+
     telegram_photo_api = TELEGRAM_API.replace('sendMessage', 'sendPhoto')
-    
+
     async with httpx.AsyncClient(timeout=10) as client:
         try:
-            # Сбрасываем позицию в начало
             image_bytes.seek(0)
-            
-            # Правильный формат для httpx
+
             files = {
                 'photo': ('qr.png', image_bytes, 'image/png')
             }
             data = {
                 'chat_id': tg_id
             }
-            
+
             if caption:
                 data['caption'] = caption
                 data['parse_mode'] = 'HTML'
-            
+
             response = await client.post(
                 telegram_photo_api,
                 data=data,
                 files=files
             )
-            
+
             if response.status_code == 200:
                 logger.info(f"📸 Photo sent to user: {tg_id}")
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                                     message_text=caption[:500] if caption else "QR code", status='sent')
+                except Exception:
+                    pass
                 return True
             else:
                 logger.warning(f"⚠️ Telegram API returned {response.status_code}: {response.text}")
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                                     message_text="QR code", status='failed',
+                                     error_text=f"HTTP {response.status_code}"[:255])
+                except Exception:
+                    pass
                 return False
-                    
+
         except Exception as e:
             logger.error(f"❌ Failed to send Telegram photo: {e}")
+            try:
+                from api.db import log_message_sent
+                log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                                 message_text="QR code", status='failed', error_text=str(e)[:255])
+            except Exception:
+                pass
             return False
 
 @app.post("/webhook")
@@ -938,7 +1036,8 @@ async def yookassa_webhook(request: Request):
                 f"💳 ID платежа: {payment_id}\n"
                 f"💰 Сумма возврата: {amount_value} {amount_currency}\n\n"
                 f"Ваш VPN конфиг был деактивирован.\n"
-                f"Если это ошибка — нажмите «Написать нам» в меню бота"
+                f"Если это ошибка — нажмите «Написать нам» в меню бота",
+                source="webhook", scenario="refund",
             )
         
         return Response(status_code=200)
@@ -1013,12 +1112,37 @@ async def yookassa_webhook(request: Request):
                     vpn_type or "vless",
                 )
                 logger.info(f"Saved payment method {pm_id} for web user_id={payment_data['_web_user_id']}")
+                if tg_id and int(tg_id) > 0:
+                    try:
+                        tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
+                        await send_telegram_notification(
+                            int(tg_id),
+                            f"💳 <b>Способ оплаты сохранён</b>\n\n"
+                            f"Автопродление включено для тарифа «{tariff_name}».\n"
+                            f"При истечении подписки мы автоматически спишем средства с сохранённой карты.\n\n"
+                            f"Управление автопродлением: /autopay",
+                            source="webhook", scenario="autopay_enabled",
+                        )
+                    except Exception:
+                        logger.warning(f"Failed to send autopay enabled notification for tg:{tg_id}", exc_info=True)
             elif tg_id and int(tg_id) > 0:
                 save_user_payment_method(
                     int(tg_id), pm_id, tariff,
                     vpn_type or "vless",
                 )
                 logger.info(f"Saved payment method {pm_id} for tg_id={tg_id}")
+                try:
+                    tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
+                    await send_telegram_notification(
+                        int(tg_id),
+                        f"💳 <b>Способ оплаты сохранён</b>\n\n"
+                        f"Автопродление включено для тарифа «{tariff_name}».\n"
+                        f"При истечении подписки мы автоматически спишем средства с сохранённой карты.\n\n"
+                        f"Управление автопродлением: /autopay",
+                        source="webhook", scenario="autopay_enabled",
+                    )
+                except Exception:
+                    logger.warning(f"Failed to send autopay enabled notification for tg:{tg_id}", exc_info=True)
 
         # Consume promo code if used (both web and bot flows)
         promo_code_str = metadata.get("promo_code")
@@ -1039,7 +1163,6 @@ async def yookassa_webhook(request: Request):
             # Notify user about successful autopayment
             if tg_id:
                 try:
-                    from bot_xui.tariffs import TARIFFS
                     tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
                     await send_telegram_notification(
                         tg_id,
@@ -1048,6 +1171,7 @@ async def yookassa_webhook(request: Request):
                         f"💰 Списано: {payment_data.get('amount', '')} ₽\n\n"
                         f"Подписка продлена. Конфиг обновлён автоматически.\n"
                         f"<i>Управление автопродлением: /autopay</i>",
+                        source="webhook", scenario="autopay_success",
                     )
                 except Exception:
                     logger.warning(f"Failed to send autopay success notification for tg:{tg_id}", exc_info=True)
@@ -1060,7 +1184,8 @@ async def yookassa_webhook(request: Request):
                     tg_id,
                     f"⚠️ Возникла ошибка при создании VPN конфига.\n"
                     f"Платёж ID: {payment_id}\n\n"
-                    f"Мы уже знаем о проблеме, конфиг будет создан автоматически."
+                    f"Мы уже знаем о проблеме, конфиг будет создан автоматически.",
+                    source="webhook", scenario="payment_processing_failed",
                 )
             # Instant admin alert for payment_no_config
             from config import ADMIN_TG_ID
@@ -1073,6 +1198,7 @@ async def yookassa_webhook(request: Request):
                 f"VPN тип: {vpn_type}\n"
                 f"Web: {is_web_order}\n\n"
                 f"VPN конфиг не создан. Повтор запроса.",
+                source="webhook", scenario="payment_no_config_admin",
             )
             return Response(status_code=500)  # YooKassa повторит запрос
 
@@ -1101,10 +1227,12 @@ async def yookassa_webhook(request: Request):
                 f"📦 Тариф: {tariff_name}\n\n"
                 f"Попробуйте ещё раз или обратитесь в поддержку."
             )
-            await send_telegram_notification(tg_id, message)
+            await send_telegram_notification(tg_id, message,
+                source="webhook", scenario="payment_canceled")
         else:
             message = f"⏳ Платёж {payment_id} в обработке ({new_status})"
-            await send_telegram_notification(tg_id, message)
+            await send_telegram_notification(tg_id, message,
+                source="webhook", scenario="payment_pending")
     
     logger.info(
         f"✅ Webhook processed | Payment: {payment_id} | "
