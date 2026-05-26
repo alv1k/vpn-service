@@ -49,7 +49,7 @@ from api.db import (
 from bot_xui.helpers  import make_main_keyboard, MAIN_MENU_TEXT, MTPROTO_PROXY_LINK, safe_edit_text, make_proxy_file
 from bot_xui.views    import (
     show_main_menu, show_tariffs, show_configs,
-    show_single_config, show_instructions, show_renew_tariffs,
+    show_single_config, show_renew_tariffs,
     build_main_menu_text,
     # show_vless_link,
 )
@@ -160,6 +160,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Вам начислено <b>+{REFERRAL_REWARD_DAYS} дней</b> VPN подписки.",
             parse_mode="HTML",
             bot=context.bot,
+            source="bot_command", scenario="referral_notify",
         )
     else:
         get_or_create_user(tg_id, first_name, last_name)
@@ -309,7 +310,8 @@ async def send_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ tg_id должен быть числом")
         return
 
-    ok = await send_message_by_tg_id(tg_id, raw[2], bot=context.bot)
+    ok = await send_message_by_tg_id(tg_id, raw[2], bot=context.bot,
+        source="admin_send")
     await update.message.reply_text(
         "✅ Сообщение отправлено" if ok else "❌ Не удалось отправить"
     )
@@ -361,7 +363,8 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users    = get_all_users_tg_ids()
     ok = fail = 0
     for uid in users:
-        if await send_message_by_tg_id(uid, msg_html, parse_mode="HTML", bot=context.bot):
+        if await send_message_by_tg_id(uid, msg_html, parse_mode="HTML", bot=context.bot,
+                source="admin_broadcast"):
             ok += 1
         else:
             fail += 1
@@ -394,7 +397,8 @@ async def broadcast_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "получат <b>20 дней бесплатно</b> вместо 3!\n"
             "А вы — <b>10 дней</b> за каждого друга."
         )
-        if await send_message_by_tg_id(u['tg_id'], msg, parse_mode="HTML", bot=context.bot):
+        if await send_message_by_tg_id(u['tg_id'], msg, parse_mode="HTML", bot=context.bot,
+                source="admin_broadcast"):
             ok += 1
         else:
             fail += 1
@@ -423,7 +427,8 @@ async def notify_sub_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = get_active_subscribers_tg_ids()
     ok = fail = 0
     for uid in users:
-        if await send_message_by_tg_id(uid, text, parse_mode="HTML", bot=context.bot):
+        if await send_message_by_tg_id(uid, text, parse_mode="HTML", bot=context.bot,
+                source="admin_notify", scenario="sub_update"):
             ok += 1
         else:
             fail += 1
@@ -637,6 +642,9 @@ def _bot_rate_check(tg_id: int) -> bool:
 
 async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстового сообщения от пользователя в режиме обратной связи."""
+    if not update.effective_user:
+        logger.warning(f"handle_feedback_message: update.effective_user is None, message_id={update.message.message_id if update.message else '?'}")
+        return
     tg_id = update.effective_user.id
 
     # Ответ админа на пересланное сообщение
@@ -651,6 +659,7 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
                     f"💬 <b>Ответ от поддержки:</b>\n\n{update.message.text}",
                     parse_mode="HTML",
                     bot=context.bot,
+                    source="admin_send", scenario="support_reply",
                 )
                 await update.message.reply_text("✅ Ответ отправлен")
                 return
@@ -680,7 +689,8 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
     )
 
     await send_message_by_tg_id(
-        ADMIN_TG_ID, admin_text, parse_mode="HTML", bot=context.bot
+        ADMIN_TG_ID, admin_text, parse_mode="HTML", bot=context.bot,
+        source="bot_command", scenario="support_forward",
     )
 
     await update.message.reply_text(
@@ -713,9 +723,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "back_to_menu":
         await show_main_menu(query, xui)
-
-    elif data == "instructions":
-        await show_instructions(query)
 
     elif data == "web_portal":
         from api.db import get_web_token
@@ -822,7 +829,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "referral":
         text, link = await _refer_text(context, query.from_user.id)
         qr = _make_qr(link)
-        await query.message.delete()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         await context.bot.send_photo(
             chat_id=query.from_user.id,
             photo=qr,
@@ -832,6 +842,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
             ]),
         )
+        try:
+            from api.db import log_message_sent
+            log_message_sent(tg_id=query.from_user.id, source="bot_menu",
+                             scenario="referral_qr", status='sent')
+        except Exception:
+            pass
 
     elif data == "proxy_file":
         await query.edit_message_text(
@@ -848,7 +864,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "proxy_download":
         proxy = make_proxy_file()
-        await query.message.delete()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         await context.bot.send_document(
             chat_id=query.from_user.id,
             document=proxy,
@@ -857,10 +876,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Скачайте и перешлите друзьям, у кого не работает Telegram."
             ),
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
-            ]),
         )
+        try:
+            from api.db import log_message_sent
+            log_message_sent(tg_id=query.from_user.id, source="bot_menu",
+                             scenario="proxy_download", status='sent')
+        except Exception:
+            pass
 
     elif data == "feedback":
         import time as _time
@@ -944,7 +966,6 @@ async def notify_expiring_subscriptions(bot):
     """Проверяет истекающие подписки и уведомляет пользователей."""
     notifications = [
         (3, "3 дня", "⏳"),
-        (1, "1 день", "⚠️"),
         (0, "сегодня", "🔴"),
     ]
 
@@ -1009,8 +1030,21 @@ async def notify_expiring_subscriptions(bot):
                         reply_markup=reply_markup,
                     )
                     logger.info(f"[NOTIFY] Sent expiry warning ({days}d) to tg:{tg_id}")
+                    try:
+                        from api.db import log_message_sent
+                        log_message_sent(tg_id=tg_id, source="cron_expiry",
+                                         scenario=f"expiry_{days}d", status='sent')
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.warning(f"[NOTIFY] Failed to notify tg:{tg_id}: {e}")
+                    try:
+                        from api.db import log_message_sent
+                        log_message_sent(tg_id=tg_id, source="cron_expiry",
+                                         scenario=f"expiry_{days}d", status='failed',
+                                         error_text=str(e)[:255])
+                    except Exception:
+                        pass
 
             # Email notification (for web-only users or as backup)
             if email and not tg_id:
@@ -1044,8 +1078,21 @@ async def notify_expiring_subscriptions(bot):
                 ])
             )
             logger.info(f"[NOTIFY] Sent post-expiry to tg:{user['tg_id']}")
+            try:
+                from api.db import log_message_sent
+                log_message_sent(tg_id=user['tg_id'], source="cron_expiry",
+                                 scenario="expiry_0d", status='sent')
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"[NOTIFY] Failed post-expiry tg:{user['tg_id']}: {e}")
+            try:
+                from api.db import log_message_sent
+                log_message_sent(tg_id=user['tg_id'], source="cron_expiry",
+                                 scenario="expiry_0d", status='failed',
+                                 error_text=str(e)[:255])
+            except Exception:
+                pass
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Автопродление
@@ -1105,8 +1152,13 @@ async def autopay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     err = context.error
-    if isinstance(err, BadRequest) and "Message is not modified" in str(err):
-        return  # user double-tapped a button, harmless
+    if isinstance(err, BadRequest):
+        if "Message is not modified" in str(err):
+            return
+        if "Message can't be deleted" in str(err):
+            return
+        if "message to delete not found" in str(err):
+            return
     if isinstance(err, NetworkError):
         logger.warning("Network error: %s", err)
         return

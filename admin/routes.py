@@ -475,9 +475,44 @@ async def offline_users():
                     "last_seen": last_str,
                     "last_seen_ts": last_online,
                 })
+
+        # ── Hysteria2: get clients + last_online from x-ui SQLite ──
+        cur.execute("SELECT settings FROM inbounds WHERE protocol = 'hysteria'")
+        for (settings_json,) in cur.fetchall():
+            clients = json.loads(settings_json).get("clients", [])
+            for c in clients:
+                email = c.get("email", "").strip()
+                if not email:
+                    continue
+                identity = ("hysteria", email)
+                if identity in online_identities:
+                    continue
+                if not c.get("enable", True):
+                    continue
+                expiry = c.get("expiryTime", 0)
+                if expiry and 0 < expiry < now_ms:
+                    continue  # expired
+
+                last_online = last_online_map.get(email, 0) or 0
+                last_str = ""
+                if last_online > 0:
+                    try:
+                        last_str = datetime.fromtimestamp(
+                            last_online / 1000, tz=timezone.utc
+                        ).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        pass
+
+                raw_entries.append({
+                    "name": email,
+                    "type": "hysteria",
+                    "last_seen": last_str,
+                    "last_seen_ts": last_online,
+                })
+
         conn.close()
     except Exception as e:
-        logger.warning(f"Offline VLESS error: {e}")
+        logger.warning(f"Offline VLESS/Hysteria error: {e}")
 
     # ── AWG: last handshake for all peers ──
     try:
@@ -748,7 +783,9 @@ async def dashboard():
         },
         "users": {
             "total": user_stats["total"],
-            "active_subscribers": user_stats["active"],
+            "active": user_stats["active"],
+            "active_sub": user_stats.get("active_sub", 0),
+            "active_key_only": user_stats.get("active_key_only", 0),
         },
         "payments": {
             "total": pay_stats["total"],
@@ -1414,6 +1451,8 @@ _WINBACK_MESSAGES = {
     'payment_no_config': "⚠️ Мы обнаружили, что ваш платёж был успешным, но VPN конфиг не был создан.\nМы уже разбираемся с этим. Если вопрос не решится — напишите в поддержку 💬",
     'panel_db_mismatch': "⚠️ Обнаружена проблема с вашим конфигом. Мы уже работаем над исправлением.\nЕсли VPN не подключается — напишите в поддержку 💬",
     'never_activated': "👋 Привет!\nВы зарегистрировались, но ещё не попробовали VPN.\nАктивируйте бесплатный тест — это займёт пару минут!\n🔒 Безопасный интернет без ограничений.",
+    'vless_only_inactive': "👋 Заметили, что вы не подключались к VPN больше суток.\nЕсли есть проблемы с подключением — попробуйте протокол AmneziaWG. Он лучше работает на нестабильных каналах, мобильном интернете и в удалённых регионах.\nНажмите кнопку ниже — мы выдадим вам конфиг AmneziaWG в дополнение к текущему VLESS.",
+    'awg_inactive': "👋 Привет!\nЗаметили, что вы давно не подключались к VPN. Всё ли в порядке?\nЕсли возникли вопросы или проблемы с подключением — напишите нам, поможем! 💬",
     'recently_inactive': "👋 Мы скучаем!\nЗаметили, что вы давно не заходили. Всё ли в порядке с подключением?\n💡 У нас есть бесплатный прокси для Telegram — работает без VPN.",
 }
 
@@ -1481,6 +1520,12 @@ async def test_conversion():
 @router.get("/users")
 async def users_list(search: str = Query(None), limit: int = Query(100)):
     rows = admin_db.list_users(search=search, limit=limit)
+    tg_ids = [r["tg_id"] for r in rows if r.get("tg_id")]
+    keys_map = admin_db.get_users_keys_batch(tg_ids)
+    for r in rows:
+        entry = keys_map.get(r["tg_id"], {})
+        r["keys"] = entry.get("active", [])
+        r["last_key_expires"] = entry.get("last_expires")
     return _clean(rows)
 
 
@@ -1746,3 +1791,218 @@ async def test_payment_result(payment_id: str):
 async def favicon():
     path = os.path.join(os.path.dirname(__file__), "static", "favicon.png")
     return FileResponse(path, media_type="image/png")
+
+
+# ─────────────────────────────────────────────
+#  Message Log
+# ─────────────────────────────────────────────
+
+@router.get("/api/messages")
+async def api_message_log(
+    request: Request,
+    tg_id: int = Query(None),
+    source: str = Query(None),
+    status: str = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """List sent Telegram messages with filters."""
+    _require_admin_session(request)
+    return {
+        "items": admin_db.list_message_log(tg_id=tg_id, source=source, status=status,
+                                            limit=limit, offset=offset),
+        "counts": admin_db.count_message_log(tg_id=tg_id, source=source, status=status),
+    }
+
+
+@router.get("/api/messages/stats")
+async def api_message_log_stats(
+    request: Request,
+    days: int = Query(7, ge=1, le=90),
+):
+    """Per-source message stats."""
+    _require_admin_session(request)
+    return {"sources": admin_db.message_log_source_stats(days=days)}
+
+
+@router.get("/messages")
+async def message_log_page(request: Request):
+    """Message log HTML page."""
+    _require_admin_session(request)
+    return HTMLResponse(_render_message_log_html())
+
+
+def _render_message_log_html() -> str:
+    return """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Message Log — TIIN Admin</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0f1117; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
+.header { background: #1a1d2e; border-bottom: 1px solid #2d3748; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header a { color: #818cf8; text-decoration: none; font-size: 13px; }
+.filters { background: #1a1d2e; border-bottom: 1px solid #2d3748; padding: 12px 24px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.filters label { color: #94a3b8; font-size: 12px; }
+.filters input, .filters select { background: #0f1117; border: 1px solid #2d3748; color: #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+.filters input:focus, .filters select:focus { border-color: #818cf8; outline: none; }
+.filters button { background: #6366f1; color: #fff; border: none; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-size: 13px; }
+.filters button:hover { background: #4f46e5; }
+.stats-row { display: flex; gap: 16px; padding: 12px 24px; background: #151820; border-bottom: 1px solid #2d3748; }
+.stat-card { background: #1a1d2e; border: 1px solid #2d3748; border-radius: 8px; padding: 10px 16px; text-align: center; flex: 1; min-width: 100px; }
+.stat-card .val { font-size: 20px; font-weight: 700; }
+.stat-card .lbl { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+.stat-sent .val { color: #34d399; }
+.stat-failed .val { color: #f87171; }
+.stat-blocked .val { color: #fbbf24; }
+.stat-total .val { color: #e2e8f0; }
+.table-wrap { overflow-x: auto; padding: 0 24px 24px; }
+table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+th { text-align: left; padding: 10px 12px; color: #94a3b8; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #2d3748; }
+td { padding: 10px 12px; border-bottom: 1px solid #1e2330; vertical-align: top; }
+tr:hover { background: #1a1d2e; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-sent { background: #064e3b; color: #34d399; }
+.badge-failed { background: #7f1d1d; color: #f87171; }
+.badge-blocked { background: #78350f; color: #fbbf24; }
+.source-tag { font-family: monospace; font-size: 11px; color: #818cf8; }
+.scenario-tag { font-size: 11px; color: #94a3b8; }
+.msg-text { max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #cbd5e1; font-size: 12px; }
+.tg-id { font-family: monospace; color: #a78bfb; cursor: pointer; }
+.tg-id:hover { text-decoration: underline; }
+.time-cell { color: #94a3b8; font-size: 12px; white-space: nowrap; }
+.pagination { display: flex; justify-content: center; gap: 8px; padding: 16px; }
+.pagination button { background: #1a1d2e; border: 1px solid #2d3748; color: #e2e8f0; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.pagination button:hover { background: #2d3748; }
+.loading { text-align: center; padding: 40px; color: #94a3b8; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>📨 Message Log</h1>
+  <a href="/admin">← Back to Dashboard</a>
+</div>
+
+<div class="stats-row" id="stats-row">
+  <div class="stat-card stat-total"><div class="val" id="stat-total">—</div><div class="lbl">Total</div></div>
+  <div class="stat-card stat-sent"><div class="val" id="stat-sent">—</div><div class="lbl">Sent</div></div>
+  <div class="stat-card stat-failed"><div class="val" id="stat-failed">—</div><div class="lbl">Failed</div></div>
+  <div class="stat-card stat-blocked"><div class="val" id="stat-blocked">—</div><div class="lbl">Blocked</div></div>
+</div>
+
+<div class="filters">
+  <div><label>TG ID</label><input type="number" id="f-tg_id" placeholder="e.g. 123456" style="width:120px"></div>
+  <div><label>Source</label>
+    <select id="f-source">
+      <option value="">All sources</option>
+      <option value="webhook">webhook</option>
+      <option value="cron_winback">cron_winback</option>
+      <option value="cron_broadcast">cron_broadcast</option>
+      <option value="cron_autopay">cron_autopay</option>
+      <option value="cron_expiry">cron_expiry</option>
+      <option value="admin_broadcast">admin_broadcast</option>
+      <option value="admin_send">admin_send</option>
+      <option value="admin_notify">admin_notify</option>
+      <option value="bot_command">bot_command</option>
+      <option value="bot_menu">bot_menu</option>
+      <option value="broadcast_script">broadcast_script</option>
+      <option value="announcement">announcement</option>
+    </select>
+  </div>
+  <div><label>Status</label>
+    <select id="f-status">
+      <option value="">All</option>
+      <option value="sent">sent</option>
+      <option value="failed">failed</option>
+      <option value="blocked">blocked</option>
+    </select>
+  </div>
+  <button onclick="loadData()">Filter</button>
+  <button onclick="resetFilters()" style="background:#2d3748">Reset</button>
+</div>
+
+<div class="table-wrap">
+  <table id="msg-table">
+    <thead><tr>
+      <th>Time</th><th>TG ID</th><th>Name</th><th>Source</th><th>Scenario</th><th>Status</th><th>Message Preview</th><th>Error</th>
+    </tr></thead>
+    <tbody id="msg-body"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<div class="pagination" id="pagination"></div>
+
+<script>
+let offset = 0;
+const limit = 50;
+
+function badge(s){ return `<span class="badge badge-${s}">${s}</span>`; }
+function esc(s){ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+
+async function loadData(){
+  offset = 0;
+  await fetchData();
+}
+
+async function fetchData(){
+  const p = new URLSearchParams();
+  const t=document.getElementById('f-tg_id').value;
+  const s=document.getElementById('f-source').value;
+  const st=document.getElementById('f-status').value;
+  if(t) p.set('tg_id', t);
+  if(s) p.set('source', s);
+  if(st) p.set('status', st);
+  p.set('limit', limit);
+  p.set('offset', offset);
+  try{
+    const r = await fetch('/admin/api/messages?'+p);
+    const d = await r.json();
+    document.getElementById('stat-total').textContent = d.counts.total||0;
+    document.getElementById('stat-sent').textContent = d.counts.sent||0;
+    document.getElementById('stat-failed').textContent = d.counts.failed||0;
+    document.getElementById('stat-blocked').textContent = d.counts.blocked||0;
+    const tbody = document.getElementById('msg-body');
+    if(!d.items.length){ tbody.innerHTML='<tr><td colspan="8" class="loading">No messages found</td></tr>'; }
+    else{
+      tbody.innerHTML = d.items.map(m=>{
+        const ts = m.created_at ? new Date(m.created_at+'Z').toLocaleString('ru-RU') : '';
+        const msgPreview = esc((m.message_text||'').substring(0,100));
+        const errText = esc((m.error_text||'').substring(0,80));
+        return `<tr>
+          <td class="time-cell">${ts}</td>
+          <td><span class="tg-id" onclick="document.getElementById('f-tg_id').value='${m.tg_id}';loadData()">${m.tg_id}</span></td>
+          <td>${esc(m.first_name||'')}</td>
+          <td><span class="source-tag">${esc(m.source)}</span></td>
+          <td><span class="scenario-tag">${esc(m.scenario||'')}</span></td>
+          <td>${badge(m.status)}</td>
+          <td><div class="msg-text" title="${esc(m.message_text||'')}">${msgPreview}</div></td>
+          <td style="color:#f87171;font-size:12px">${errText}</td>
+        </tr>`;
+      }).join('');
+    }
+    // Pagination
+    const pg = document.getElementById('pagination');
+    pg.innerHTML = '';
+    if(offset>0){
+      const b=document.createElement('button'); b.textContent='← Prev';
+      b.onclick=()=>{offset-=limit; fetchData();}; pg.appendChild(b);
+    }
+    if(d.items.length===limit){
+      const b=document.createElement('button'); b.textContent='Next →';
+      b.onclick=()=>{offset+=limit; fetchData();}; pg.appendChild(b);
+    }
+  }catch(e){ console.error(e); }
+}
+
+function resetFilters(){
+  document.getElementById('f-tg_id').value='';
+  document.getElementById('f-source').value='';
+  document.getElementById('f-status').value='';
+  loadData();
+}
+
+loadData();
+</script></body></html>"""

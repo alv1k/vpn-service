@@ -107,17 +107,6 @@ class TestButtonHandler:
         assert mock_show.call_args[0][0] == query
 
     @pytest.mark.asyncio
-    @patch("bot_xui.bot.show_instructions", new_callable=AsyncMock)
-    async def test_instructions(self, mock_show):
-        from bot_xui.bot import button_handler
-        update, query = _make_update("instructions")
-        context = MagicMock()
-
-        await button_handler(update, context)
-
-        mock_show.assert_called_once_with(query)
-
-    @pytest.mark.asyncio
     async def test_test_protocol_choose_shows_options(self):
         """test_protocol_choose shows VLESS + SoftEther buttons."""
         from bot_xui.bot import button_handler

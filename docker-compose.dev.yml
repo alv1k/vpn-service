@@ -1,0 +1,41 @@
+services:
+  mysql-dev:
+    image: mysql:8.0
+    container_name: vpn_mysql_dev
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-devrootpass}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-vpn_dev}
+      MYSQL_USER: ${MYSQL_USER:-devuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-devpass}
+    volumes:
+      - mysql_data_dev:/var/lib/mysql
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "127.0.0.1:3307:3306"
+    networks:
+      - vpn_dev_net
+
+  phpmyadmin-dev:
+    image: phpmyadmin:latest
+    container_name: phpmyadmin_dev
+    environment:
+      PMA_HOST: mysql-dev
+      PMA_PORT: 3306
+      PMA_USER: root
+      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:-devrootpass}
+      UPLOAD_LIMIT: 50M
+    ports:
+      - "127.0.0.1:8082:80"
+    depends_on:
+      - mysql-dev
+    restart: unless-stopped
+    networks:
+      - vpn_dev_net
+
+volumes:
+  mysql_data_dev:
+
+networks:
+  vpn_dev_net:
+    driver: bridge

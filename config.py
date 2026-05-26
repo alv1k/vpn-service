@@ -3,8 +3,9 @@ import os
 import logging
 from dotenv import load_dotenv
 
-# .env в корне проекта
-DOTENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+# .env в корне проекта (переопределяется через ENV_FILE)
+_env_file = os.getenv("ENV_FILE", ".env")
+DOTENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), _env_file)
 load_dotenv(DOTENV_PATH)
 
 # YooKassa: боевые креды
@@ -25,6 +26,7 @@ WG_SERVER_ENDPOINT = os.getenv("WG_SERVER_ENDPOINT")
 WG_DNS = os.getenv("WG_DNS")
 
 MYSQL_HOST = os.getenv("MYSQL_HOST")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")

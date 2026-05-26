@@ -33,19 +33,60 @@ def list_users(search: str = None, limit: int = 100) -> list[dict]:
     return rows
 
 
+def get_users_keys_batch(tg_ids: list[int]) -> dict[int, dict]:
+    """Return keys info grouped by tg_id for a batch of users.
+    Returns {tg_id: {'active': [...], 'last_expires': datetime}}"""
+    if not tg_ids:
+        return {}
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    placeholders = ",".join(["%s"] * len(tg_ids))
+
+    # All keys for these users
+    cur.execute(f"""
+        SELECT tg_id, client_name, vpn_type, expires_at, created_at
+        FROM vpn_keys
+        WHERE tg_id IN ({placeholders})
+        ORDER BY created_at DESC
+    """, tuple(tg_ids))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    from datetime import datetime
+    result: dict[int, dict] = {}
+    for r in rows:
+        entry = result.setdefault(r["tg_id"], {"active": [], "last_expires": None})
+        if r["expires_at"] and r["expires_at"] > datetime.utcnow():
+            entry["active"].append(r)
+        if entry["last_expires"] is None or (r["expires_at"] and r["expires_at"] > entry["last_expires"]):
+            entry["last_expires"] = r["expires_at"]
+    return result
+
+
 def count_users() -> dict:
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT
             COUNT(*) as total,
-            SUM(CASE WHEN subscription_until > NOW() THEN 1 ELSE 0 END) as active
+            SUM(CASE WHEN subscription_until > NOW() THEN 1 ELSE 0 END) as active_sub,
+            SUM(CASE WHEN subscription_until IS NULL AND EXISTS (
+                SELECT 1 FROM vpn_keys k WHERE k.tg_id = users.tg_id AND k.expires_at > NOW()
+            ) THEN 1 ELSE 0 END) as active_key_only
         FROM users
     """)
     row = cur.fetchone()
     cur.close()
     conn.close()
-    return row or {"total": 0, "active": 0}
+    active_sub = row.get("active_sub", 0) or 0
+    active_key = row.get("active_key_only", 0) or 0
+    return {
+        "total": row.get("total", 0) or 0,
+        "active": active_sub + active_key,
+        "active_sub": active_sub,
+        "active_key_only": active_key,
+    }
 
 
 def get_user_keys(tg_id: int) -> list[dict]:
@@ -373,6 +414,90 @@ def test_to_paid_by_protocol() -> list[dict]:
         FROM users
         GROUP BY test_protocol
     """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def list_message_log(tg_id: int = None, source: str = None, status: str = None,
+                     limit: int = 100, offset: int = 0) -> list[dict]:
+    """Query message_log with optional filters."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    conditions = []
+    params = []
+    if tg_id:
+        conditions.append("m.tg_id = %s")
+        params.append(tg_id)
+    if source:
+        conditions.append("m.source = %s")
+        params.append(source)
+    if status:
+        conditions.append("m.status = %s")
+        params.append(status)
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    cur.execute(f"""
+        SELECT m.id, m.tg_id, m.source, m.scenario, m.message_text, m.status,
+               m.error_text, m.created_at,
+               COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name
+        FROM message_log m
+        LEFT JOIN users u ON m.tg_id = u.tg_id
+        {where}
+        ORDER BY m.created_at DESC
+        LIMIT %s OFFSET %s
+    """, tuple(params) + (limit, offset))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def count_message_log(tg_id: int = None, source: str = None, status: str = None) -> dict:
+    """Count message_log with optional filters, grouped by status."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    conditions = []
+    params = []
+    if tg_id:
+        conditions.append("tg_id = %s")
+        params.append(tg_id)
+    if source:
+        conditions.append("source = %s")
+        params.append(source)
+    if status:
+        conditions.append("status = %s")
+        params.append(status)
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    cur.execute(f"""
+        SELECT status, COUNT(*) AS cnt
+        FROM message_log
+        {where}
+        GROUP BY status
+    """, tuple(params))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    result = {r['status']: r['cnt'] for r in rows}
+    result['total'] = sum(result.values())
+    return result
+
+
+def message_log_source_stats(days: int = 7) -> list[dict]:
+    """Per-source message stats for the last N days."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT source,
+               COUNT(*) AS total,
+               SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent,
+               SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+               SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked
+        FROM message_log
+        WHERE created_at >= NOW() - INTERVAL %s DAY
+        GROUP BY source
+        ORDER BY total DESC
+    """, (days,))
     rows = cur.fetchall()
     cur.close()
     conn.close()

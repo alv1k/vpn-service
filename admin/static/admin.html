@@ -339,8 +339,9 @@
         <button onclick="showTab('softether')" id="tab-softether">SoftEther</button>
         <button onclick="showTab('users')" id="tab-users">Users</button>
         <button onclick="showTab('proxy')" id="tab-proxy">MTProxy</button>
-        <button onclick="showTab('testpay')" id="tab-testpay">Test Pay</button>        
-        <a href="https://344988.snk.wtf:5096/XhU5cXVfMCyHzAXlrT/panel/" target="_blank"
+        <button onclick="showTab('testpay')" id="tab-testpay">Test Pay</button>
+        <button onclick="showTab('messages')" id="tab-messages">Messages</button>
+          <a href="https://344988.snk.wtf:5096/XhU5cXVfMCyHzAXlrT/panel/" target="_blank"
            style="padding:8px 16px; border:1px solid var(--border); border-radius:6px; font-size:13px; color:var(--muted); display:inline-flex; align-items:center">
           <span class="nav-link-text">3X-UI Panel </span>↗
         </a>
@@ -689,12 +690,13 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead>
+           <thead>
             <tr>
               <th>TG ID</th>
               <th>Name</th>
               <th>Subscription</th>
               <th>Status</th>
+              <th>Keys</th>
               <th>Discount</th>
               <th>Referrals</th>
               <th></th>
@@ -704,6 +706,74 @@
         </table>
       </div>
     </div>
+    
+    <!-- Messages Section -->
+    <div id="s-messages" class="section">
+      <h2>📨 Message Log</h2>
+      <div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <label style="font-size:12px;color:var(--muted)">TG ID</label>
+        <input type="number" id="msg-f-tg_id" placeholder="e.g. 123456" style="background:var(--bg2);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:4px 8px;font-size:13px;width:120px">
+        <label style="font-size:12px;color:var(--muted)">Source</label>
+        <select id="msg-f-source" style="background:var(--bg2);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:4px 8px;font-size:13px">
+          <option value="">All sources</option>
+          <option value="webhook">webhook</option>
+          <option value="cron_winback">cron_winback</option>
+          <option value="cron_broadcast">cron_broadcast</option>
+          <option value="cron_autopay">cron_autopay</option>
+          <option value="cron_expiry">cron_expiry</option>
+          <option value="admin_broadcast">admin_broadcast</option>
+          <option value="admin_send">admin_send</option>
+          <option value="admin_notify">admin_notify</option>
+          <option value="bot_command">bot_command</option>
+          <option value="bot_menu">bot_menu</option>
+          <option value="broadcast_script">broadcast_script</option>
+          <option value="announcement">announcement</option>
+        </select>
+        <label style="font-size:12px;color:var(--muted)">Status</label>
+        <select id="msg-f-status" style="background:var(--bg2);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:4px 8px;font-size:13px">
+          <option value="">All</option>
+          <option value="sent">sent</option>
+          <option value="failed">failed</option>
+          <option value="blocked">blocked</option>
+        </select>
+        <button class="btn" onclick="loadMsgLog()" style="padding:4px 12px">Filter</button>
+        <button class="btn" onclick="resetMsgFilters()" style="padding:4px 12px;background:var(--border)">Reset</button>
+      </div>
+      <div id="msg-stats" style="display:flex;gap:12px;margin-bottom:12px">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 16px;text-align:center;flex:1">
+          <div id="msg-stat-total" style="font-size:18px;font-weight:700">—</div><div style="font-size:11px;color:var(--muted)">Total</div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 16px;text-align:center;flex:1">
+          <div id="msg-stat-sent" style="font-size:18px;font-weight:700;color:#34d399">—</div><div style="font-size:11px;color:var(--muted)">Sent</div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 16px;text-align:center;flex:1">
+          <div id="msg-stat-failed" style="font-size:18px;font-weight:700;color:#f87171">—</div><div style="font-size:11px;color:var(--muted)">Failed</div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 16px;text-align:center;flex:1">
+          <div id="msg-stat-blocked" style="font-size:18px;font-weight:700;color:#fbbf24">—</div><div style="font-size:11px;color:var(--muted)">Blocked</div>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="border-bottom:2px solid var(--border)">
+              <th style="text-align:left;padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase">Time</th>
+              <th style="text-align:left;padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase">TG ID</th>
+              <th style="text-align:left;padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase">Name</th>
+              <th style="text-align:left;padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase">Source</th>
+              <th style="text-align:left;padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase">Scenario</th>
+              <th style="text-align:left;padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase">Status</th>
+              <th style="text-align:left;padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase">Message</th>
+              <th style="text-align:left;padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase">Error</th>
+            </tr>
+          </thead>
+          <tbody id="msg-table-body">
+            <tr><td colspan="8" style="text-align:center;padding:32px;color:var(--muted)">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="msg-pagination" style="display:flex;justify-content:center;gap:8px;padding:12px"></div>
+    </div>    
   </div>
 
   <!-- Modal -->
@@ -764,6 +834,7 @@
       if (id === 'softether') loadSoftEther();
       if (id === 'proxy') loadProxy();
       if (id === 'testpay') { /* static UI, no load needed */ }
+      if (id === 'messages') loadMsgLog(true);
       if (id === 'users') loadUsers();
     }
 
@@ -1019,7 +1090,7 @@
         <div class="card">
           <h3>Users</h3>
           <div class="val">${d.users.total}</div>
-          <div class="sub">${d.users.active_subscribers} active subs</div>
+          <div class="sub">${d.users.active} active (${d.users.active_sub} sub + ${d.users.active_key_only} key)</div>
         </div>
         <div class="card">
           <h3>MTProxy</h3>
@@ -1787,13 +1858,38 @@
 
       document.getElementById('users-list').innerHTML = users.map(u => {
         const sub = u.subscription_until;
-        const active = sub && new Date(sub) > new Date();
+        const keys = u.keys || [];
+        const hasActiveSub = sub && new Date(sub) > new Date();
+        const hasActiveKeys = keys.length > 0;
+        const active = hasActiveSub || hasActiveKeys;
+
+        let statusBadge;
+        if (hasActiveSub) {
+          statusBadge = `<span class="badge on">active</span>`;
+        } else if (hasActiveKeys) {
+          statusBadge = `<span class="badge" style="background:var(--orange);color:#000">test</span>`;
+        } else {
+          statusBadge = `<span class="badge off">expired</span>`;
+        }
+
+        const keysHtml = keys.length
+          ? keys.map(k => {
+              const vtype = k.vpn_type || '';
+              const badgeCls = vtype === 'vless' ? 'on' : vtype === 'awg' ? 'awg' : 'pending';
+              return `<span class="badge ${badgeCls}" style="margin-right:4px;font-size:11px">${vtype}</span>`;
+            }).join('')
+          : '—';
+
+        const lastKeyExp = u.last_key_expires ? fmtDate(u.last_key_expires) : null;
+        const subDisplay = sub ? fmtDate(sub) : (lastKeyExp || '—');
+
         return `
           <tr>
             <td class="mono">${u.tg_id}</td>
             <td>${portalLink(u.web_token, (u.first_name || '') + ' ' + (u.last_name || ''))}</td>
-            <td>${sub ? fmtDate(sub) : '—'}</td>
-            <td><span class="badge ${active ? 'on' : 'off'}">${active ? 'active' : 'expired'}</span></td>
+            <td>${subDisplay}</td>
+            <td>${statusBadge}</td>
+            <td>${keysHtml}</td>
             <td>${u.permanent_discount ? u.permanent_discount + '%' : '—'}</td>
             <td>${u.referral_count || 0}</td>
             <td><button class="btn sm" onclick="showUserDetail(${u.tg_id})">Details</button></td>
@@ -1872,6 +1968,80 @@
       const ms = next.getTime() - utc9.getTime();
       setTimeout(() => { loadDashboard(); scheduleUtc9Midnight(); }, ms);
     })();
+  </script>
+
+  <script>
+  (function(){
+    var msgOffset = 0, msgLimit = 50;
+
+    function esc(s){ var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+
+    function msgBadge(s){
+      var c = s==='sent'?'#34d399':s==='failed'?'#f87171':'#fbbf24';
+      var bg = s==='sent'?'#064e3b':s==='failed'?'#7f1d1d':'#78350f';
+      return '<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;background:'+bg+';color:'+c+'">'+s+'</span>';
+    }
+
+    async function loadMsgLog(reset){
+      if(reset) msgOffset = 0;
+      var p = new URLSearchParams();
+      var t=document.getElementById('msg-f-tg_id').value;
+      var s=document.getElementById('msg-f-source').value;
+      var st=document.getElementById('msg-f-status').value;
+      if(t) p.set('tg_id',t);
+      if(s) p.set('source',s);
+      if(st) p.set('status',st);
+      p.set('limit', msgLimit);
+      p.set('offset', msgOffset);
+      try{
+        var r = await api('/api/admin/api/messages?'+p);
+        document.getElementById('msg-stat-total').textContent = r.counts.total||0;
+        document.getElementById('msg-stat-sent').textContent = r.counts.sent||0;
+        document.getElementById('msg-stat-failed').textContent = r.counts.failed||0;
+        document.getElementById('msg-stat-blocked').textContent = r.counts.blocked||0;
+        var tbody = document.getElementById('msg-table-body');
+        if(!r.items.length){
+          tbody.innerHTML='<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--muted)">No messages found</td></tr>';
+        } else {
+          tbody.innerHTML = r.items.map(function(m){
+            var ts = m.created_at ? new Date(m.created_at+'Z').toLocaleString('ru-RU') : '';
+            var txt = esc((m.message_text||'').substring(0,100));
+            var err = esc((m.error_text||'').substring(0,80));
+            return '<tr style="border-bottom:1px solid var(--border)">' +
+              '<td style="padding:8px 12px;color:var(--muted);font-size:12px;white-space:nowrap">'+ts+'</td>' +
+              '<td style="padding:8px 12px;font-family:monospace;color:#a78bfb;cursor:pointer" onclick="document.getElementById(\'msg-f-tg_id\').value=\''+m.tg_id+'\';loadMsgLog(true)">'+m.tg_id+'</td>' +
+              '<td style="padding:8px 12px">'+esc(m.first_name||'')+'</td>' +
+              '<td style="padding:8px 12px;font-family:monospace;font-size:12px;color:#818cf8">'+esc(m.source)+'</td>' +
+              '<td style="padding:8px 12px;font-size:12px;color:var(--muted)">'+esc(m.scenario||'')+'</td>' +
+              '<td style="padding:8px 12px">'+msgBadge(m.status)+'</td>' +
+              '<td style="padding:8px 12px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:#cbd5e1" title="'+esc(m.message_text||'')+'">'+txt+'</td>' +
+              '<td style="padding:8px 12px;color:#f87171;font-size:12px">'+err+'</td>' +
+            '</tr>';
+          }).join('');
+        }
+        var pg = document.getElementById('msg-pagination');
+        pg.innerHTML = '';
+        if(msgOffset>0){
+          var b=document.createElement('button'); b.className='btn'; b.textContent='← Prev';
+          b.onclick=function(){msgOffset-=msgLimit;loadMsgLog();}; pg.appendChild(b);
+        }
+        if(r.items.length===msgLimit){
+          var b=document.createElement('button'); b.className='btn'; b.textContent='Next →';
+          b.onclick=function(){msgOffset+=msgLimit;loadMsgLog();}; pg.appendChild(b);
+        }
+      }catch(e){ console.error(e); }
+    }
+
+    function resetMsgFilters(){
+      document.getElementById('msg-f-tg_id').value='';
+      document.getElementById('msg-f-source').value='';
+      document.getElementById('msg-f-status').value='';
+      loadMsgLog(true);
+    }
+
+    window.loadMsgLog = loadMsgLog;
+    window.resetMsgFilters = resetMsgFilters;
+  })();
   </script>
 </body>
 </html>

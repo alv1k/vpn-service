@@ -16,7 +16,7 @@ class TestSendMessageByTgId:
     @pytest.mark.asyncio
     @patch("api.db.execute_query")
     async def test_success(self, mock_exec):
-        """Sends message and clears bot_blocked flag."""
+        """Sends message, clears bot_blocked flag, and logs to message_log."""
         from bot_xui.messaging import send_message_by_tg_id
 
         bot = MagicMock()
@@ -28,14 +28,16 @@ class TestSendMessageByTgId:
         bot.send_message.assert_called_once_with(
             chat_id=100, text="hello", parse_mode=None, reply_markup=None,
         )
-        # Should clear bot_blocked
-        mock_exec.assert_called_once()
-        assert "bot_blocked = 0" in mock_exec.call_args[0][0]
+        # Should clear bot_blocked and log message
+        assert mock_exec.call_count == 2
+        calls = [c[0][0] for c in mock_exec.call_args_list]
+        assert any("bot_blocked = 0" in c for c in calls)
+        assert any("message_log" in c for c in calls)
 
     @pytest.mark.asyncio
     @patch("api.db.execute_query")
     async def test_blocked_user_flagged(self, mock_exec):
-        """If user blocked the bot, sets bot_blocked=1 in DB."""
+        """If user blocked the bot, sets bot_blocked=1 and logs blocked status."""
         from bot_xui.messaging import send_message_by_tg_id
 
         bot = MagicMock()
@@ -44,8 +46,10 @@ class TestSendMessageByTgId:
         result = await send_message_by_tg_id(200, "hi", bot=bot)
 
         assert result is False
-        mock_exec.assert_called_once()
-        assert "bot_blocked = 1" in mock_exec.call_args[0][0]
+        assert mock_exec.call_count == 2
+        calls = [c[0][0] for c in mock_exec.call_args_list]
+        assert any("bot_blocked = 1" in c for c in calls)
+        assert any("message_log" in c for c in calls)
 
     @pytest.mark.asyncio
     @patch("api.db.execute_query")
@@ -59,11 +63,14 @@ class TestSendMessageByTgId:
         result = await send_message_by_tg_id(300, "hi", bot=bot)
 
         assert result is False
-        assert "bot_blocked = 1" in mock_exec.call_args[0][0]
+        assert mock_exec.call_count == 2
+        calls = [c[0][0] for c in mock_exec.call_args_list]
+        assert any("bot_blocked = 1" in c for c in calls)
+        assert any("message_log" in c for c in calls)
 
     @pytest.mark.asyncio
     async def test_other_error_not_flagged(self):
-        """Non-blocked errors return False but don't set bot_blocked."""
+        """Non-blocked errors return False, log failure but don't set bot_blocked."""
         from bot_xui.messaging import send_message_by_tg_id
 
         bot = MagicMock()
@@ -73,7 +80,10 @@ class TestSendMessageByTgId:
             result = await send_message_by_tg_id(400, "hi", bot=bot)
 
         assert result is False
-        mock_exec.assert_not_called()
+        # Should log the failure but NOT touch bot_blocked
+        assert mock_exec.call_count == 1
+        assert "message_log" in mock_exec.call_args[0][0]
+        assert "bot_blocked" not in mock_exec.call_args[0][0]
 
     @pytest.mark.asyncio
     @patch("api.db.execute_query")
@@ -90,6 +100,8 @@ class TestSendMessageByTgId:
         bot.send_message.assert_called_once_with(
             chat_id=500, text="<b>bold</b>", parse_mode="HTML", reply_markup=markup,
         )
+        # bot_blocked clear + message_log insert
+        assert mock_exec.call_count == 2
 
 
 # ═════════════════════════════════════════════
@@ -110,7 +122,8 @@ class TestSendLinkSafely:
         transport = httpx.MockTransport(mock_handler)
         mock_client = httpx.AsyncClient(transport=transport)
 
-        with patch("bot_xui.messaging.httpx.AsyncClient", return_value=mock_client):
+        with patch("bot_xui.messaging.httpx.AsyncClient", return_value=mock_client), \
+             patch("api.db.execute_query"):
             result = await send_link_safely(100, "config link here")
 
         assert result is True
@@ -127,7 +140,8 @@ class TestSendLinkSafely:
         transport = httpx.MockTransport(mock_handler)
         mock_client = httpx.AsyncClient(transport=transport)
 
-        with patch("bot_xui.messaging.httpx.AsyncClient", return_value=mock_client):
+        with patch("bot_xui.messaging.httpx.AsyncClient", return_value=mock_client), \
+             patch("api.db.execute_query"):
             result = await send_link_safely(200, "text")
 
         assert result is False
@@ -142,7 +156,6 @@ class TestSendLinkSafely:
         sent_data = {}
 
         async def mock_handler(request: httpx.Request):
-            # httpx sends form data
             content = request.content.decode()
             sent_data["body"] = content
             return httpx.Response(200, json={"ok": True})
@@ -152,7 +165,8 @@ class TestSendLinkSafely:
 
         buttons = [[{"text": "Click", "callback_data": "test"}]]
 
-        with patch("bot_xui.messaging.httpx.AsyncClient", return_value=mock_client):
+        with patch("bot_xui.messaging.httpx.AsyncClient", return_value=mock_client), \
+             patch("api.db.execute_query"):
             result = await send_link_safely(100, "text", buttons=buttons)
 
         assert result is True
@@ -163,7 +177,8 @@ class TestSendLinkSafely:
         """Network error returns False, doesn't crash."""
         from bot_xui.messaging import send_link_safely
 
-        with patch("bot_xui.messaging.httpx.AsyncClient", side_effect=Exception("conn refused")):
+        with patch("bot_xui.messaging.httpx.AsyncClient", side_effect=Exception("conn refused")), \
+             patch("api.db.execute_query"):
             result = await send_link_safely(100, "text")
 
         assert result is False

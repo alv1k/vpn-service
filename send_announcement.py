@@ -42,9 +42,21 @@ async def send_to_user(bot: Bot, user_id: int, name: str = ""):
     try:
         await bot.send_message(user_id, MESSAGE)
         print(f"✅ Отправлено {user_id} ({name})")
+        try:
+            from api.db import log_message_sent
+            log_message_sent(tg_id=user_id, source="announcement", status='sent',
+                             message_text=MESSAGE[:500])
+        except Exception:
+            pass
         return True
     except Exception as e:
         print(f"❌ Ошибка {user_id}: {e}")
+        try:
+            from api.db import log_message_sent
+            log_message_sent(tg_id=user_id, source="announcement", status='failed',
+                             error_text=str(e)[:255])
+        except Exception:
+            pass
         return False
 
 async def main():

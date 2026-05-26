@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 import mysql.connector
 from mysql.connector import pooling
-from config import MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS
+from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS
 
 TZ_TOKYO = timezone(timedelta(hours=9))
 
@@ -24,6 +24,7 @@ def _get_pool():
             pool_size=10,
             pool_reset_session=True,
             host=MYSQL_HOST,
+            port=MYSQL_PORT,
             user=MYSQL_USER,
             password=MYSQL_PASSWORD,
             database=MYSQL_DATABASE,
@@ -920,26 +921,38 @@ def disable_autopay_by_id(user_id: int):
 
 
 def get_autopay_users_due(days_before: int = 1) -> list[dict]:
-    """Get users whose subscription expires within `days_before` days and have autopay enabled."""
+    """Get users whose subscription expires within `days_before` days and have autopay enabled.
+    Excludes users who already have an autopayment (success or pending) for today (prevents duplicate charges)."""
     if days_before == 0:
-        # Expires today: from start of day to end of day
         where_clause = (
-            "WHERE autopay_enabled = 1 AND payment_method_id IS NOT NULL "
-            "AND subscription_until IS NOT NULL "
-            "AND subscription_until BETWEEN CURDATE() AND CURDATE() + INTERVAL 1 DAY"
+            "WHERE u.autopay_enabled = 1 AND u.payment_method_id IS NOT NULL "
+            "AND u.subscription_until IS NOT NULL "
+            "AND u.subscription_until BETWEEN CURDATE() AND CURDATE() + INTERVAL 1 DAY "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM autopay_log al "
+            "  WHERE al.user_id = u.id "
+            "  AND al.status IN ('success', 'pending') "
+            "  AND al.created_at >= CURDATE()"
+            ")"
         )
         params = ()
     else:
         where_clause = (
-            "WHERE autopay_enabled = 1 AND payment_method_id IS NOT NULL "
-            "AND subscription_until IS NOT NULL "
-            "AND subscription_until BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
+            "WHERE u.autopay_enabled = 1 AND u.payment_method_id IS NOT NULL "
+            "AND u.subscription_until IS NOT NULL "
+            "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL %s DAY "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM autopay_log al "
+            "  WHERE al.user_id = u.id "
+            "  AND al.status IN ('success', 'pending') "
+            "  AND al.created_at >= CURDATE()"
+            ")"
         )
         params = (days_before,)
     return execute_query(
-        "SELECT id, tg_id, email, payment_method_id, autopay_tariff, autopay_vpn_type, "
-        "subscription_until, permanent_discount "
-        "FROM users " + where_clause,
+        "SELECT u.id, u.tg_id, u.email, u.payment_method_id, u.autopay_tariff, u.autopay_vpn_type, "
+        "u.subscription_until, u.permanent_discount "
+        "FROM users u " + where_clause,
         params, fetch='all',
     )
 
@@ -950,6 +963,21 @@ def log_autopay(tg_id: int, user_id: int, tariff: str, amount: float,
         "INSERT INTO autopay_log (tg_id, user_id, tariff, amount, payment_id, status, error_message) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s)",
         (tg_id, user_id, tariff, amount, payment_id, status, error),
+    )
+
+
+def log_message_sent(tg_id: int, source: str, scenario: str = None,
+                       message_text: str = None, status: str = 'sent',
+                       error_text: str = None):
+    """Log a sent Telegram message to message_log table."""
+    if message_text and len(message_text) > 500:
+        message_text = message_text[:500]
+    if error_text and len(error_text) > 255:
+        error_text = error_text[:255]
+    execute_query(
+        "INSERT INTO message_log (tg_id, source, scenario, message_text, status, error_text) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (tg_id, source, scenario, message_text, status, error_text),
     )
 
 

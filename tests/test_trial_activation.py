@@ -58,7 +58,7 @@ class TestActivateTest:
         mock_get_db.return_value = _mock_db(cur)
         xui = MagicMock()
         xui.add_client.return_value = True
-        xui.get_subscription_url_by_uuid.return_value = "https://sub/uuid"
+        xui.get_client_subscription_url.return_value = "https://sub/uuid"
         mock_xui_cls.return_value = xui
 
         resp = client.post("/api/web/activate-test", json={"web_token": "tok-abc"})
@@ -158,7 +158,7 @@ class TestActivateTest:
         mock_get_db.return_value = _mock_db(cur)
         xui = MagicMock()
         xui.add_client.return_value = True
-        xui.get_subscription_url_by_uuid.return_value = ""
+        xui.get_client_subscription_url.return_value = ""
         mock_xui_cls.return_value = xui
 
         client.post("/api/web/activate-test", json={"web_token": "tok-abc"})
@@ -182,7 +182,7 @@ class TestActivateTest:
         mock_get_db.return_value = _mock_db(cur)
         xui = MagicMock()
         xui.add_client.return_value = True
-        xui.get_subscription_url_by_uuid.return_value = ""
+        xui.get_client_subscription_url.return_value = ""
         mock_xui_cls.return_value = xui
         mock_process_ref.return_value = True
 
