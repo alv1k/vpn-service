@@ -467,7 +467,7 @@ async def activate_trial_by_email(req: TestActivateByEmailRequest):
 # ─────────────────────────────────────────────
 
 ALLOWED_EVENTS = {"visit", "click_proxy", "click_connect"}
-ALLOWED_ORIGINS = {"https://alekscko.beget.tech", "https://344988.snk.wtf"}
+ALLOWED_ORIGINS = {"https://alekscko.beget.tech", "https://344988.snk.wtf", "https://tiinservice.ru", "https://www.tiinservice.ru"}
 
 
 class SiteEvent(BaseModel):

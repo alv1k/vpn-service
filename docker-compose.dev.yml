@@ -1,3 +1,5 @@
+name: vpn-service-dev
+
 services:
   mysql-dev:
     image: mysql:8.0
