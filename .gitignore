@@ -70,7 +70,4 @@ backups-moved/
 website_dist/
 
 # Docker compose только в docker/amneziawg/
-/docker-compose.yml
-/.env
-/config/
-.env
+
