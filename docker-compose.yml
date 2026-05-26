@@ -41,7 +41,8 @@ services:
       PMA_HOST: vpn_mysql
       PMA_PORT: 3306
       PMA_USER: ${MYSQL_USER}
-      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      PMA_PASSWORD: ${MYSQL_PASSWORD}
+      PMA_ABSOLUTE_URI: https://344988.snk.wtf/phpmyadmin/
       UPLOAD_LIMIT: 50M
     ports:
       - "127.0.0.1:8080:80"
