@@ -973,78 +973,88 @@ async def notify_expiring_subscriptions(bot):
         users = get_users_expiring_in_days(days)
         for user in users:
             tg_id = user['tg_id']
+            if not tg_id or user.get('bot_blocked'):
+                continue
             email = user.get('email')
             until = user['subscription_until'].strftime("%d.%m.%Y")
             has_autopay = user.get('autopay_enabled') and user.get('payment_method_id')
 
             # Telegram notification (if user has tg_id)
-            if tg_id:
-                if has_autopay:
-                    # Autopay user — inform about upcoming charge, no manual CTA
-                    tariff_id = user.get('autopay_tariff') or 'monthly_30d'
-                    tariff = TARIFFS.get(tariff_id, {})
-                    tariff_name = tariff.get('name', tariff_id)
-                    price = tariff.get('price', '?')
+            if has_autopay:
+                # Autopay user — inform about upcoming charge, no manual CTA
+                tariff_id = user.get('autopay_tariff') or 'monthly_30d'
+                tariff = TARIFFS.get(tariff_id, {})
+                tariff_name = tariff.get('name', tariff_id)
+                price = tariff.get('price', '?')
 
-                    if days == 0:
-                        msg = (
-                            f"🔄 <b>Сегодня автоматически продлим подписку</b>\n\n"
-                            f"📦 Тариф: {tariff_name}\n"
-                            f"💰 Сумма: {price} ₽\n\n"
-                            f"<i>Отменить автопродление: /autopay</i>"
-                        )
-                    else:
-                        msg = (
-                            f"🔄 <b>Через {label} автоматически продлим подписку</b>\n\n"
-                            f"📦 Тариф: {tariff_name}\n"
-                            f"💰 Сумма: {price} ₽\n"
-                            f"📅 Окончание: <b>{until}</b>\n\n"
-                            f"<i>Отменить автопродление: /autopay</i>"
-                        )
-                    reply_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("⚙️ Управление автопродлением", callback_data="autopay_manage")]
-                    ])
-                else:
-                    # No autopay — standard renewal reminder
-                    if days == 0:
-                        msg = (
-                            f"🔴 <b>Подписка истекает сегодня!</b>\n\n"
-                            f"📅 Окончание: <b>{until}</b>\n\n"
-                            f"Продлите сейчас, чтобы не потерять доступ."
-                        )
-                    else:
-                        msg = (
-                            f"{icon} <b>Подписка истекает через {label}</b>\n\n"
-                            f"📅 Окончание: <b>{until}</b>\n\n"
-                            f"Продлите, чтобы не потерять доступ."
-                        )
-                    reply_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Продлить", callback_data="tariffs")]
-                    ])
-
-                try:
-                    await bot.send_message(
-                        chat_id=tg_id,
-                        text=msg,
-                        parse_mode="HTML",
-                        reply_markup=reply_markup,
+                if days == 0:
+                    msg = (
+                        f"🔄 <b>Сегодня автоматически продлим подписку</b>\n\n"
+                        f"📦 Тариф: {tariff_name}\n"
+                        f"💰 Сумма: {price} ₽\n\n"
+                        f"<i>Отменить автопродление: /autopay</i>"
                     )
-                    logger.info(f"[NOTIFY] Sent expiry warning ({days}d) to tg:{tg_id}")
+                else:
+                    msg = (
+                        f"🔄 <b>Через {label} автоматически продлим подписку</b>\n\n"
+                        f"📦 Тариф: {tariff_name}\n"
+                        f"💰 Сумма: {price} ₽\n"
+                        f"📅 Окончание: <b>{until}</b>\n\n"
+                        f"<i>Отменить автопродление: /autopay</i>"
+                    )
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⚙️ Управление автопродлением", callback_data="autopay_manage")]
+                ])
+            else:
+                # No autopay — standard renewal reminder
+                if days == 0:
+                    msg = (
+                        f"🔴 <b>Подписка истекает сегодня!</b>\n\n"
+                        f"📅 Окончание: <b>{until}</b>\n\n"
+                        f"Продлите сейчас, чтобы не потерять доступ."
+                    )
+                else:
+                    msg = (
+                        f"{icon} <b>Подписка истекает через {label}</b>\n\n"
+                        f"📅 Окончание: <b>{until}</b>\n\n"
+                        f"Продлите, чтобы не потерять доступ."
+                    )
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Продлить", callback_data="tariffs")]
+                ])
+
+            try:
+                await bot.send_message(
+                    chat_id=tg_id,
+                    text=msg,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                )
+                logger.info(f"[NOTIFY] Sent expiry warning ({days}d) to tg:{tg_id}")
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(tg_id=tg_id, source="cron_expiry",
+                                     scenario=f"expiry_{days}d", status='sent')
+                except Exception:
+                    pass
+            except Exception as e:
+                err_str = str(e).lower()
+                is_block = "blocked" in err_str or "deactivated" in err_str
+                if is_block:
                     try:
-                        from api.db import log_message_sent
-                        log_message_sent(tg_id=tg_id, source="cron_expiry",
-                                         scenario=f"expiry_{days}d", status='sent')
+                        from api.db import execute_query
+                        execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
                     except Exception:
                         pass
-                except Exception as e:
-                    logger.warning(f"[NOTIFY] Failed to notify tg:{tg_id}: {e}")
-                    try:
-                        from api.db import log_message_sent
-                        log_message_sent(tg_id=tg_id, source="cron_expiry",
-                                         scenario=f"expiry_{days}d", status='failed',
-                                         error_text=str(e)[:255])
-                    except Exception:
-                        pass
+                logger.warning(f"[NOTIFY] Failed to notify tg:{tg_id}: {e}")
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(tg_id=tg_id, source="cron_expiry",
+                                     scenario=f"expiry_{days}d",
+                                     status='blocked' if is_block else 'failed',
+                                     error_text=str(e)[:255])
+                except Exception:
+                    pass
 
             # Email notification (for web-only users or as backup)
             if email and not tg_id:
@@ -1060,13 +1070,15 @@ async def notify_expiring_subscriptions(bot):
     expired_yesterday = _eq(
         "SELECT tg_id, subscription_until FROM users "
         "WHERE subscription_until BETWEEN NOW() - INTERVAL 2 DAY AND NOW() - INTERVAL 1 DAY "
-        "AND tg_id IS NOT NULL AND tg_id > 0",
+        "AND tg_id IS NOT NULL AND tg_id > 0 "
+        "AND bot_blocked = 0",
         fetch='all',
     )
     for user in (expired_yesterday or []):
+        tg_id = user['tg_id']
         try:
             await bot.send_message(
-                chat_id=user['tg_id'],
+                chat_id=tg_id,
                 text=(
                     "❌ <b>Подписка истекла</b>\n\n"
                     "VPN больше не работает. Продлите подписку, "
@@ -1077,19 +1089,27 @@ async def notify_expiring_subscriptions(bot):
                     [InlineKeyboardButton("💎 Продлить", callback_data="tariffs")]
                 ])
             )
-            logger.info(f"[NOTIFY] Sent post-expiry to tg:{user['tg_id']}")
+            logger.info(f"[NOTIFY] Sent post-expiry to tg:{tg_id}")
             try:
                 from api.db import log_message_sent
-                log_message_sent(tg_id=user['tg_id'], source="cron_expiry",
+                log_message_sent(tg_id=tg_id, source="cron_expiry",
                                  scenario="expiry_0d", status='sent')
             except Exception:
                 pass
         except Exception as e:
-            logger.warning(f"[NOTIFY] Failed post-expiry tg:{user['tg_id']}: {e}")
+            err_str = str(e).lower()
+            is_block = "blocked" in err_str or "deactivated" in err_str
+            if is_block:
+                try:
+                    execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
+                except Exception:
+                    pass
+            logger.warning(f"[NOTIFY] Failed post-expiry tg:{tg_id}: {e}")
             try:
                 from api.db import log_message_sent
-                log_message_sent(tg_id=user['tg_id'], source="cron_expiry",
-                                 scenario="expiry_0d", status='failed',
+                log_message_sent(tg_id=tg_id, source="cron_expiry",
+                                 scenario="expiry_0d",
+                                 status='blocked' if is_block else 'failed',
                                  error_text=str(e)[:255])
             except Exception:
                 pass
