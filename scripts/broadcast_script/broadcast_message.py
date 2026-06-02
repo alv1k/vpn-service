@@ -97,8 +97,9 @@ def get_all_users():
                 SELECT DISTINCT u.tg_id, u.id, u.username, v.vless_link
                 FROM users u
                 INNER JOIN vpn_keys v ON (u.id = v.user_id OR u.tg_id = v.tg_id)
-                WHERE u.tg_id IS NOT NULL 
+                WHERE u.tg_id IS NOT NULL
                   AND u.tg_id != 0
+                  AND u.bot_blocked = 0
                   AND v.vpn_type = 'vless'
                   AND v.vless_link IS NOT NULL
                   AND v.vless_link != ''
@@ -107,8 +108,8 @@ def get_all_users():
             # Если нет таблицы users, берем tg_id直接从 vpn_keys
             cursor.execute("""
                 SELECT DISTINCT tg_id, NULL as id, NULL as username, vless_link
-                FROM vpn_keys 
-                WHERE tg_id IS NOT NULL 
+                FROM vpn_keys
+                WHERE tg_id IS NOT NULL
                   AND tg_id != 0
                   AND vpn_type = 'vless'
                   AND vless_link IS NOT NULL
@@ -152,17 +153,41 @@ def send_message_to_user(tg_id: int) -> bool:
     try:
         resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code == 200:
-            logger.info(f"✅ Отправлено tg_id={tg_id}")
+            result = resp.json()
+            if result.get("ok"):
+                logger.info(f"✅ Отправлено tg_id={tg_id}")
+                try:
+                    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+                    from api.db import log_message_sent
+                    log_message_sent(tg_id=tg_id, source="broadcast_script", status='sent',
+                                     message_text=MESSAGE[:500] if MESSAGE else None)
+                except Exception:
+                    pass
+                return True
+            error_desc = result.get("description", "")
+            is_block = "blocked" in error_desc.lower() or "deactivated" in error_desc.lower()
+            logger.warning(f"{'🚫' if is_block else '❌'} Ошибка для tg_id={tg_id}: {error_desc}")
+            if is_block:
+                try:
+                    conn = get_db_connection()
+                    cur = conn.cursor()
+                    cur.execute("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                except Exception:
+                    pass
             try:
                 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
                 from api.db import log_message_sent
-                log_message_sent(tg_id=tg_id, source="broadcast_script", status='sent',
-                                 message_text=MESSAGE[:500] if MESSAGE else None)
+                log_message_sent(tg_id=tg_id, source="broadcast_script",
+                                 status='blocked' if is_block else 'failed',
+                                 error_text=error_desc[:255])
             except Exception:
                 pass
-            return True
+            return False
         else:
-            logger.warning(f"❌ Ошибка {resp.status_code} для tg_id={tg_id}: {resp.text}")
+            logger.warning(f"❌ HTTP {resp.status_code} для tg_id={tg_id}: {resp.text}")
             try:
                 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
                 from api.db import log_message_sent

@@ -58,11 +58,11 @@ def log_send(tg_id, scenario):
 # ─────────────────────────────────────────────
 
 def get_all_users():
-    """Все пользователи из БД."""
+    """Все пользователи из БД ( except those who blocked the bot)."""
     return execute_query(
         "SELECT tg_id, first_name, subscription_until, test_vless_activated, "
         "test_awg_activated, test_softether_activated, created_at "
-        "FROM users",
+        "FROM users WHERE bot_blocked = 0",
         fetch='all',
     ) or []
 
@@ -317,12 +317,15 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=N
             results['panel_db_mismatch'].append(info)
 
         # Сценарий: 0 MB трафика — через 1 день после создания конфига
-        if total_bytes == 0 and has_active_key and key_age >= DELAY['zero_traffic']:
+        last_online_ms = user_traffic.get('last_online', 0)
+        is_active_recently = (last_online_ms > 0 and (NOW - datetime.utcfromtimestamp(last_online_ms / 1000)).days < 1)
+
+        if total_bytes == 0 and has_active_key and not is_active_recently and key_age >= DELAY['zero_traffic']:
             results['zero_traffic'].append(info)
             continue
 
         # Сценарий: < 5 MB — через 1 день после создания конфига
-        if 0 < total_bytes < 5 * MB and has_active_key and key_age >= DELAY['low_traffic']:
+        if 0 < total_bytes < 5 * MB and has_active_key and not is_active_recently and key_age >= DELAY['low_traffic']:
             results['low_traffic'].append(info)
             continue
 
@@ -583,6 +586,8 @@ def _extend_test_keys(tg_id: int):
         log.warning(f"  Failed to extend VLESS in x-ui for {tg_id}: {e}")
 
 
+MAX_MESSAGES = 3  # Максимальное количество сообщений одному пользователю
+
 async def send_messages(results):
     from bot_xui.messaging import send_link_safely
 
@@ -591,59 +596,80 @@ async def send_messages(results):
     skipped = 0
     failed = 0
 
+    # Count previous sends for all candidates to check the cap
+    sent_counts = {}
+    rows = execute_query("SELECT tg_id, COUNT(*) as c FROM winback_log GROUP BY tg_id", fetch='all') or []
+    sent_counts = {r['tg_id']: r['c'] for r in rows}
+
     for scenario, users in results.items():
         if not users or scenario == 'multi_config_partial':
             continue
         if scenario == 'zero_traffic':
             continue
 
-        msg_template = MESSAGES.get(scenario)
-        if not msg_template:
-            continue
-
         for u in users:
             tg_id = u['tg_id']
-            buttons = get_buttons_for_scenario(scenario, tg_id)
             if not tg_id:
                 log.info(f"⏭ Skip user_id={u.get('id','?')} [{scenario}] — no tg_id")
                 skipped += 1
                 continue
 
-            # Cooldown: не отправлять чаще чем раз в COOLDOWN_DAYS
+            # Cooldown check
             if tg_id in recent:
                 days_ago = (NOW - recent[tg_id]).days
-                log.info(f"⏭ Skip {tg_id} [{scenario}] — последняя отправка {days_ago}д назад (cooldown {COOLDOWN_DAYS}д)")
+                log.info(f"⏭ Skip {tg_id} [{scenario}] — последняя отправка {days_ago}д назад")
                 skipped += 1
                 continue
 
-            # Extend expired test keys before notifying
-            if scenario == 'test_no_connect':
-                _extend_test_keys(tg_id)
-                log.info(f"  Extended test keys +1 day for {tg_id}")
+            # Cap check
+            current_count = sent_counts.get(tg_id, 0)
+            if current_count >= MAX_MESSAGES:
+                log.info(f"⏭ Skip {tg_id} [{scenario}] — достигнут лимит {MAX_MESSAGES} сообщений")
+                skipped += 1
+                continue
 
-            msg = msg_template
-            if '{price}' in msg:
-                from bot_xui.tariffs import TARIFFS
-                min_price = min(t['price'] for t in TARIFFS.values() if t['price'] > 0)
-                msg = msg.replace('{price}', str(min_price))
+            # Prepare final message if limit reached
+            is_final = (current_count + 1 == MAX_MESSAGES)
+            if is_final:
+                msg = (
+                    "👋 Привет!\n\n"
+                    "Мы заметили, что наш сервис вас не заинтересовал. "
+                    "Не будем вас беспокоить — отключаем уведомления.\n\n"
+                    "Если передумаете — просто запустите бота командой /start в любое время!"
+                )
+                buttons = []
+            else:
+                msg_template = MESSAGES.get(scenario)
+                if not msg_template: continue
+                msg = msg_template
+                if '{price}' in msg:
+                    from bot_xui.tariffs import TARIFFS
+                    min_price = min(t['price'] for t in TARIFFS.values() if t['price'] > 0)
+                    msg = msg.replace('{price}', str(min_price))
+                buttons = get_buttons_for_scenario(scenario, tg_id)
+
+                # Extend expired test keys for specific scenario
+                if scenario == 'test_no_connect':
+                    _extend_test_keys(tg_id)
 
             ok = await send_link_safely(
                 tg_id=tg_id,
                 text=msg,
                 parse_mode="HTML",
                 buttons=buttons if buttons else None,
-                source="cron_winback", scenario=scenario,
+                source="cron_winback", scenario="final" if is_final else scenario,
             )
             if ok:
                 sent += 1
-                log_send(tg_id, scenario)
-                recent[tg_id] = NOW  # обновить кэш чтобы не слать дважды за запуск
-                log.info(f"✅ Sent [{scenario}] to {tg_id}")
+                log_send(tg_id, "final" if is_final else scenario)
+                recent[tg_id] = NOW
+                sent_counts[tg_id] = current_count + 1
+                log.info(f"✅ Sent [{'final' if is_final else scenario}] to {tg_id}")
             else:
                 failed += 1
-                log.warning(f"❌ Failed [{scenario}] to {tg_id}")
+                log.warning(f"❌ Failed to {tg_id}")
 
-    print(f"\nОтправлено: {sent}, пропущено (cooldown): {skipped}, ошибок: {failed}")
+    print(f"\nОтправлено: {sent}, пропущено (cooldown/limit): {skipped}, ошибок: {failed}")
 
 
 # ─────────────────────────────────────────────

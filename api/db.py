@@ -782,9 +782,10 @@ def get_users_expiring_in_days(days: int) -> list[dict]:
     """Возвращает пользователей, у которых подписка истекает ровно через `days` дней."""
     return execute_query(
         """
-        SELECT tg_id, email, subscription_until, autopay_enabled, payment_method_id, autopay_tariff
+        SELECT tg_id, email, subscription_until, autopay_enabled, payment_method_id, autopay_tariff, bot_blocked
         FROM users
         WHERE DATE(subscription_until) = DATE(NOW() + INTERVAL %s DAY)
+          AND bot_blocked = 0
         """,
         (days,), fetch='all'
     )
@@ -927,6 +928,7 @@ def get_autopay_users_due(days_before: int = 1) -> list[dict]:
         where_clause = (
             "WHERE u.autopay_enabled = 1 AND u.payment_method_id IS NOT NULL "
             "AND u.subscription_until IS NOT NULL "
+            "AND u.bot_blocked = 0 "
             "AND u.subscription_until BETWEEN CURDATE() AND CURDATE() + INTERVAL 1 DAY "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM autopay_log al "
@@ -940,6 +942,7 @@ def get_autopay_users_due(days_before: int = 1) -> list[dict]:
         where_clause = (
             "WHERE u.autopay_enabled = 1 AND u.payment_method_id IS NOT NULL "
             "AND u.subscription_until IS NOT NULL "
+            "AND u.bot_blocked = 0 "
             "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL %s DAY "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM autopay_log al "

@@ -87,23 +87,33 @@ async def _process_autopayments_locked(bot):
                 log_autopay(tg_id, user_id, tariff_id, price, payment.id, "pending")
 
                 if tg_id:
-                    await bot.send_message(
-                        chat_id=tg_id,
-                        text=(
-                            f"⏰ <b>Автопродление завтра</b>\n\n"
-                            f"📦 Тариф: {tariff['name']}\n"
-                            f"💰 Завтра будет списано: {price} ₽\n\n"
-                            f"Подписка истекает через 1 день. Автоматическое списание пройдёт завтра.\n\n"
-                            f"<i>Отключить автопродление: /autopay</i>"
-                        ),
-                        parse_mode="HTML",
-                    )
                     try:
-                        from api.db import log_message_sent
-                        log_message_sent(tg_id=tg_id, source="cron_autopay",
-                                         scenario="autopay_reminder", status='sent')
-                    except Exception:
-                        pass
+                        await bot.send_message(
+                            chat_id=tg_id,
+                            text=(
+                                f"⏰ <b>Автопродление завтра</b>\n\n"
+                                f"📦 Тариф: {tariff['name']}\n"
+                                f"💰 Завтра будет списано: {price} ₽\n\n"
+                                f"Подписка истекает через 1 день. Автоматическое списание пройдёт завтра.\n\n"
+                                f"<i>Отключить автопродление: /autopay</i>"
+                            ),
+                            parse_mode="HTML",
+                        )
+                        try:
+                            from api.db import log_message_sent
+                            log_message_sent(tg_id=tg_id, source="cron_autopay",
+                                             scenario="autopay_reminder", status='sent')
+                        except Exception:
+                            pass
+                    except Exception as send_err:
+                        err_str = str(send_err).lower()
+                        if "blocked" in err_str or "deactivated" in err_str:
+                            try:
+                                from api.db import execute_query
+                                execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
+                            except Exception:
+                                pass
+                        logger.warning(f"[AUTOPAY] Phase 1 notify failed tg:{tg_id}: {send_err}")
                 logger.info(f"[AUTOPAY] Phase 1: notified tg:{tg_id}, payment {payment.id}")
             except Exception as e:
                 logger.error(f"[AUTOPAY] Phase 1 failed for user {user_id}: {e}")
@@ -146,23 +156,33 @@ async def _process_autopayments_locked(bot):
                 log_autopay(tg_id, user_id, tariff_id, price, payment.id, "pending")
 
                 if tg_id:
-                    await bot.send_message(
-                        chat_id=tg_id,
-                        text=(
-                            f"🔄 <b>Автопродление подписки</b>\n\n"
-                            f"📦 Тариф: {tariff['name']}\n"
-                            f"💰 Списано: {price} ₽\n\n"
-                            f"Платёж обрабатывается. Конфиг обновится автоматически.\n\n"
-                            f"<i>Отключить автопродление: /autopay</i>"
-                        ),
-                        parse_mode="HTML",
-                    )
                     try:
-                        from api.db import log_message_sent
-                        log_message_sent(tg_id=tg_id, source="cron_autopay",
-                                         scenario="autopay_charge", status='sent')
-                    except Exception:
-                        pass
+                        await bot.send_message(
+                            chat_id=tg_id,
+                            text=(
+                                f"🔄 <b>Автопродление подписки</b>\n\n"
+                                f"📦 Тариф: {tariff['name']}\n"
+                                f"💰 Списано: {price} ₽\n\n"
+                                f"Платёж обрабатывается. Конфиг обновится автоматически.\n\n"
+                                f"<i>Отключить автопродление: /autopay</i>"
+                            ),
+                            parse_mode="HTML",
+                        )
+                        try:
+                            from api.db import log_message_sent
+                            log_message_sent(tg_id=tg_id, source="cron_autopay",
+                                             scenario="autopay_charge", status='sent')
+                        except Exception:
+                            pass
+                    except Exception as send_err:
+                        err_str = str(send_err).lower()
+                        if "blocked" in err_str or "deactivated" in err_str:
+                            try:
+                                from api.db import execute_query
+                                execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
+                            except Exception:
+                                pass
+                        logger.warning(f"[AUTOPAY] Phase 2 notify failed tg:{tg_id}: {send_err}")
                 logger.info(f"[AUTOPAY] Phase 2: charged tg:{tg_id}, payment {payment.id}")
             except Exception as e:
                 logger.error(f"[AUTOPAY] Phase 2 failed for user {user_id}: {e}")
@@ -190,8 +210,14 @@ async def _process_autopayments_locked(bot):
                                              scenario="autopay_failed", status='sent')
                         except Exception:
                             pass
-                    except Exception:
-                        pass
+                    except Exception as send_err:
+                        err_str = str(send_err).lower()
+                        if "blocked" in err_str or "deactivated" in err_str:
+                            try:
+                                from api.db import execute_query
+                                execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
+                            except Exception:
+                                pass
 
     if not users_notify and not users_charge:
         logger.info("[AUTOPAY] No users due for auto-renewal")
