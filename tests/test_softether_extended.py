@@ -25,8 +25,9 @@ def test_disable_user_failure(mock_run):
 #  list_sessions
 # ─────────────────────────────────────────────
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run")
-def test_list_sessions_parses_output(mock_run):
+def test_list_sessions_parses_output(mock_run, mock_check):
     from bot_xui.softether import list_sessions
     mock_run.return_value = (
         "Session Name|SES-1\n"
@@ -45,8 +46,9 @@ def test_list_sessions_parses_output(mock_run):
     assert sessions[1]["username"] == "bob"
 
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run")
-def test_list_sessions_filters_securnat(mock_run):
+def test_list_sessions_filters_securnat(mock_run, mock_check):
     from bot_xui.softether import list_sessions
     mock_run.return_value = (
         "Session Name|SES-NAT\n"
@@ -61,8 +63,9 @@ def test_list_sessions_filters_securnat(mock_run):
     assert sessions[0]["username"] == "real_user"
 
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run", side_effect=RuntimeError("fail"))
-def test_list_sessions_error(mock_run):
+def test_list_sessions_error(mock_run, mock_check):
     from bot_xui.softether import list_sessions
     assert list_sessions() == []
 
@@ -71,8 +74,9 @@ def test_list_sessions_error(mock_run):
 #  list_users
 # ─────────────────────────────────────────────
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run")
-def test_list_users_parses_output(mock_run):
+def test_list_users_parses_output(mock_run, mock_check):
     from bot_xui.softether import list_users
     mock_run.return_value = (
         "User Name|admin\n"
@@ -97,7 +101,8 @@ def test_list_users_parses_output(mock_run):
     assert users[1]["expires"] is None
 
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run", side_effect=RuntimeError("fail"))
-def test_list_users_error(mock_run):
+def test_list_users_error(mock_run, mock_check):
     from bot_xui.softether import list_users
     assert list_users() == []

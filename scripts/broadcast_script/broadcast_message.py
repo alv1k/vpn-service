@@ -9,7 +9,7 @@ from pathlib import Path
 import mysql.connector
 import requests
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from config import (
     TELEGRAM_BOT_TOKEN,
     MYSQL_HOST,
@@ -75,52 +75,31 @@ def get_db_connection():
     )
 
 def get_all_users():
-    """Получает пользователей с tg_id, у которых есть активная vless_link."""
+    """Получает всех пользователей с tg_id (не бот-заблокированных)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
-        # Проверяем существование таблиц
+
         cursor.execute("SHOW TABLES LIKE 'users'")
         users_exists = cursor.fetchone() is not None
-        
-        cursor.execute("SHOW TABLES LIKE 'vpn_keys'")
-        keys_exists = cursor.fetchone() is not None
-        
-        if not keys_exists:
-            logger.error("❌ Таблица 'vpn_keys' не найдена в БД")
-            return []
-        
-        # Если есть таблица users, используем JOIN
+
         if users_exists:
             cursor.execute("""
-                SELECT DISTINCT u.tg_id, u.id, u.username, v.vless_link
+                SELECT DISTINCT u.tg_id, u.id, u.first_name, u.last_name
                 FROM users u
-                INNER JOIN vpn_keys v ON (u.id = v.user_id OR u.tg_id = v.tg_id)
                 WHERE u.tg_id IS NOT NULL
                   AND u.tg_id != 0
                   AND u.bot_blocked = 0
-                  AND v.vpn_type = 'vless'
-                  AND v.vless_link IS NOT NULL
-                  AND v.vless_link != ''
             """)
         else:
-            # Если нет таблицы users, берем tg_id直接从 vpn_keys
-            cursor.execute("""
-                SELECT DISTINCT tg_id, NULL as id, NULL as username, vless_link
-                FROM vpn_keys
-                WHERE tg_id IS NOT NULL
-                  AND tg_id != 0
-                  AND vpn_type = 'vless'
-                  AND vless_link IS NOT NULL
-                  AND vless_link != ''
-            """)
-        
+            logger.error("❌ Таблица 'users' не найдена в БД")
+            return []
+
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        
-        logger.info(f"📊 Найдено пользователей с подпиской: {len(rows)}")
+
+        logger.info(f"📊 Найдено пользователей для рассылки: {len(rows)}")
         return rows
         
     except mysql.connector.Error as e:
@@ -141,14 +120,29 @@ def mark_sent(tg_id: int):
         f.write(f"{tg_id}\n")
 
 
+def get_proxy_link() -> str:
+    """Формирует tg://proxy ссылку с текущим адресером из конфига."""
+    try:
+        from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET
+        return f"tg://proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}&secret={MTPROTO_SECRET}"
+    except Exception:
+        return "tg://proxy?server=tiinservice.online&port=8443"
+
+
 def send_message_to_user(tg_id: int) -> bool:
-    """Отправляет сообщение пользователю через Telegram."""
+    """Отправляет сообщение пользователю через Telegram с кнопкой подключения прокси."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    proxy_link = get_proxy_link()
     payload = {
         "chat_id": tg_id,
         "text": MESSAGE,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
+        "reply_markup": {
+            "inline_keyboard": [
+                [{"text": "🔗 Подключить прокси", "url": proxy_link}]
+            ]
+        },
     }
     try:
         resp = requests.post(url, json=payload, timeout=10)
@@ -241,8 +235,8 @@ def main():
             return
         logger.info(f"📋 Список пользователей для рассылки ({len(users)} чел.):")
         for user in users:
-            username = user.get('username', '-')
-            logger.info(f"  - tg_id={user['tg_id']} (@{username})")
+            username = user.get('first_name', '') or user.get('last_name', '') or '-'
+            logger.info(f"  - tg_id={user['tg_id']} ({username})")
         return
     
     # Получаем всех пользователей
@@ -256,7 +250,7 @@ def main():
 
     for i, user in enumerate(users):
         tg_id = user["tg_id"]
-        username = user.get('username', '')
+        username = user.get('first_name', '') or user.get('last_name', '') or '-'
         
         # Пропускаем уже отправленных
         if already_sent(tg_id):

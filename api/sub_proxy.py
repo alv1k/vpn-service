@@ -6,6 +6,9 @@ import asyncio
 import base64
 import logging
 import time
+import warnings
+
+warnings.filterwarnings("ignore", message="Unverified HTTPS request.*", category=Warning)
 from datetime import datetime
 
 import httpx

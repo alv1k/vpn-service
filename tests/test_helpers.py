@@ -113,7 +113,7 @@ def test_make_proxy_file():
     content = buf.read().decode()
     assert "<!DOCTYPE html>" in content
     assert "tg://proxy" in content
-    assert "tiinservice.ru" in content
+    assert "тииҥ VPN" in content
 
 
 def test_make_proxy_file_has_both_links():

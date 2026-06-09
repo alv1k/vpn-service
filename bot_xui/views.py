@@ -11,6 +11,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bot_xui.tariffs import TARIFFS
 from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated, get_permanent_discount, update_vless_link, get_web_token, get_user_by_tg_id, get_payment_by_id, get_referral_count, get_user_by_web_token
 from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, get_user_sub_url
+
 from bot_xui.test_mode import is_test_mode
 from config import ADMIN_TG_ID, REFERRAL_REWARD_DAYS, BOT_USERNAME
 
@@ -36,6 +37,7 @@ def _format_date_long(dt: datetime, offset_hours: int = 9) -> str:
 
 def build_main_menu_text(tg_id: int) -> str:
     keys = get_keys_by_tg_id(tg_id)
+    keys = [k for k in keys if k.get("vpn_type") != "naiveproxy"]
 
     # Защитный fallback: ключей нет вообще (например, не сработала авто-выдача).
     if not keys:
@@ -66,8 +68,8 @@ def build_main_menu_text(tg_id: int) -> str:
         text += f'🪄 <a href="https://344988.snk.wtf/my/{token}">Гид по подключению</a>\n\n'
 
     text += (
-        f"<blockquote>👥 Бонус за друзей: +{ref_days} дн.</blockquote>\n"
-        f"Воспользуйся реферальной ссылкой:\n➡️➡️➡️ <code>https://t.me/{BOT_USERNAME}?start={tg_id}</code> ⬅️"
+        f"<blockquote>👥 Бонус за друзей: +{ref_days} дн.\n"
+        f"Воспользуйся реферальной ссылкой:\n➡️➡️➡️ <code>https://t.me/{BOT_USERNAME}?start={tg_id}</code> ⬅️</blockquote>"
     )
 
     if is_active and is_test:
@@ -241,17 +243,17 @@ def _refresh_vless_links(tg_id: int, xui):
 
 
 _PROTOCOL_LABELS = {
-    "softether": ("🖥", "SoftEther"),
-    "vless":     ("🟢", "VLESS"),
-    "awg":       ("📱", "AmneziaWG"),
-    "hysteria":  ("🚀", "Hysteria 2"),
+    "softether":  ("🖥", "SoftEther"),
+    "vless":      ("🟢", "VLESS"),
+    "awg":        ("📱", "AmneziaWG"),
+    "hysteria":   ("🚀", "Hysteria 2"),
 }
 
 _PROTOCOL_DESCRIPTIONS = {
-    "softether": "Windows XP/7/10/11",
-    "vless":     "Reality • Все платформы",
-    "awg":       "AmneziaWG • Нестабильные каналы",
-    "hysteria":  "Hysteria 2 • Обход блокировок",
+    "softether":  "Windows XP/7/10/11",
+    "vless":      "Reality • Все платформы",
+    "awg":        "AmneziaWG • Нестабильные каналы",
+    "hysteria":   "Hysteria 2 • Обход блокировок",
 }
 
 
@@ -302,6 +304,8 @@ async def show_configs(query, xui=None):
 
     keys  = get_keys_by_tg_id(tg_id)
 
+    keys = [k for k in keys if k.get("vpn_type") != "naiveproxy"]
+
     if not keys:
         await _show_no_configs(query)
         return
@@ -315,6 +319,8 @@ async def show_configs(query, xui=None):
         return
 
     text = "🔑 <b>Ваши конфиги</b>\n\n"
+    keyboard: list = []
+
     if active_keys:
         for key in active_keys:
             emoji, label = _pretty_config_label(key)
@@ -323,21 +329,18 @@ async def show_configs(query, xui=None):
             text += f"{emoji} <b>{label}</b>\n"
             text += f"   <i>{desc}</i> · до {date}\n\n"
 
-    text += "<i>Нажмите, чтобы показать данные подключения:</i>"
+        text += "<i>Нажмите, чтобы показать данные подключения:</i>"
 
-    keyboard: list = []
-    row: list = []
-    for i, key in enumerate(active_keys):
-        emoji, label = _pretty_config_label(key, short=True)
-        row.append(InlineKeyboardButton(f"{emoji} {label}", callback_data=f"show_key_{key['client_name']}"))
-        if len(row) == 2 or i == len(active_keys) - 1:
-            keyboard.append(row)
-            row = []
+        row: list = []
+        for i, key in enumerate(active_keys):
+            emoji, label = _pretty_config_label(key, short=True)
+            row.append(InlineKeyboardButton(f"{emoji} {label}", callback_data=f"show_key_{key['client_name']}"))
+            if len(row) == 2 or i == len(active_keys) - 1:
+                keyboard.append(row)
+                row = []
 
-    # Additional protocol buttons for active subscribers
-    if active_keys:
-        has_awg = any(k['vpn_type'] == 'awg' for k in active_keys)
-        has_se  = any(k['vpn_type'] == 'softether' for k in active_keys)
+        has_awg    = any(k['vpn_type'] == 'awg' for k in active_keys)
+        has_se     = any(k['vpn_type'] == 'softether' for k in active_keys)
         extra_row = []
         if not has_awg:
             extra_row.append(InlineKeyboardButton("➕ AmneziaWG", callback_data="get_awg_config"))
@@ -345,6 +348,25 @@ async def show_configs(query, xui=None):
             extra_row.append(InlineKeyboardButton("➕ SoftEther", callback_data="get_softether_config"))
         if extra_row:
             keyboard.append(extra_row)
+
+    if expired_keys:
+        if active_keys:
+            text += "\n\n"
+        text += "⌛ <b>Истёкшие конфиги:</b>\n\n"
+        for key in expired_keys:
+            emoji, label = _pretty_config_label(key)
+            desc = _PROTOCOL_DESCRIPTIONS.get(key.get("vpn_type", "").lower(), "")
+            date = convert_to_local(key['expires_at'])
+            text += f"{emoji} <s>{label}</s>\n"
+            text += f"   <i>{desc}</i> · до {date}\n\n"
+
+        has_awg_any = any(k['vpn_type'] == 'awg' for k in keys)
+        if not has_awg_any:
+            keyboard.append([InlineKeyboardButton("➕ AmneziaWG 2.0", callback_data="get_awg_config_v2")])
+
+        if not active_keys:
+            text += "<i>Подписка истекла. Выберите тариф для продления.</i>"
+            keyboard.append([InlineKeyboardButton("💎 Тарифы", callback_data="tariffs")])
 
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")])
 
@@ -416,7 +438,7 @@ def _build_subscription_info(tg_id: int, key: dict) -> tuple[str, bool]:
 async def show_single_config(query, client_name: str, xui):
     tg_id = query.from_user.id
     keys  = get_keys_by_tg_id(tg_id)
-    key   = next((k for k in keys if k["client_name"] == client_name), None)
+    key   = next((k for k in keys if k["client_name"] == client_name and k.get("vpn_type") != "naiveproxy"), None)
 
     if not key:
         await query.answer("❌ Конфиг не найден", show_alert=True)

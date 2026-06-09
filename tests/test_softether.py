@@ -228,8 +228,9 @@ def test_credentials_text_contains_data():
 #  softether.list_sessions
 # ─────────────────────────────────────────────
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run")
-def test_list_sessions_parses_output(mock_run):
+def test_list_sessions_parses_output(mock_run, mock_check):
     mock_run.return_value = """SessionList command - List sessions
 ---
 Session Name                     |SES-LAPTOP-PC
@@ -258,8 +259,9 @@ Transfer Bytes                   |0
     assert sessions[1]["username"] == "jane"
 
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run")
-def test_list_sessions_empty(mock_run):
+def test_list_sessions_empty(mock_run, mock_check):
     mock_run.return_value = "SessionList command - List sessions\n"
 
     from bot_xui.softether import list_sessions
@@ -268,8 +270,9 @@ def test_list_sessions_empty(mock_run):
     assert sessions == []
 
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run", side_effect=RuntimeError("fail"))
-def test_list_sessions_error_returns_empty(mock_run):
+def test_list_sessions_error_returns_empty(mock_run, mock_check):
     from bot_xui.softether import list_sessions
     assert list_sessions() == []
 
@@ -278,8 +281,9 @@ def test_list_sessions_error_returns_empty(mock_run):
 #  softether.list_users
 # ─────────────────────────────────────────────
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run")
-def test_list_users_parses_output(mock_run):
+def test_list_users_parses_output(mock_run, mock_check):
     mock_run.return_value = """UserList command - List users
 ---
 User Name                        |se_123_abc
@@ -312,15 +316,17 @@ Transfer Bytes                   |0
     assert users[1]["num_logins"] == 0
 
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run")
-def test_list_users_empty(mock_run):
+def test_list_users_empty(mock_run, mock_check):
     mock_run.return_value = "UserList command - List users\n"
 
     from bot_xui.softether import list_users
     assert list_users() == []
 
 
+@patch("bot_xui.softether._check_vpncmd", return_value=True)
 @patch("bot_xui.softether._run", side_effect=RuntimeError("fail"))
-def test_list_users_error_returns_empty(mock_run):
+def test_list_users_error_returns_empty(mock_run, mock_check):
     from bot_xui.softether import list_users
     assert list_users() == []

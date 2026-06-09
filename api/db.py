@@ -807,6 +807,21 @@ def create_promocode(code: str, promo_type: str, value: int,
     )
 
 
+def create_winback_promo(tg_id: int, promo_type: str = 'discount', value: int = 20, days_valid: int = 14) -> str:
+    """Create a single-use promo code for a specific user. Returns the promo code string."""
+    import secrets
+    code = f"WIN{tg_id}_{secrets.token_hex(4)[:6].upper()}"
+    from datetime import timedelta
+    expires_at = datetime.now() + timedelta(days=days_valid)
+    execute_query(
+        "INSERT INTO promocodes (code, type, value, max_uses, per_user_limit, expires_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (code.upper(), promo_type, value, 1, 1, expires_at),
+    )
+    code_upper = code.upper()
+    return code_upper
+
+
 def get_promocode(code: str) -> dict | None:
     return execute_query(
         "SELECT * FROM promocodes WHERE code = %s",

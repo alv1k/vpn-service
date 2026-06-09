@@ -113,21 +113,6 @@ else
     FAILED=1
 fi
 
-# Test 8: SoftEther VPN Azure relay
-# SoftEther: vpncmd requires /PASSWORD in args (no stdin option).
-# Minimize exposure: read from .env only when needed, unset after.
-source <(grep -E '^SOFTETHER_SERVER_PASSWORD=' "$ENV_FILE")
-AZURE_OUTPUT=$(timeout 30 /opt/softether/vpncmd localhost:5555 /SERVER /PASSWORD:"$SOFTETHER_SERVER_PASSWORD" /CMD VpnAzureGetStatus 2>&1)
-unset SOFTETHER_SERVER_PASSWORD
-if echo "$AZURE_OUTPUT" | grep -q "Connection to VPN Azure Cloud Server is Established|Yes"; then
-    AZURE_HOST=$(echo "$AZURE_OUTPUT" | grep "Hostname.*VPN Azure" | awk -F'|' '{print $2}' | xargs)
-    log "✅ VPN Azure connected: $AZURE_HOST"
-    RESULTS+="✅ VPN Azure: $AZURE_HOST\n"
-else
-    log "❌ VPN Azure NOT connected"
-    RESULTS+="❌ VPN Azure: DOWN\n"
-    FAILED=1
-fi
 
 # Test 9: x-ui container status
 # if docker ps --format '{{.Names}} {{.Status}}' | grep -q "^x-ui Up"; then
@@ -194,6 +179,72 @@ else
     else
         log "❌ AWG API on 51821: DOWN"
         RESULTS+="❌ AWG API 51821: DOWN\n"
+        FAILED=1
+    fi
+fi
+
+# Test 10a: MTProto proxy (mtg) on port 3129
+MTG_REPLAY_STATE="/tmp/mtg_replay_attacks_last"
+if ss -tlnp | grep -q ':3129'; then
+    MTG_METRICS=$(curl -s --connect-timeout 3 http://127.0.0.1:3129/metrics 2>/dev/null)
+    if [ -n "$MTG_METRICS" ]; then
+        MTG_CONN=$(echo "$MTG_METRICS" | grep "^mtg_client_connections{ip_family="ipv4"}" | awk '{print $2}')
+        MTG_TG_CONN=$(echo "$MTG_METRICS" | grep "^mtg_telegram_connections{dc="1"" | awk '{print $2}')
+        MTG_REPLAY=$(echo "$MTG_METRICS" | grep "^mtg_replay_attacks " | awk '{print $2}')
+        MTG_REPLAY=${MTG_REPLAY:-0}
+
+        # Check replay attack rate (threshold: 100 per hour)
+        CURRENT_TIME=$(date +%s)
+        if [ -f "$MTG_REPLAY_STATE" ]; then
+            read PREV_REPLAY PREV_TIME < "$MTG_REPLAY_STATE"
+            TIME_DELTA=$((CURRENT_TIME - PREV_TIME))
+            REPLAY_DELTA=$((MTG_REPLAY - PREV_REPLAY))
+            if [ "$TIME_DELTA" -gt 0 ]; then
+                REPLAY_PER_HOUR=$((REPLAY_DELTA * 3600 / TIME_DELTA))
+                if [ "$REPLAY_PER_HOUR" -gt 100 ]; then
+                    log "⚠️ MTProto replay attacks HIGH: ${REPLAY_DELTA} in ${TIME_DELTA}s (~${REPLAY_PER_HOUR}/h)"
+                    RESULTS+="⚠️ MTProto replay: ${REPLAY_PER_HOUR}/h (clients: ${MTG_CONN:-0})\n"
+                else
+                    log "✅ MTProto proxy: client_conn=${MTG_CONN:-0}, tg_conn=${MTG_TG_CONN:-0}, replay_rate=${REPLAY_PER_HOUR}/h"
+                    RESULTS+="✅ MTProto proxy: OK (clients: ${MTG_CONN:-0}, tg: ${MTG_TG_CONN:-0}, replay: ${REPLAY_PER_HOUR}/h)\n"
+                fi
+            else
+                log "✅ MTProto proxy: client_conn=${MTG_CONN:-0}, tg_conn=${MTG_TG_CONN:-0}"
+                RESULTS+="✅ MTProto proxy: OK (clients: ${MTG_CONN:-0}, tg: ${MTG_TG_CONN:-0})\n"
+            fi
+        else
+            log "✅ MTProto proxy: client_conn=${MTG_CONN:-0}, tg_conn=${MTG_TG_CONN:-0}, replay=${MTG_REPLAY}"
+            RESULTS+="✅ MTProto proxy: OK (clients: ${MTG_CONN:-0}, tg: ${MTG_TG_CONN:-0}, replay: ${MTG_REPLAY})\n"
+        fi
+        echo "$MTG_REPLAY $CURRENT_TIME" > "$MTG_REPLAY_STATE"
+    else
+        log "⚠️ MTProto proxy listening but metrics empty"
+        RESULTS+="⚠️ MTProto proxy: metrics empty\n"
+    fi
+else
+    try_restart "MTProto" "sudo systemctl restart mtg" "ss -tlnp | grep -q ':3129'"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ MTProto proxy: OK [auto-recovered]\n"
+        RECOVERED+="MTProto "
+    else
+        log "❌ MTProto proxy NOT listening on 3129"
+        RESULTS+="❌ MTProto proxy: DOWN\n"
+        FAILED=1
+    fi
+fi
+
+# Test 10b: AmneziaWG interface
+if ip link show awg0 2>/dev/null | grep -qE "state UP|state UNKNOWN"; then
+    log "✅ AmneziaWG awg0: UP"
+    RESULTS+="✅ AmneziaWG awg0: UP\n"
+else
+    try_restart "AmneziaWG" "sudo systemctl restart awg-interface" "ip link show awg0 2>/dev/null | grep -qE 'state UP|state UNKNOWN'"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ AmneziaWG awg0: UP [auto-recovered]\n"
+        RECOVERED+="AmneziaWG "
+    else
+        log "❌ AmneziaWG awg0: DOWN"
+        RESULTS+="❌ AmneziaWG awg0: DOWN\n"
         FAILED=1
     fi
 fi

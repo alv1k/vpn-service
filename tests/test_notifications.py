@@ -238,7 +238,7 @@ def test_send_support_message_to_team(mock_send):
     from api.notifications import send_support_message_to_team
     result = send_support_message_to_team("user@e.com", "Help me!")
     assert result is True
-    assert mock_send.call_args[0][0] == "support@tiinservice.ru"
+    assert mock_send.call_args[0][0] == "support@tiinservice.online"
     assert "user@e.com" in mock_send.call_args[0][1]
 
 

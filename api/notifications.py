@@ -117,7 +117,7 @@ def _send_email(to: str, code: str) -> bool:
     msg["Subject"] = f"Код подтверждения: {code}"
     msg["From"] = f"TIIN <{SMTP_FROM or SMTP_USER}>"
     msg["To"] = to
-    msg["Reply-To"] = "support@tiinservice.ru"
+    msg["Reply-To"] = "support@tiinservice.online"
 
     text = f"Ваш код подтверждения: {code}\nКод действителен {CODE_TTL_MINUTES} минут."
     html = f"""\
@@ -200,7 +200,7 @@ def _send_html_email(to: str, subject: str, text: str, html: str) -> bool:
     msg["Subject"] = subject
     msg["From"] = f"TIIN <{SMTP_FROM or SMTP_USER}>"
     msg["To"] = to
-    msg["Reply-To"] = "support@tiinservice.ru"
+    msg["Reply-To"] = "support@tiinservice.online"
 
     msg.attach(MIMEText(text, "plain", "utf-8"))
     msg.attach(MIMEText(html, "html", "utf-8"))
@@ -355,4 +355,4 @@ def send_support_message_to_team(from_email: str, message: str) -> bool:
     </div>"""
 
     html = _branded_html(body)
-    return _send_html_email("support@tiinservice.ru", subject, text, html)
+    return _send_html_email("support@tiinservice.online", subject, text, html)

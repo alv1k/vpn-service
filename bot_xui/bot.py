@@ -54,7 +54,7 @@ from bot_xui.views    import (
     # show_vless_link,
 )
 from bot_xui.payment     import process_payment
-from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_test_softether, handle_get_awg_config, handle_get_softether_config, grant_referral_vpn, activate_test_period
+from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_test_softether, handle_get_awg_config, handle_get_awg_config_v2, handle_get_softether_config, grant_referral_vpn, activate_test_period
 from bot_xui.messaging   import send_message_by_tg_id
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -511,6 +511,74 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=make_main_keyboard(tg_id)
         )
 
+    elif promo_data['type'] == 'winback_discount':
+        context.user_data["promo"] = {
+            "id": promo_data['id'],
+            "code": promo_data['code'],
+            "value": promo_data['value'],
+        }
+        use_promocode(promo_data['id'], tg_id)
+        await update.message.reply_text(
+            f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
+            f"Скидка <b>{promo_data['value']}%</b> применена к вашей подписке.\n\n"
+            f"Спасибо, что вернулись! 💙",
+            parse_mode="HTML",
+            reply_markup=make_main_keyboard(tg_id)
+        )
+
+    elif promo_data['type'] == 'loyalty_bonus':
+        result = await grant_referral_vpn(tg_id, promo_data['value'], xui)
+        if not result:
+            await update.message.reply_text("❌ Ошибка активации промокода. Попробуйте позже.")
+            return
+        use_promocode(promo_data['id'], tg_id)
+        await update.message.reply_text(
+            f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
+            f"Вам начислено <b>+{promo_data['value']} дней</b> бонуса за лояльность!\n\n"
+            f"Спасибо, что остаётесь с нами! 💙",
+            parse_mode="HTML",
+            reply_markup=make_main_keyboard(tg_id)
+        )
+
+    elif promo_data['type'] == 'holiday':
+        result = await grant_referral_vpn(tg_id, promo_data['value'], xui)
+        if not result:
+            await update.message.reply_text("❌ Ошибка активации промокода. Попробуйте позже.")
+            return
+        use_promocode(promo_data['id'], tg_id)
+        if result["action"] == "created":
+            from bot_xui.vpn_factory import make_qr_bytes
+            bio = make_qr_bytes(result["sub_url"])
+            await update.message.reply_photo(
+                photo=bio,
+                caption=(
+                    f"🎉 Праздничный промокод <b>{code.upper()}</b> активирован!\n"
+                    f"Вам подарено <b>+{promo_data['value']} дней</b> VPN!\n\n"
+                    f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
+                ),
+                parse_mode="HTML",
+                reply_markup=make_main_keyboard(tg_id)
+            )
+        else:
+            await update.message.reply_text(
+                f"🎉 Праздничный промокод <b>{code.upper()}</b> активирован!\n"
+                f"Вам начислено <b>+{promo_data['value']} дней</b> VPN!\n\n"
+                f"С праздником! 🎄",
+                parse_mode="HTML",
+                reply_markup=make_main_keyboard(tg_id)
+            )
+
+    elif promo_data['type'] == 'referral_boost':
+        use_promocode(promo_data['id'], tg_id)
+        await update.message.reply_text(
+            f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
+            f"Теперь за каждого приглашённого друга вы получите "
+            f"<b>+{promo_data['value']} дней</b> вместо стандартных +10!\n\n"
+            f"Действует на следующие 5 рефералов.",
+            parse_mode="HTML",
+            reply_markup=make_main_keyboard(tg_id)
+        )
+
 
 async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/addpromo CODE days|discount|permanent_discount VALUE [MAX_USES] [EXPIRES YYYY-MM-DD]"""
@@ -531,8 +599,9 @@ async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     code = args[0]
     promo_type = args[1]
-    if promo_type not in ('days', 'discount', 'permanent_discount'):
-        await update.message.reply_text("❌ Тип должен быть <pre>days</pre>, <pre>discount</pre> или <pre>permanent_discount</pre>", parse_mode="HTML")
+    allowed_types = ('days', 'discount', 'permanent_discount', 'winback_discount', 'loyalty_bonus', 'holiday', 'referral_boost')
+    if promo_type not in allowed_types:
+        await update.message.reply_text(f"❌ Тип должен быть одним из: {', '.join(f'<pre>{t}</pre>' for t in allowed_types)}", parse_mode="HTML")
         return
 
     try:
@@ -762,6 +831,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "get_awg_config":
         await handle_get_awg_config(query)
+
+    elif data == "get_awg_config_v2":
+        await handle_get_awg_config_v2(query)
 
     elif data == "get_softether_config":
         await handle_get_softether_config(query)

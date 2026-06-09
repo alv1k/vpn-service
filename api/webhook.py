@@ -128,10 +128,12 @@ from api.web_portal import web_router
 from api.web_api import web_api_router
 from api.web_auth import auth_router
 from api.sub_proxy import sub_router
+from admin.routes import router as admin_router
 app.include_router(web_router)
 app.include_router(web_api_router)
 app.include_router(auth_router)
 app.include_router(sub_router)
+app.include_router(admin_router)
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 

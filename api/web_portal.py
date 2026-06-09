@@ -373,20 +373,6 @@ margin-top:.8rem;transition:all .15s}}
 .no-sub{{text-align:center;padding:2rem 0;color:#888}}
 .no-sub .emoji{{font-size:2.5rem;margin-bottom:.5rem}}
 
-/* Support form */
-.support-form textarea{{width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
-color:#e5e5e5;padding:.8rem;font-size:.9rem;font-family:inherit;resize:vertical;min-height:80px;
-box-sizing:border-box}}
-.support-form textarea:focus{{border-color:#7c3aed;outline:none}}
-.support-form input[type=email]{{width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
-color:#e5e5e5;padding:.7rem .8rem;font-size:.9rem;font-family:inherit;box-sizing:border-box;margin-bottom:.6rem}}
-.support-form input[type=email]:focus{{border-color:#7c3aed;outline:none}}
-.support-btn{{display:block;width:100%;padding:.8rem;border:none;border-radius:10px;
-background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;margin-top:.8rem}}
-.support-btn:hover{{background:#6d28d9}}
-.support-btn:disabled{{opacity:.5;cursor:not-allowed}}
-.support-ok{{color:#22c55e;text-align:center;font-size:.9rem;margin-top:.8rem;display:none}}
-.support-err{{color:#ef4444;text-align:center;font-size:.85rem;margin-top:.5rem;display:none}}
 </style>
 </head>
 <body>
@@ -439,35 +425,16 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
     </p>
 </div>
 
-<!-- Support form -->
+<!-- Support -->
 <div class="card">
     <h2>✉️ Поддержка</h2>
     <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
-        Напишите нам, и мы ответим на вашу почту. Для отправки сообщения
-        нужно подтвердить email — мы отправим код подтверждения.
+        Напишите нам в Telegram — мы ответим в ближайшее время.
     </p>
-    <div class="support-form">
-        <div id="supStep1">
-            <input type="email" id="supportEmail" placeholder="Ваш email" value="{email}">
-            <button class="support-btn" onclick="supSendCode()">Получить код</button>
-        </div>
-        <div id="supStep2" style="display:none">
-            <p style="color:#888;font-size:.85rem;margin-bottom:.6rem">
-                Код отправлен на <b id="supEmailShow" style="color:#a78bfa"></b>
-            </p>
-            <input type="text" id="supportCode" placeholder="Код из письма" maxlength="6"
-                   style="width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
-                   color:#e5e5e5;padding:.7rem .8rem;font-size:1.1rem;font-family:inherit;
-                   box-sizing:border-box;margin-bottom:.6rem;text-align:center;letter-spacing:4px">
-            <textarea id="supportMsg" placeholder="Опишите вопрос или проблему..." rows="3"></textarea>
-            <button class="support-btn" onclick="supSubmit()">Отправить</button>
-            <p style="margin-top:.5rem;text-align:center">
-                <a href="javascript:supBack()" style="color:#888;font-size:.8rem;text-decoration:none">Изменить email</a>
-            </p>
-        </div>
-        <div class="support-ok" id="supportOk">✓ Сообщение отправлено! Мы ответим на вашу почту.</div>
-        <div class="support-err" id="supportErr"></div>
-    </div>
+    <a href="https://t.me/tiin_service_bot" class="connect-btn primary"
+       style="text-decoration:none;text-align:center;display:block">
+        💬 Написать в поддержку
+    </a>
 </div>
 
 <div class="back-link">
@@ -594,70 +561,6 @@ function showStep(n) {{
     }}
 }}
 
-function supErr(msg) {{
-    var el = document.getElementById('supportErr');
-    el.textContent = msg; el.style.display = msg ? 'block' : 'none';
-}}
-
-function supSendCode() {{
-    var email = document.getElementById('supportEmail').value.trim();
-    supErr('');
-    if (!email) {{ supErr('Введите email'); return; }}
-    var btn = event.target; btn.disabled = true; btn.textContent = 'Отправка...';
-
-    fetch('/api/web/support/send-code', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{email: email}})
-    }})
-    .then(function(r) {{ return r.json().then(function(d) {{ return {{status: r.status, data: d}}; }}); }})
-    .then(function(res) {{
-        if (res.data.ok) {{
-            document.getElementById('supStep1').style.display = 'none';
-            document.getElementById('supStep2').style.display = 'block';
-            document.getElementById('supEmailShow').textContent = email;
-            document.getElementById('supportCode').focus();
-        }} else {{
-            supErr(res.data.detail || res.data.message || 'Ошибка');
-        }}
-    }})
-    .catch(function() {{ supErr('Ошибка сети'); }})
-    .finally(function() {{ btn.disabled = false; btn.textContent = 'Получить код'; }});
-}}
-
-function supBack() {{
-    document.getElementById('supStep2').style.display = 'none';
-    document.getElementById('supStep1').style.display = 'block';
-    supErr('');
-}}
-
-function supSubmit() {{
-    var email = document.getElementById('supportEmail').value.trim();
-    var code = document.getElementById('supportCode').value.trim();
-    var msg = document.getElementById('supportMsg').value.trim();
-    supErr('');
-    if (!code) {{ supErr('Введите код'); return; }}
-    if (!msg) {{ supErr('Введите сообщение'); return; }}
-    var btn = event.target; btn.disabled = true; btn.textContent = 'Отправка...';
-
-    fetch('/api/web/support/contact', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{email: email, message: msg, code: code}})
-    }})
-    .then(function(r) {{ return r.json().then(function(d) {{ return {{status: r.status, data: d}}; }}); }})
-    .then(function(res) {{
-        if (res.data.ok) {{
-            document.getElementById('supStep2').style.display = 'none';
-            document.getElementById('supportOk').style.display = 'block';
-        }} else {{
-            supErr(res.data.detail || res.data.message || 'Ошибка');
-        }}
-    }})
-    .catch(function() {{ supErr('Ошибка сети'); }})
-    .finally(function() {{ btn.disabled = false; btn.textContent = 'Отправить'; }});
-}}
-
 showStep(1);
 </script>
 </body>
@@ -717,7 +620,7 @@ def _render_no_sub(web_token="", test_used=False):
         }}
         </script>"""
     else:
-        test_btn = '<p style="margin-top:.5rem;font-size:.8rem">Оформите подписку на <a href="https://tiinservice.ru" style="color:#a78bfa">tiinservice.ru</a></p>'
+        test_btn = '<p style="margin-top:.5rem;font-size:.8rem">Оформите подписку на <a href="https://tiinservice.online" style="color:#a78bfa">tiinservice.online</a></p>'
 
     return f"""
 <div class="card">

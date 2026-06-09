@@ -47,6 +47,15 @@
     nav button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
     nav button:hover { border-color: var(--accent); }
 
+    .nav-ext { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--border); }
+    .nav-ext a {
+      padding: 8px 16px; border: 1px solid var(--border); border-radius: 6px;
+      font-size: 13px; color: var(--muted); display: inline-flex; align-items: center;
+      text-decoration: none; white-space: nowrap;
+    }
+    .nav-ext a:hover { border-color: var(--accent); color: var(--text); }
+    .nav-ext-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
     .title { font-size: 18px; font-weight: 700; padding: 8px 0; color: var(--text); }
 
     /* Cards */
@@ -203,6 +212,9 @@
     .badge.awg { background: #a78bfa22; color: #a78bfa; }
     .badge.multi { background: #22c55e22; color: var(--green); }
     .badge.hyst { background: #ec489922; color: #ec4899; }
+    .badge.hysteria { background: #ec489922; color: #ec4899; }
+    .badge.vless { background: #3b82f622; color: #60a5fa; }
+    .badge.softether { background: #f9731622; color: #f97316; }
 
     .mono { font-family: monospace; font-size: 12px; }
     .trunc {
@@ -329,9 +341,11 @@
 <body>
   <div class="container">
     <nav>
-      <span class="title">TIIN VPN</span><a href="https://tiinservice.ru" target="_blank" style="color:var(--muted);font-size:12px;margin-left:8px;text-decoration:none" title="tiinservice.ru">🌐 tiinservice.ru</a>
+      <span class="title">TIIN VPN</span><a href="https://tiinservice.online" target="_blank" style="color:var(--muted);font-size:12px;margin-left:8px;text-decoration:none" title="tiinservice.online">🌐 tiinservice.online</a>
       <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('91.132.161.112');this.textContent='copied!';setTimeout(()=>this.textContent='91.132.161.112',1000)" title="Click to copy">91.132.161.112</span>
-      <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('193.23.211.141');this.textContent='copied!';setTimeout(()=>this.textContent='193.23.211.141',1000)" title="Click to copy">193.23.211.141</span>
+      <!-- https://344988.snk.wtf:5096/XhU5cXVfMCyHzAXlrT/panel/xray -->
+      <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('2.26.76.210');this.textContent='copied!';setTimeout(()=>this.textContent='2.26.76.210',1000)" title="Click to copy">2.26.76.210</span>
+      <!-- http://2.26.76.210:40649/q8gIb3co6oD2rHbtFc/panel/clients -->
       <div class="nav-tabs">
         <button onclick="showTab('dashboard')" id="tab-dashboard" class="active">Dashboard</button>
         <button onclick="showTab('awg')" id="tab-awg">AWG</button>
@@ -340,15 +354,15 @@
         <button onclick="showTab('users')" id="tab-users">Users</button>
         <button onclick="showTab('proxy')" id="tab-proxy">MTProxy</button>
         <button onclick="showTab('testpay')" id="tab-testpay">Test Pay</button>
+        <button onclick="showTab('traffic')" id="tab-traffic">Traffic</button>
         <button onclick="showTab('messages')" id="tab-messages">Messages</button>
-          <a href="https://344988.snk.wtf:5096/XhU5cXVfMCyHzAXlrT/panel/" target="_blank"
-           style="padding:8px 16px; border:1px solid var(--border); border-radius:6px; font-size:13px; color:var(--muted); display:inline-flex; align-items:center">
-          <span class="nav-link-text">3X-UI Panel </span>↗
-        </a>
-        <a href="https://344988.snk.wtf/phpmyadmin/" target="_blank"
-           style="padding:8px 16px; border:1px solid var(--border); border-radius:6px; font-size:13px; color:var(--muted); display:inline-flex; align-items:center">
-          <span class="nav-link-text">phpMyAdmin </span>↗
-        </a>
+        <div class="nav-ext">
+          <span class="nav-ext-label">External</span>
+          <a href="https://344988.snk.wtf:5096/XhU5cXVfMCyHzAXlrT/panel/" target="_blank">3X-UI Panel ↗</a>
+          <a href="https://344988.snk.wtf/phpmyadmin/" target="_blank">phpMyAdmin ↗</a>
+          <a href="https://344988.snk.wtf/phpmyadmin-dev/" target="_blank">phpMyAdmin Dev ↗</a>
+          <a href="http://2.26.76.210:40649/q8gIb3co6oD2rHbtFc/" target="_blank">3X-UI NL ↗</a>
+        </div>
       </div>
     </nav>
 
@@ -356,6 +370,26 @@
     <div id="s-dashboard" class="section active">
       <div class="cards" id="dash-cards"></div>
       <div class="cards" id="dash-extra-cards"></div>
+
+      <!-- Speed chart removed — see Traffic tab -->
+
+      <h3 class="mb" style="color:var(--muted)">SERVICES</h3>
+      <div class="cards" style="margin-bottom:16px">
+        <div class="card" style="display:flex;flex-direction:column;gap:8px;min-width:340px">
+          <h3>x-ui Backup</h3>
+          <div class="sub">Full snapshot: DB, metrics, config, binary. Keeps last 10.</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button onclick="xuiCreateBackup()" id="btn-xui-backup" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">
+              📦 Create Backup
+            </button>
+            <button onclick="xuiLoadBackups()" style="padding:8px 16px;background:var(--border);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:13px">
+              🔄 Refresh List
+            </button>
+            <span id="xui-backup-status" style="font-size:12px;color:var(--muted)"></span>
+          </div>
+          <div id="xui-backup-list" style="margin-top:8px;font-size:12px"></div>
+        </div>
+      </div>
 
       <h3 class="mb" style="color:var(--muted)">SITE ANALYTICS</h3>
       <div class="cards" id="dash-site-stats"></div>
@@ -526,10 +560,12 @@
         <table>
           <thead>
             <tr>
+              <th>First Name</th>
               <th>Name</th>
               <th>Address</th>
               <th>Enabled</th>
               <th class="col-created">Created</th>
+              <th>Expiry</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -659,7 +695,7 @@
         <span style="flex:1"></span>
       </div>
       <p style="color:var(--muted);font-size:13px;margin:8px 0">
-        Tests the tiinservice.ru landing page order flow: send verification code to email, confirm, create payment.
+        Tests the tiinservice.online landing page order flow: send verification code to email, confirm, create payment.
       </p>
       <div style="display:flex;gap:8px;align-items:center;margin:12px 0;flex-wrap:wrap">
         <input type="email" id="wo-email" placeholder="Email" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg);min-width:220px">
@@ -706,7 +742,52 @@
         </table>
       </div>
     </div>
-    
+
+    <!-- Traffic -->
+    <div id="s-traffic" class="section">
+      <div class="toolbar">
+        <b>User Traffic Summary</b>
+        <label style="font-size:12px;color:var(--muted);margin-left:12px">Period:</label>
+        <select id="traffic-hours" onchange="loadTraffic()" style="background:var(--card);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-size:12px">
+          <option value="1">Last 1h</option>
+          <option value="6">Last 6h</option>
+          <option value="24" selected>Last 24h</option>
+          <option value="72">Last 3d</option>
+          <option value="168">Last 7d</option>
+        </select>
+        <label style="font-size:12px;color:var(--muted);margin-left:8px">Proto:</label>
+        <select id="traffic-proto" onchange="loadTraffic()" style="background:var(--card);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-size:12px">
+          <option value="all" selected>All</option>
+          <option value="vless">VLESS</option>
+          <option value="hysteria">Hysteria2</option>
+          <option value="awg">AWG</option>
+          <option value="softether">SoftEther</option>
+        </select>
+        <input type="search" id="traffic-search" placeholder="Search name or tg_id..." oninput="debounce(loadTraffic,400)()" style="max-width:200px;margin-left:8px">
+        <span style="flex:1"></span>
+        <span id="traffic-count" style="color:var(--muted);font-size:12px"></span>
+        <button class="btn" onclick="loadTraffic()">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Protocol</th>
+              <th>IPs</th>
+              <th>Total Traffic</th>
+              <th>RX</th>
+              <th>TX</th>
+              <th>Speed (max)</th>
+              <th>Speed (avg)</th>
+              <th>Snapshots</th>
+            </tr>
+          </thead>
+          <tbody id="traffic-body"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Messages Section -->
     <div id="s-messages" class="section">
       <h2>📨 Message Log</h2>
@@ -836,6 +917,7 @@
       if (id === 'testpay') { /* static UI, no load needed */ }
       if (id === 'messages') loadMsgLog(true);
       if (id === 'users') loadUsers();
+      if (id === 'traffic') loadTraffic();
     }
 
     function openModal(html) {
@@ -849,10 +931,17 @@
 
     function fmtDate(s) {
       if (!s) return '—';
-      const d = new Date(s + 'Z');                // treat DB value as UTC
-      d.setTime(d.getTime() + 9 * 3600000);       // shift to UTC+9
-      return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric', timeZone:'UTC'})
-        + ' ' + d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit', timeZone:'UTC'});
+      // If date doesn't contain T, replace space with T to create ISO-like string
+      let dString = typeof s === 'string' && !s.includes('T') ? s.replace(' ', 'T') : s;
+      // Ensure it ends in Z if not present
+      if (!dString.endsWith('Z') && !dString.endsWith('z')) dString += 'Z';
+      
+      const d = new Date(dString);
+      if (isNaN(d)) return 'Invalid Date';
+      
+      d.setTime(d.getTime() + 9 * 3600000); // shift to UTC+9
+      return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'})
+        + ' ' + d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
     }
 
     // ── WebSocket ──────────────────────────────────────────────────────────────
@@ -1058,8 +1147,136 @@
 
     // ── Dashboard ─────────────────────────────────────────────────────────────
 
+    // ── x-ui Backup ────────────────────────────────────────────────────────────
+
+    async function xuiCreateBackup() {
+      const btn = document.getElementById('btn-xui-backup');
+      const status = document.getElementById('xui-backup-status');
+      if (!btn || !status) return;
+      btn.disabled = true;
+      btn.textContent = '⏳ Backing up...';
+      status.textContent = '';
+      try {
+        const r = await api('/api/admin/xui/backup', { method: 'POST' });
+        if (r && r.status === 'ok') {
+          status.innerHTML = `<span style="color:var(--green)">✅ Saved (${r.total_backups} total)</span>`;
+          xuiLoadBackups();
+        } else {
+          status.innerHTML = '<span style="color:var(--red)">❌ Backup failed</span>';
+        }
+      } catch (e) {
+        status.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📦 Create Backup';
+      }
+    }
+
+    async function xuiLoadBackups() {
+      const el = document.getElementById('xui-backup-list');
+      if (!el) return;
+      el.innerHTML = '<span style="color:var(--muted)">Loading...</span>';
+      try {
+        const r = await api('/api/admin/xui/backups');
+        const backups = r.backups || [];
+        if (!backups.length) {
+          el.innerHTML = '<span style="color:var(--muted)">No backups yet</span>';
+          return;
+        }
+        el.innerHTML = backups.map(b => `
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+            <span style="flex:1;color:var(--text)" title="${b.id}">
+              📁 <b>${b.label}</b>
+              <span style="color:var(--muted);margin-left:8px">${b.size_fmt}</span>
+            </span>
+            <button onclick="xuiShowRestoreHint('${b.id}')"
+              style="padding:4px 10px;background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;font-size:11px"
+              title="Show manual restore commands">
+              💡
+            </button>
+          </div>
+        `).join('');
+      } catch (e) {
+        el.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+      }
+    }
+
+    function xuiShowRestoreHint(id) {
+      const cmd1 = `sudo cp /etc/x-ui/x-ui.db /etc/x-ui/x-ui.db.bak`;
+      const cmd2 = `sudo cp /var/backups/x-ui/${id}/x-ui.db /etc/x-ui/x-ui.db`;
+      const cmd3 = `sudo systemctl restart x-ui`;
+      openModal(`
+        <div style="padding:16px;max-width:520px">
+          <h2 style="margin-bottom:12px">💡 Manual Restore Steps</h2>
+          <p style="color:var(--text);font-size:13px;margin-bottom:12px">
+            Backup: <b style="color:var(--accent)">${id}</b>
+          </p>
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:8px">
+            <div style="color:var(--muted);font-size:11px;margin-bottom:4px">1. Safety backup (current DB)</div>
+            <code style="color:var(--green);font-size:12px;cursor:pointer" onclick="navigator.clipboard.writeText('${cmd1}');this.style.color='var(--accent)'">${cmd1}</code>
+          </div>
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:8px">
+            <div style="color:var(--muted);font-size:11px;margin-bottom:4px">2. Restore from snapshot</div>
+            <code style="color:var(--green);font-size:12px;cursor:pointer" onclick="navigator.clipboard.writeText('${cmd2}');this.style.color='var(--accent)'">${cmd2}</code>
+          </div>
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:16px">
+            <div style="color:var(--muted);font-size:11px;margin-bottom:4px">3. Restart x-ui</div>
+            <code style="color:var(--green);font-size:12px;cursor:pointer" onclick="navigator.clipboard.writeText('${cmd3}');this.style.color='var(--accent)'">${cmd3}</code>
+          </div>
+          <div style="display:flex;justify-content:flex-end">
+            <button onclick="closeModal()" style="padding:8px 16px;background:var(--border);color:var(--text);border:none;border-radius:6px;cursor:pointer;font-size:13px">Close</button>
+          </div>
+        </div>
+      `);
+    }
+
+    // ── Traffic ─────────────────────────────────────────────────────────────────
+
+    async function loadTraffic() {
+      const hours = document.getElementById('traffic-hours').value;
+      const proto = document.getElementById('traffic-proto').value;
+      const search = document.getElementById('traffic-search').value;
+      const params = new URLSearchParams({hours, proto});
+      if (search) params.set('search', search);
+      try {
+        const d = await api('/api/admin/speed/users?' + params);
+        const tbody = document.getElementById('traffic-body');
+        document.getElementById('traffic-count').textContent = `${d.total} users`;
+        if (!d.users.length) {
+          tbody.innerHTML = '<tr><td colspan="9" style="color:var(--muted);text-align:center;padding:24px">No traffic data for this period</td></tr>';
+          return;
+        }
+        tbody.innerHTML = d.users.map(u => {
+          const name = u.first_name
+            ? `<b>${esc(u.first_name)}</b><br><span style="color:var(--muted);font-size:11px">${esc(u.client_name)}</span>`
+            : `<b>${esc(u.client_name)}</b>`;
+          const tgLink = u.tg_id
+            ? `<br><a href="tg://user?id=${u.tg_id}" style="color:var(--muted);font-size:11px">tg:${u.tg_id}</a>`
+            : '';
+          const protoBadge = `<span class="badge badge-${u.protocol}">${u.protocol}</span>`;
+          const ips = u.ip_count ? `<span style="color:var(--green)">${u.ip_count}</span>` : '0';
+          return `<tr>
+            <td>${name}${tgLink}</td>
+            <td>${protoBadge}</td>
+            <td style="text-align:center">${ips}</td>
+            <td><b>${u.total_fmt}</b></td>
+            <td style="color:var(--muted)">${u.rx_fmt}</td>
+            <td style="color:var(--muted)">${u.tx_fmt}</td>
+            <td style="font-size:11px"><span style="color:var(--green)">↓${u.rx_speed_max}</span> <span style="color:var(--orange)">↑${u.tx_speed_max}</span></td>
+            <td style="font-size:11px;color:var(--muted)"><span>↓${u.rx_speed_avg}</span> <span>↑${u.tx_speed_avg}</span></td>
+            <td style="text-align:center;color:var(--muted);font-size:11px">${u.snapshots}</td>
+          </tr>`;
+        }).join('');
+      } catch (e) {
+        console.error('Traffic load error:', e);
+        document.getElementById('traffic-body').innerHTML =
+          `<tr><td colspan="9" style="color:var(--red);text-align:center">Error: ${e.message}</td></tr>`;
+      }
+    }
+
     async function loadDashboard() {
       const d = await api('/api/admin/dashboard');
+      xuiLoadBackups();
 
       document.getElementById('dash-cards').innerHTML = `
         <div class="card">
@@ -1356,6 +1573,9 @@
         refreshOnline(),
       ]);
 
+      const names = clients.map(c => c.name);
+      const infoMap = await api('/api/admin/expiry?names=' + encodeURIComponent(JSON.stringify(names)));
+
       document.getElementById('awg-params').innerHTML = `
         <div class="card">
           <h3>Port</h3>
@@ -1374,8 +1594,11 @@
           <div class="val mono" style="font-size:14px">${srv.i1 || 'none'}</div>
         </div>`;
 
-      document.getElementById('awg-clients').innerHTML = clients.map(c => `
+      document.getElementById('awg-clients').innerHTML = clients.map(c => {
+        const info = infoMap[c.name] || {};
+        return `
         <tr>
+          <td>${portalLink(info.web_token, info.first_name || '—')}</td>
           <td>${onlineDot(c.name, 'awg')}${c.name}</td>
           <td class="mono">${c.address}</td>
           <td>
@@ -1384,12 +1607,14 @@
             </span>
           </td>
           <td class="col-created">${fmtDate(c.createdAt)}</td>
+          <td>${info.expires ? fmtDate(info.expires) : '—'}</td>
           <td>
             <button class="btn sm" onclick="awgConfig('${c.id}', '${c.name}')">Conf</button>
             <button class="btn sm" onclick="awgQR('${c.id}')">QR</button>
             <button class="btn sm red" onclick="awgDelete('${c.id}', '${c.name}')">Del</button>
           </td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
     }
 
     async function awgToggle(id, enable) {
@@ -2041,6 +2266,8 @@
 
     window.loadMsgLog = loadMsgLog;
     window.resetMsgFilters = resetMsgFilters;
+
+
   })();
   </script>
 </body>
