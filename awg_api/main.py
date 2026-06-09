@@ -7,7 +7,9 @@ import asyncio
 import json
 import logging
 import random
+import re
 import secrets
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from io import BytesIO
@@ -15,6 +17,7 @@ from io import BytesIO
 import os
 
 import qrcode
+
 from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, JSONResponse
 

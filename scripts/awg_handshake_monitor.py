@@ -75,6 +75,14 @@ def _get_awg_peers() -> list[dict]:
     return peers
 
 
+def _normalize_ip(ip: str) -> str:
+    """Return /24 network prefix (first 3 octets) for grouping same-device IPs."""
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return ".".join(parts[:3]) + ".0/24"
+    return ip
+
+
 def _resolve_peer_names() -> dict:
     """Map public_key → client_name via awg_clients DB."""
     try:
@@ -147,8 +155,9 @@ def main():
         if pk not in state:
             state[pk] = {"ips": {}, "alerted": False, "disabled": False}
 
-        # Записываем IP и timestamp
-        state[pk]["ips"][ip] = hs
+        # Записываем IP (нормализованный /24) и timestamp
+        norm_ip = _normalize_ip(ip)
+        state[pk]["ips"][norm_ip] = hs
 
         # Чистим старые записи
         state[pk]["ips"] = {

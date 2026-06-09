@@ -7,7 +7,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
@@ -613,6 +613,107 @@ async def offline_users():
     return offline
 
 
+@router.get("/speed/users")
+async def speed_users(
+    request: Request,
+    hours: float = Query(24.0, ge=0.1, le=168),
+    proto: str = Query("all"),
+    search: str = Query(None),
+):
+    """Per-user traffic summary: protocol, IPs, total traffic over period."""
+    _require_admin_session(request)
+
+    conn = awg_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+
+    since_dt = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+    proto_filter = ""
+    params: list = [since_dt]
+    if proto and proto != "all":
+        proto_filter = "AND s.vpn_type = %s"
+        params.append(proto)
+
+    search_filter = ""
+    if search:
+        search_filter = "AND (s.client_name LIKE %s OR u.first_name LIKE %s OR u.tg_id LIKE %s)"
+        params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+
+    cur.execute(f"""
+        SELECT
+            s.client_name,
+            s.vpn_type AS protocol,
+            s.tg_id,
+            s.user_id,
+            COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
+            MAX(s.ip_count) AS ip_count_max,
+            GROUP_CONCAT(DISTINCT JSON_EXTRACT(s.ips_json, '$[0]')) AS sample_ips,
+            SUM(s.total_bytes) AS total_bytes_sum,
+            SUM(s.rx_bytes) AS rx_bytes_sum,
+            SUM(s.tx_bytes) AS tx_bytes_sum,
+            MAX(s.rx_speed_bps) AS rx_speed_max,
+            MAX(s.tx_speed_bps) AS tx_speed_max,
+            AVG(s.rx_speed_bps) AS rx_speed_avg,
+            AVG(s.tx_speed_bps) AS tx_speed_avg,
+            COUNT(*) AS snapshots
+        FROM user_traffic_snapshots s
+        LEFT JOIN users u ON (s.tg_id != 0 AND s.tg_id = u.tg_id)
+                          OR (s.user_id IS NOT NULL AND s.user_id = u.id)
+        WHERE s.snapshot_at >= %s {proto_filter} {search_filter}
+        GROUP BY s.client_name, s.vpn_type, s.tg_id, s.user_id, first_name
+        ORDER BY total_bytes_sum DESC
+    """, tuple(params))
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    def fmt_bytes(b):
+        if not b:
+            return "0 B"
+        b = float(b)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if b < 1024:
+                return f"{b:.1f} {unit}"
+            b /= 1024
+        return f"{b:.1f} PB"
+
+    def fmt_speed(bps):
+        if not bps:
+            return "0"
+        bps = float(bps)
+        if bps >= 1_000_000:
+            return f"{bps / 1_000_000:.1f} Mbit/s"
+        if bps >= 1_000:
+            return f"{bps / 1_000:.0f} kbit/s"
+        return f"{bps:.0f} bit/s"
+
+    users = []
+    for r in rows:
+        users.append({
+            "client_name": r["client_name"],
+            "protocol": r["protocol"],
+            "tg_id": r["tg_id"],
+            "user_id": r["user_id"],
+            "first_name": r["first_name"] or "",
+            "ip_count": r["ip_count_max"] or 0,
+            "sample_ips": r["sample_ips"] or "",
+            "total_bytes": int(r["total_bytes_sum"] or 0),
+            "rx_bytes": int(r["rx_bytes_sum"] or 0),
+            "tx_bytes": int(r["tx_bytes_sum"] or 0),
+            "total_fmt": fmt_bytes(r["total_bytes_sum"]),
+            "rx_fmt": fmt_bytes(r["rx_bytes_sum"]),
+            "tx_fmt": fmt_bytes(r["tx_bytes_sum"]),
+            "rx_speed_max": fmt_speed(r["rx_speed_max"]),
+            "tx_speed_max": fmt_speed(r["tx_speed_max"]),
+            "rx_speed_avg": fmt_speed(r["rx_speed_avg"]),
+            "tx_speed_avg": fmt_speed(r["tx_speed_avg"]),
+            "snapshots": r["snapshots"],
+        })
+
+    return {"users": users, "hours": hours, "total": len(users)}
+
+
 @router.get("/finance")
 async def finance():
     """Server financials: revenue, costs, profitability."""
@@ -706,29 +807,24 @@ async def dashboard():
     # XUI stats
     xui_data = {"inbounds": 0, "clients": 0, "up": 0, "down": 0, "running": False}
     try:
+        r = subprocess.run(["pgrep", "-f", "xray-linux-amd64"], capture_output=True)
+        xui_data["running"] = r.returncode == 0
+    except Exception:
+        pass
+    try:
         xui = _get_xui()
         inbounds = xui.get_inbounds()
         xui_data["inbounds"] = len(inbounds)
         for ib in inbounds:
-            settings = json.loads(ib.get("settings", "{}"))
+            settings = ib.get("settings", {})
+            if isinstance(settings, str):
+                settings = json.loads(settings)
             xui_data["clients"] += len(settings.get("clients", []))
             for cs in ib.get("clientStats", []):
                 xui_data["up"] += cs.get("up", 0)
                 xui_data["down"] += cs.get("down", 0)
-        # r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", "x-ui"],
-        #                    capture_output=True, text=True)
-        # xui_data["running"] = "true" in r.stdout.lower()
-        try:
-            r = subprocess.run(["systemctl", "is-active", "x-ui"], 
-                            capture_output=True, text=True)
-            xui_data["running"] = r.stdout.strip() == "active"
-        except Exception:
-            xui_data["running"] = False
     except Exception as e:
         logger.warning(f"XUI stats error: {e}")
-        logger.warning(f"Error type: {type(e).__name__}")
-        import traceback
-        logger.warning(traceback.format_exc())
 
     # Bot stats
     user_stats = admin_db.count_users()
@@ -1444,16 +1540,20 @@ async def email_stats():
 _WINBACK_MESSAGES = {
     'zero_traffic': "👋 Привет!\nМы заметили, что вы ещё не подключились к VPN. Нужна помощь с настройкой?\n📱 Быстрый старт:\n1️⃣ Нажмите Мои конфиги\n2️⃣ Скопируйте ссылку подписки\n3️⃣ Вставьте в приложение (Happ, Hiddify, Streisand)\nЕсли что-то не получается — напишите нам 💬",
     'low_traffic': "👋 Привет!\nПохоже, VPN подключение не заработало как нужно. Мы можем помочь!\nПопробуйте:\n• Обновите ссылку подписки\n• Используйте Happ или Hiddify\n• Включите/выключите VPN заново\nЕсли не помогло — напишите в поддержку 💬",
-    'expired_fresh': "⏰ Ваша подписка недавно истекла.\nПродлите сейчас и получите бесперебойный доступ к VPN!\n💡 Чем длиннее период — тем выгоднее цена за день.",
-    'expired_old': "👋 Давно не виделись!\nМы обновили сервис — стало быстрее и стабильнее.\nВозвращайтесь — будем рады! 🎁",
-    'test_no_purchase': "👋 Вы пробовали наш тестовый период.\nГотовы к полному доступу? Выберите тариф — подписка с доступом ко всем сайтам 🌐",
-    'test_no_connect': "👋 Вы активировали тестовый период, но так и не подключились.\nМы продлили вам доступ на 1 день — попробуйте прямо сейчас!\n📱 Быстрый старт:\n1️⃣ Нажмите Мои конфиги\n2️⃣ Скопируйте ссылку подписки\n3️⃣ Вставьте в приложение\nЕсли что-то не получается — напишите нам 💬",
+    'expired_fresh': "⏰ Ваша подписка недавно истекла.\nПродлите сейчас!\n🎁 Персональный промокод со скидкой 10% (7 дней) создан автоматически.",
+    'expired_old': "👋 Давно не виделись!\nМы обновили сервис — стало быстрее и стабильнее.\n🎁 Персональный промокод со скидкой 20% (14 дней) создан автоматически.",
+    'test_no_purchase': "👋 Вы пробовали тестовый период.\nГотовы к полному доступу?\n🎁 Персональный промокод со скидкой 15% (7 дней) создан автоматически.",
+    'test_no_connect': "👋 Вы активировали тестовый период, но не подключились.\nМы продлили доступ на 1 день!\n🎁 Персональный промокод со скидкой 15% (7 дней) создан автоматически.\n📱 Быстрый старт:\n1️⃣ Мои конфиги\n2️⃣ Скопируйте ссылку\n3️⃣ Вставьте в приложение\nПомощь — пишите 💬",
     'payment_no_config': "⚠️ Мы обнаружили, что ваш платёж был успешным, но VPN конфиг не был создан.\nМы уже разбираемся с этим. Если вопрос не решится — напишите в поддержку 💬",
     'panel_db_mismatch': "⚠️ Обнаружена проблема с вашим конфигом. Мы уже работаем над исправлением.\nЕсли VPN не подключается — напишите в поддержку 💬",
     'never_activated': "👋 Привет!\nВы зарегистрировались, но ещё не попробовали VPN.\nАктивируйте бесплатный тест — это займёт пару минут!\n🔒 Безопасный интернет без ограничений.",
     'vless_only_inactive': "👋 Заметили, что вы не подключались к VPN больше суток.\nЕсли есть проблемы с подключением — попробуйте протокол AmneziaWG. Он лучше работает на нестабильных каналах, мобильном интернете и в удалённых регионах.\nНажмите кнопку ниже — мы выдадим вам конфиг AmneziaWG в дополнение к текущему VLESS.",
     'awg_inactive': "👋 Привет!\nЗаметили, что вы давно не подключались к VPN. Всё ли в порядке?\nЕсли возникли вопросы или проблемы с подключением — напишите нам, поможем! 💬",
     'recently_inactive': "👋 Мы скучаем!\nЗаметили, что вы давно не заходили. Всё ли в порядке с подключением?\n💡 У нас есть бесплатный прокси для Telegram — работает без VPN.",
+    'second_expiry_reminder': "⏰ Напоминаем: ваша подписка истекла 14 дней назад.\nПродлите сейчас!\n🎁 Персональный промокод со скидкой 20% (14 дней) создан автоматически.",
+    'hysteria_inactive': "👋 Привет!\nЗаметили, что вы давно не подключались к Hysteria 2.\nЭтот протокол отлично работает для обхода жёстких блокировок.\nЕсли возникли проблемы — напишите нам, поможем! 💬",
+    'long_inactive_7d': "👋 Давно не виделись!\nВы не заходили к нам больше недели. Мы обновили сервис — стало быстрее и стабильнее!\nВозвращайтесь — будем рады 🎁",
+    'referral_prompt': "👋 Привет!\nВы с нами уже {reg_days} дней — надеемся, всё отлично!\n💡 Приглашайте друзей: вы +10 дней, друг +3 дня бесплатно!\nДелитесь ссылкой прямо сейчас!",
 }
 
 
@@ -1513,6 +1613,16 @@ async def promo_usages(limit: int = Query(50)):
 @router.get("/test-conversion")
 async def test_conversion():
     return admin_db.test_to_paid_by_protocol()
+
+
+@router.get("/expiry")
+async def get_expiry(names: str = Query(...)):
+    import json
+    try:
+        name_list = json.loads(names)
+        return admin_db.get_expiry_by_client_names(name_list)
+    except:
+        return {}
 
 
 # ── Users ────────────────────────────────────────────────────────────────────
@@ -1643,6 +1753,120 @@ async def conversion_funnel():
     })
 
 
+# ── x-ui Backup ───────────────────────────────────────────────────────────────
+
+@router.post("/xui/backup")
+async def xui_backup():
+    """Create a full x-ui backup snapshot on the server."""
+    import sqlite3 as _sqlite3
+    import shutil
+
+    backup_dir = "/var/backups/x-ui"
+    timestamp = (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%Y-%m-%d_%H-%M-%S")
+    snapshot = os.path.join(backup_dir, timestamp)
+    os.makedirs(snapshot, exist_ok=True)
+
+    # 1. x-ui SQLite database (inbounds, clients, settings)
+    shutil.copy2("/etc/x-ui/x-ui.db", os.path.join(snapshot, "x-ui.db"))
+
+    # 2. system metrics
+    metrics_src = "/etc/x-ui/system_metrics.gob"
+    if os.path.exists(metrics_src):
+        shutil.copy2(metrics_src, os.path.join(snapshot, "system_metrics.gob"))
+
+    # 3. Full /etc/x-ui archive
+    subprocess.run(
+        ["tar", "czf", os.path.join(snapshot, "x-ui-etc.tar.gz"), "-C", "/etc/x-ui", "."],
+        capture_output=True, timeout=10,
+    )
+
+    # 4. x-ui binary
+    shutil.copy2("/usr/local/x-ui/x-ui", os.path.join(snapshot, "x-ui-bin"))
+
+    # Count total backups
+    backups = sorted(os.listdir(backup_dir))
+
+    # Cleanup: keep last 10 snapshots
+    while len(backups) > 10:
+        old = os.path.join(backup_dir, backups[0])
+        shutil.rmtree(old, ignore_errors=True)
+        backups.pop(0)
+
+    return {"status": "ok", "path": snapshot, "total_backups": len(backups)}
+
+
+@router.get("/xui/backups")
+async def xui_list_backups():
+    """List all available x-ui backup snapshots."""
+    import shutil as _shutil
+
+    backup_dir = "/var/backups/x-ui"
+    if not os.path.isdir(backup_dir):
+        return {"backups": []}
+
+    backups = []
+    for name in sorted(os.listdir(backup_dir), reverse=True):
+        path = os.path.join(backup_dir, name)
+        if not os.path.isdir(path):
+            continue
+        # Parse timestamp from dirname: stored in UTC+9
+        try:
+            dt = datetime.strptime(name, "%Y-%m-%d_%H-%M-%S")
+            label = dt.strftime("%d %b %Y %H:%M:%S")
+        except ValueError:
+            label = name
+        # Size
+        total_size = 0
+        for dirpath, _, filenames in os.walk(path):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                total_size += os.path.getsize(fp)
+        backups.append({
+            "id": name,
+            "label": label,
+            "size": total_size,
+            "size_fmt": _fmt_bytes(total_size),
+        })
+
+    return {"backups": backups}
+
+
+@router.post("/xui/restore/{backup_id}")
+async def xui_restore(backup_id: str, request: Request):
+    """Restore x-ui database from a backup snapshot."""
+    import shutil as _shutil
+
+    # Sanitize backup_id — only allow dirnames matching our timestamp format
+    import re as _re
+    if not _re.match(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$", backup_id):
+        raise HTTPException(status_code=400, detail="Invalid backup ID format")
+
+    snapshot = os.path.join("/var/backups/x-ui", backup_id)
+    db_src = os.path.join(snapshot, "x-ui.db")
+    if not os.path.isfile(db_src):
+        raise HTTPException(status_code=404, detail="Backup not found or missing x-ui.db")
+
+    # Must confirm via body
+    body = await request.json()
+    if not body.get("confirm"):
+        raise HTTPException(status_code=400, detail="Pass confirm: true in body to proceed")
+
+    # Safety: create emergency backup of current DB first
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    emergency = f"/etc/x-ui/x-ui.db.before-restore-{ts}"
+    with open("/etc/x-ui/x-ui.db", "rb") as src, open(emergency, "wb") as dst:
+        dst.write(src.read())
+
+    # Restore — write content only to avoid PermissionError on docker bind mounts
+    with open(db_src, "rb") as src, open("/etc/x-ui/x-ui.db", "wb") as dst:
+        dst.write(src.read())
+
+    # Restart x-ui to apply
+    subprocess.run(["systemctl", "restart", "x-ui"], capture_output=True, timeout=15)
+
+    return {"status": "ok", "restored_from": backup_id, "emergency_backup": emergency}
+
+
 # ── Admin page serving ────────────────────────────────────────────────────────
 
 def get_admin_page_route():
@@ -1651,7 +1875,6 @@ def get_admin_page_route():
         # nginx auth_basic already protects this path — skip session check
         # Pre-create a session cookie so JS doesn't need the API password
         import secrets as _secrets
-        from datetime import datetime, timezone
         from awg_api.main import _sessions, SESSION_MAX_AGE
 
         html_path = os.path.join(os.path.dirname(__file__), "static", "admin.html")
@@ -1707,7 +1930,7 @@ async def create_test_payment(request: Request):
                 "amount": {"value": str(tariff["price"]), "currency": "RUB"},
                 "confirmation": {
                     "type": "redirect",
-                    "return_url": "https://tiinservice.ru/admin",
+                    "return_url": "https://tiinservice.online/admin",
                 },
                 "capture": True,
                 "description": f"[ADMIN TEST] {tariff['name']}",

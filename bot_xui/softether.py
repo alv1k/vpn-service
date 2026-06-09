@@ -3,6 +3,7 @@ SoftEther VPN Server client wrapper.
 Manages users via vpncmd CLI.
 """
 import logging
+import os
 import subprocess
 
 from config import SOFTETHER_VPNCMD, SOFTETHER_SERVER_PASSWORD, SOFTETHER_HUB
@@ -15,6 +16,18 @@ _CMD_BASE = [
     f"/HUB:{SOFTETHER_HUB}",
     "/CMD",
 ]
+
+_vpncmd_available = None
+
+
+def _check_vpncmd() -> bool:
+    """Check if vpncmd binary exists. Result is cached."""
+    global _vpncmd_available
+    if _vpncmd_available is None:
+        _vpncmd_available = os.path.isfile(SOFTETHER_VPNCMD)
+        if not _vpncmd_available:
+            logger.warning(f"SoftEther vpncmd not found at {SOFTETHER_VPNCMD}, skipping SoftEther operations")
+    return _vpncmd_available
 
 
 def _run(*args) -> str:
@@ -76,6 +89,8 @@ def disable_user(username: str) -> bool:
 
 def list_sessions() -> list[dict]:
     """List active sessions (connected users) in the hub."""
+    if not _check_vpncmd():
+        return []
     try:
         output = _run("SessionList")
     except RuntimeError:
@@ -110,6 +125,8 @@ def list_sessions() -> list[dict]:
 
 def list_users() -> list[dict]:
     """List all users in the hub. Returns list of dicts with user info."""
+    if not _check_vpncmd():
+        return []
     try:
         output = _run("UserList")
     except RuntimeError:

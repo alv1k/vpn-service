@@ -77,6 +77,8 @@ SOFTETHER_HUB = os.getenv("SOFTETHER_HUB", "VPN")
 SOFTETHER_CONNECT_HOST = os.getenv("SOFTETHER_CONNECT_HOST")
 SOFTETHER_CONNECT_PORT = int(os.getenv("SOFTETHER_CONNECT_PORT", "443"))
 
+
+
 # SMTP (for email auth codes)
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = os.getenv("SMTP_PORT", "587")
@@ -85,7 +87,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 SMTP_FROM = os.getenv("SMTP_FROM")
 
 # MTProto Proxy
-MTPROTO_SERVER = os.getenv("MTPROTO_SERVER", "tiinservice.ru")
+MTPROTO_SERVER = os.getenv("MTPROTO_SERVER", "tiinservice.online")
 MTPROTO_PORT = os.getenv("MTPROTO_PORT", "8443")
 MTPROTO_SECRET = os.getenv("MTPROTO_SECRET", "")
 

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from api.db import execute_query
+from api.db import execute_query, get_referral_count, create_winback_promo
 from bot_xui.utils import XUIClient
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, ADMIN_TG_ID
 
@@ -227,6 +227,7 @@ DELAY = {
     'low_traffic': 1,         # 1 день после создания конфига
     'expired_fresh': 1,       # 1 день после истечения подписки
     'expired_old': 30,        # 30 дней после истечения
+    'second_expiry_reminder': 14,  # 14 дней после истечения — повторное напоминание
     'test_no_purchase': 1,    # 1 день после окончания теста (был трафик)
     'test_no_connect': 1,    # 1 день после окончания теста (0 трафика)
     'payment_no_config': 0,   # сразу
@@ -235,7 +236,10 @@ DELAY = {
     'never_activated': 1,     # 1 день после регистрации
     'vless_only_inactive': 1,  # VLESS-only офлайн 1+ день — предложить AWG
     'awg_inactive': 1,         # есть AWG конфиг, офлайн 1+ день — напомнить о себе
+    'hysteria_inactive': 7,    # Hysteria2 конфиг, не подключался 7+ дней
+    'long_inactive_7d': 7,    # не заходил 7+ дней (был активен)
     'recently_inactive': 1,   # не заходил 1-3 дня (был активен)
+    'referral_prompt': 3,     # активный пользователь, но не пригласил ни одного друга
 }
 
 
@@ -248,6 +252,7 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=N
         'low_traffic': [],         # < 5 MB — попробовал, не заработало
         'expired_fresh': [],       # подписка истекла 1-7 дней
         'expired_old': [],         # подписка истекла 30+ дней
+        'second_expiry_reminder': [],  # повторное напоминание через 14 дней
         'test_no_purchase': [],    # тест использован, был трафик, не купил
         'test_no_connect': [],     # тест использован, 0 трафика, не купил
         'multi_config_partial': [],# несколько конфигов, один тип не используется
@@ -256,7 +261,10 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=N
         'never_activated': [],     # зарегистрировался, тест не активировал, ключей нет
         'vless_only_inactive': [],  # VLESS-only, офлайн 1+ день, нет AWG — предложить AWG
         'awg_inactive': [],        # есть AWG конфиг, офлайн 1+ день — напомнить о себе
+        'hysteria_inactive': [],   # Hysteria2 конфиг, не подключался 7+ дней
+        'long_inactive_7d': [],    # не заходил 7+ дней (был активен)
         'recently_inactive': [],   # не заходил 1-3 дня (был активен)
+        'referral_prompt': [],     # активный, но не пригласил друзей
     }
 
     for user in users:
@@ -379,6 +387,35 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=N
             if vless_keys and other_keys and total_bytes > 0:
                 results['multi_config_partial'].append(info)
 
+        # Сценарий: Повторное напоминание об истечении подписки (14 дней)
+        if sub_until and sub_until < NOW:
+            days_expired = (NOW - sub_until).days
+            if days_expired == DELAY['second_expiry_reminder']:
+                results['second_expiry_reminder'].append({**info, 'days_expired': days_expired})
+
+        # Сценарий: Hysteria2 конфиг, не подключался 7+ дней
+        has_hysteria = tg_id in hysteria_tg_ids
+        if has_active_key and has_hysteria and last_online_ms > 0:
+            last_online_dt = datetime.utcfromtimestamp(last_online_ms / 1000)
+            days_offline = (NOW - last_online_dt).days
+            if days_offline >= DELAY['hysteria_inactive']:
+                results['hysteria_inactive'].append({**info, 'days_offline': days_offline})
+
+        # Сценарий: Не заходил 7+ дней (был активен ранее)
+        if has_active_key and last_online_ms > 0:
+            last_online_dt = datetime.utcfromtimestamp(last_online_ms / 1000)
+            days_offline = (NOW - last_online_dt).days
+            if days_offline >= DELAY['long_inactive_7d']:
+                results['long_inactive_7d'].append({**info, 'days_offline': days_offline})
+
+        # Сценарий: Активный пользователь, но не пригласил друзей
+        if has_active_key and total_bytes > 0:
+            ref_count = get_referral_count(tg_id)
+            if ref_count == 0:
+                reg_age = (NOW - user['created_at']).days if user.get('created_at') else 0
+                if reg_age >= DELAY['referral_prompt']:
+                    results['referral_prompt'].append({**info, 'reg_days': reg_age})
+
     return results
 
 
@@ -410,21 +447,30 @@ MESSAGES = {
     'expired_fresh': (
         "⏰ Ваша подписка недавно истекла.\n\n"
         "Продлите сейчас и получите бесперебойный доступ к VPN!\n\n"
-        "💡 Чем длиннее период — тем выгоднее цена за день."
+        "🎁 <b>Персональный промокод:</b> <b>{promo_code}</b> — скидка 10% на любой тариф!\n"
+        "Действует 7 дней, только для вас."
     ),
     'expired_old': (
         "👋 Давно не виделись!\n\n"
-        "Мы обновили сервис — стало быстрее и стабильнее.\n"
-        "Возвращайтесь — будем рады! 🎁"
+        "Мы обновили сервис — стало быстрее и стабильнее.\n\n"
+        "🎁 <b>Подарок для возвращения:</b>\n"
+        "Промокод <b>{promo_code}</b> — скидка 20% на любой тариф!\n"
+        "Действует 14 дней, только для вас."
     ),
     'test_no_purchase': (
         "👋 Вы пробовали наш тестовый период.\n\n"
-        "Готовы к полному доступу? Выберите тариф — "
-        "подписка от {price} ₽/мес с доступом ко всем сайтам 🌐"
+        "Готовы к полному доступу?\n\n"
+        "🎁 <b>Специальное предложение:</b>\n"
+        "Промокод <b>{promo_code}</b> — скидка 15% на первый тариф!\n"
+        "Действует 7 дней, только для вас.\n\n"
+        "Выберите тариф — подписка от {price} ₽/мес с доступом ко всем сайтам 🌐"
     ),
     'test_no_connect': (
         "👋 Вы активировали тестовый период, но так и не подключились.\n\n"
         "Мы продлили вам доступ на <b>1 день</b> — попробуйте прямо сейчас!\n\n"
+        "🎁 <b>Бонус за возвращение:</b>\n"
+        "Промокод <b>{promo_code}</b> — скидка 15% на первый тариф!\n"
+        "Действует 7 дней.\n\n"
         "📱 <b>Быстрый старт:</b>\n"
         "1️⃣ Нажмите <b>Мои конфиги</b>\n"
         "2️⃣ Скопируйте ссылку подписки\n"
@@ -470,6 +516,34 @@ MESSAGES = {
         "💡 Кстати, у нас есть бесплатный прокси для Telegram — "
         "работает без VPN, просто нажмите кнопку ниже."
     ),
+    'second_expiry_reminder': (
+        "⏰ Напоминаем: ваша подписка истекла {days_expired} дней назад.\n\n"
+        "Продлите сейчас, чтобы вернуть доступ к VPN!\n\n"
+        "💡 <b>Специальное предложение для вас:</b>\n"
+        "Промокод <b>{promo_code}</b> — скидка 20% на любой тариф!\n"
+        "Действует 14 дней, только для вас."
+    ),
+    'hysteria_inactive': (
+        "👋 Привет!\n\n"
+        "Заметили, что вы давно не подключались к <b>Hysteria 2</b>.\n\n"
+        "Этот протокол отлично работает для обхода жёстких блокировок.\n"
+        "Если возникли проблемы — напишите нам, поможем настроить! 💬"
+    ),
+    'long_inactive_7d': (
+        "👋 Давно не виделись!\n\n"
+        "Вы не заходили к нам больше недели. "
+        "Мы обновили сервис — стало быстрее и стабильнее!\n\n"
+        "Возвращайтесь — будем рады видеть вас снова 🎁"
+    ),
+    'referral_prompt': (
+        "👋 Привет!\n\n"
+        "Вы с нами уже <b>{reg_days} дней</b> — надеемся, всё работает отлично!\n\n"
+        "💡 <b>Знали ли вы, что можно получать VPN бесплатно?</b>\n\n"
+        "Пригласите друга — и вы оба получите бонус:\n"
+        "🎁 Вы: <b>+10 дней</b> подписки\n"
+        "🎁 Друг: <b>+3 дня</b> бесплатно\n\n"
+        "Делитесь ссылкой прямо сейчас!"
+    ),
 }
 
 
@@ -490,7 +564,7 @@ def get_buttons_for_scenario(scenario, tg_id=None):
         ]
     elif scenario in ('expired_fresh', 'expired_old', 'test_no_purchase'):
         return [
-            [{"text": "💎 Тарифы", "callback_data": "tariffs"}],
+            [{"text": "💎 Тарифы со скидкой", "callback_data": "tariffs"}],
         ]
     elif scenario == 'payment_no_config':
         return [
@@ -499,6 +573,7 @@ def get_buttons_for_scenario(scenario, tg_id=None):
     elif scenario == 'never_activated':
         return [
             [{"text": "🎁 Активировать тест", "callback_data": "test_period"}],
+            [{"text": "💎 Тарифы", "callback_data": "tariffs"}],
         ]
     elif scenario == 'vless_only_inactive':
         return [
@@ -513,6 +588,25 @@ def get_buttons_for_scenario(scenario, tg_id=None):
     elif scenario == 'recently_inactive':
         return [
             [{"text": "🌐 Прокси для Telegram", "callback_data": "tg_proxy"}],
+            [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
+        ]
+    elif scenario == 'second_expiry_reminder':
+        return [
+            [{"text": "💎 Продлить со скидкой", "callback_data": "tariffs"}],
+        ]
+    elif scenario == 'hysteria_inactive':
+        return [
+            [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
+            [{"text": "💬 Написать нам", "url": "https://t.me/tiin_service_bot"}],
+        ]
+    elif scenario == 'long_inactive_7d':
+        return [
+            [{"text": "💎 Тарифы", "callback_data": "tariffs"}],
+            [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
+        ]
+    elif scenario == 'referral_prompt':
+        return [
+            [{"text": "👥 Получить реферальную ссылку", "callback_data": "referral"}],
             [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
         ]
     return []
@@ -575,7 +669,8 @@ def _extend_test_keys(tg_id: int):
         inbounds = xui.get_inbounds()
         one_day_ms = 24 * 60 * 60 * 1000
         for ib in inbounds:
-            settings = json.loads(ib.get("settings", "{}"))
+            raw_settings = ib.get("settings", "{}")
+            settings = raw_settings if isinstance(raw_settings, dict) else json.loads(raw_settings)
             for client in settings.get("clients", []):
                 if str(tg_id) in client.get("email", ""):
                     expiry = client.get("expiryTime", 0)
@@ -646,6 +741,13 @@ async def send_messages(results):
                     from bot_xui.tariffs import TARIFFS
                     min_price = min(t['price'] for t in TARIFFS.values() if t['price'] > 0)
                     msg = msg.replace('{price}', str(min_price))
+                if '{days_expired}' in msg:
+                    msg = msg.replace('{days_expired}', str(u.get('days_expired', '')))
+                if '{reg_days}' in msg:
+                    msg = msg.replace('{reg_days}', str(u.get('reg_days', '')))
+                if '{promo_code}' in msg:
+                    promo_code = create_winback_promo(tg_id, promo_type='discount', value=15, days_valid=14)
+                    msg = msg.replace('{promo_code}', promo_code)
                 buttons = get_buttons_for_scenario(scenario, tg_id)
 
                 # Extend expired test keys for specific scenario

@@ -1,5 +1,7 @@
 import requests
 import json
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import subprocess
 from urllib.parse import quote
 import os
@@ -19,22 +21,26 @@ class XUIClient:
         self._logged_in = False
 
     def login(self) -> bool:
-        """Login через nginx"""
+        """Login to x-ui panel (v3.x with CSRF support)."""
         try:
-            # Исправлено: используем self.host, нет base_path
+            # Step 1: Get CSRF token (sets session cookie)
+            csrf_url = f"{self.host}/csrf-token"
+            csrf_resp = self.session.get(csrf_url)
+            csrf_token = csrf_resp.json().get("obj", "")
+
+            # Step 2: Login with CSRF token in header
             login_url = f"{self.host}/login"
             response = self.session.post(
                 login_url,
-                json={"username": self.username, "password": self.password},
-                headers={"Content-Type": "application/json"}
+                data={"username": self.username, "password": self.password},
+                headers={"X-CSRF-Token": csrf_token},
             )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success"):
-                    logger.info("✅ XUI login successful")
-                    self._logged_in = True
-                    return True
+
+            if response.status_code == 200 and response.json().get("success"):
+                logger.info("✅ XUI login successful")
+                self._logged_in = True
+                return True
+            logger.warning(f"XUI login failed: {response.text}")
             return False
         except Exception as e:
             logger.error(f"Login error: {e}")
@@ -78,7 +84,14 @@ class XUIClient:
         """Найти клиента по email"""
         inbounds = self.get_inbounds()
         for inbound in inbounds:
-            settings = json.loads(inbound.get('settings', '{}'))
+            raw_settings = inbound.get('settings', '{}')
+            if isinstance(raw_settings, str):
+                try:
+                    settings = json.loads(raw_settings)
+                except (json.JSONDecodeError, TypeError):
+                    settings = {}
+            else:
+                settings = raw_settings if isinstance(raw_settings, dict) else {}
             clients = settings.get('clients', [])
             for client in clients:
                 if client.get('email') == email:
@@ -99,7 +112,14 @@ class XUIClient:
                 return None
 
             for inbound in result.get('obj', []):
-                settings = json.loads(inbound.get('settings', '{}'))
+                raw_settings = inbound.get('settings', '{}')
+                if isinstance(raw_settings, str):
+                    try:
+                        settings = json.loads(raw_settings)
+                    except (json.JSONDecodeError, TypeError):
+                        settings = {}
+                else:
+                    settings = raw_settings if isinstance(raw_settings, dict) else {}
                 for client in settings.get('clients', []):
                     if str(client.get('tgId')) == str(tg_id) and not client.get('email', '').startswith('test-'):
                         return {
@@ -315,7 +335,14 @@ class XUIClient:
             best_sub_id = None
             best_expiry = -1
             for inbound in result.get('obj', []):
-                settings = json.loads(inbound.get('settings', '{}'))
+                raw_settings = inbound.get('settings', '{}')
+                if isinstance(raw_settings, str):
+                    try:
+                        settings = json.loads(raw_settings)
+                    except (json.JSONDecodeError, TypeError):
+                        settings = {}
+                else:
+                    settings = raw_settings if isinstance(raw_settings, dict) else {}
                 for client in settings.get('clients', []):
                     if str(client.get('tgId')) == str(tg_id):
                         sub_id = client.get('subId')
