@@ -33,14 +33,11 @@ class TestCreateXuiMultiConfig:
     @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://fake")
     @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
     async def test_success(self, mock_remark, mock_hyst, mock_vless):
-        """Creates VLESS+Hysteria clients and returns config dict."""
+        """Creates VLESS+Hysteria clients via single create_client call and returns config dict."""
         from bot_xui.vpn_factory import create_xui_multi_config
 
         xui = MagicMock()
-        xui.add_client.side_effect = [
-            {"success": True, "subId": "abc123"},
-            {"success": True},
-        ]
+        xui.create_client.return_value = {"success": True, "subId": "abc123"}
 
         result = await create_xui_multi_config(tg_id=55555, xui=xui)
 
@@ -48,7 +45,10 @@ class TestCreateXuiMultiConfig:
         assert len(result["client_uuid"]) == 36
         assert result["vless_link"] == "vless://fake"
         assert result["hysteria_link"] == "hysteria2://fake"
-        assert xui.add_client.call_count == 2
+        xui.create_client.assert_called_once_with(
+            email="tiin_55555", tg_id=55555, expiry_time=xui.create_client.call_args[1]['expiry_time'],
+            inbound_ids=[1, 4],
+        )
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://fake")
@@ -59,10 +59,7 @@ class TestCreateXuiMultiConfig:
         from bot_xui.vpn_factory import create_xui_multi_config
 
         xui = MagicMock()
-        xui.add_client.side_effect = [
-            {"success": False, "msg": "Duplicate email: tiin_55555\n"},
-            {"success": True},
-        ]
+        xui.create_client.return_value = {"success": False, "msg": "Duplicate email: tiin_55555"}
         xui.get_client_subscription_url.return_value = "https://sub/existing_sub"
 
         result = await create_xui_multi_config(tg_id=55555, xui=xui)
@@ -79,21 +76,21 @@ class TestCreateXuiMultiConfig:
         from bot_xui.vpn_factory import create_xui_multi_config
 
         xui = MagicMock()
-        xui.add_client.return_value = {"success": False, "msg": "Duplicate email: tiin_55555\n"}
+        xui.create_client.return_value = {"success": False, "msg": "Duplicate email: tiin_55555"}
         xui.get_client_subscription_url.return_value = None
 
         with pytest.raises(RuntimeError, match="не удалось получить subId"):
             await create_xui_multi_config(tg_id=55555, xui=xui)
 
     @pytest.mark.asyncio
-    async def test_vless_creation_failure_raises(self):
-        """When VLESS add_client fails (non-duplicate), raises RuntimeError."""
+    async def test_creation_failure_raises(self):
+        """When create_client fails (non-duplicate), raises RuntimeError."""
         from bot_xui.vpn_factory import create_xui_multi_config
 
         xui = MagicMock()
-        xui.add_client.return_value = {"success": False, "msg": "some error"}
+        xui.create_client.return_value = {"success": False, "msg": "some error"}
 
-        with pytest.raises(RuntimeError, match="Не удалось создать VLESS"):
+        with pytest.raises(RuntimeError, match="Не удалось создать клиента"):
             await create_xui_multi_config(tg_id=111, xui=xui)
 
 
@@ -101,28 +98,32 @@ class TestCreateVlessConfig:
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://fake")
-    async def test_success(self, mock_gen_link):
+    @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://fake")
+    @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
+    async def test_success(self, mock_remark, mock_hyst, mock_vless):
         """Creates VLESS client via XUI and returns config dict."""
         from bot_xui.vpn_factory import create_vless_config
 
         xui = MagicMock()
-        xui.add_client.return_value = True
+        xui.create_client.return_value = {"success": True, "subId": "sub123"}
 
         result = await create_vless_config(tg_id=12345, xui=xui)
 
         assert result["client_email"] == "tiin_12345"
-        assert len(result["client_uuid"]) == 36  # UUID format
+        assert len(result["client_uuid"]) == 36
         assert result["vless_link"] == "vless://fake"
         assert isinstance(result["expires_at"], datetime)
-        assert xui.add_client.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_xui_failure_raises(self):
-        """XUI returning False raises RuntimeError."""
+    @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://fake")
+    @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://fake")
+    @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
+    async def test_xui_failure_raises(self, mock_remark, mock_hyst, mock_vless):
+        """XUI returning failure raises RuntimeError."""
         from bot_xui.vpn_factory import create_vless_config
 
         xui = MagicMock()
-        xui.add_client.return_value = False
+        xui.create_client.return_value = {"success": False, "msg": "error"}
 
         with pytest.raises(RuntimeError, match="Не удалось"):
             await create_vless_config(tg_id=99, xui=xui)
@@ -218,32 +219,31 @@ class TestGrantReferralVpn:
     @patch("bot_xui.vpn_factory.sync_expiry")
     @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://ref")
-    async def test_create_new(self, mock_gen, mock_create_key, mock_sync):
+    @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://ref")
+    @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="ref-remark")
+    async def test_create_new(self, mock_remark, mock_hyst, mock_gen, mock_create_key, mock_sync):
         """Creates new VLESS+Hysteria config when user has no existing config."""
         from bot_xui.vpn_factory import grant_referral_vpn
 
         xui = MagicMock()
         xui.get_client_by_tg_id.return_value = None
-        xui.add_client.return_value = {"success": True, "subId": "url"}
-        xui.get_subscription_url_by_uuid.return_value = "https://sub/url"
+        xui.create_client.return_value = {"success": True, "subId": "url"}
         xui.get_hysteria_inbound_id.return_value = 4
 
         result = await grant_referral_vpn(tg_id=200, days=3, xui=xui)
 
         assert result["action"] == "created"
         assert result["vless_link"] == "vless://ref"
-        # 2 вызова add_client: VLESS и Hysteria
-        assert xui.add_client.call_count == 2
         mock_create_key.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_xui_add_fails_returns_none(self):
-        """Returns None if XUI add_client fails."""
+    async def test_xui_create_fails_returns_none(self):
+        """Returns None if XUI create_client fails."""
         from bot_xui.vpn_factory import grant_referral_vpn
 
         xui = MagicMock()
         xui.get_client_by_tg_id.return_value = None
-        xui.add_client.return_value = False
+        xui.create_client.return_value = {"success": False, "msg": "error"}
 
         result = await grant_referral_vpn(tg_id=300, days=5, xui=xui)
         assert result is None
@@ -320,7 +320,7 @@ class TestHandleTestVless:
         mock_show.assert_called_once_with(query, xui)
 
     @pytest.mark.asyncio
-    @patch("bot_xui.vpn_factory.create_vless_config", side_effect=RuntimeError("XUI down"))
+    @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock, side_effect=RuntimeError("XUI down"))
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_error_shows_message(self, mock_is_act, mock_create):
         """Error during creation shows error message to user."""
@@ -485,7 +485,7 @@ class TestEnsureTestSubscription:
         mock_sync.assert_called_once_with(222, expires_at)
 
     @pytest.mark.asyncio
-    @patch("bot_xui.vpn_factory.create_vless_config", side_effect=RuntimeError("XUI down"))
+    @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock, side_effect=RuntimeError("XUI down"))
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_creation_error_returns_none(self, mock_is_act, mock_create):
         """Errors during creation are swallowed; function returns None."""

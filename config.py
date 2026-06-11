@@ -71,7 +71,7 @@ AMNEZIA_CONTAINER = os.getenv("AMNEZIA_CONTAINER")
 
 
 # SoftEther VPN
-SOFTETHER_VPNCMD = os.getenv("SOFTETHER_VPNCMD", "/opt/softether/vpncmd")
+SOFTETHER_VPNCMD = os.getenv("SOFTETHER_VPNCMD", "/usr/bin/vpncmd")
 SOFTETHER_SERVER_PASSWORD = os.getenv("SOFTETHER_SERVER_PASSWORD")
 SOFTETHER_HUB = os.getenv("SOFTETHER_HUB", "VPN")
 SOFTETHER_CONNECT_HOST = os.getenv("SOFTETHER_CONNECT_HOST")
@@ -91,8 +91,8 @@ MTPROTO_SERVER = os.getenv("MTPROTO_SERVER", "tiinservice.online")
 MTPROTO_PORT = os.getenv("MTPROTO_PORT", "8443")
 MTPROTO_SECRET = os.getenv("MTPROTO_SECRET", "")
 
-REFERRAL_REWARD_DAYS = int(os.getenv("REFERRAL_REWARD_DAYS", "3"))
-REFERRAL_NEWCOMER_DAYS = int(os.getenv("REFERRAL_NEWCOMER_DAYS", "3"))
+REFERRAL_REWARD_DAYS = int(os.getenv("REFERRAL_REWARD_DAYS", "10"))
+REFERRAL_NEWCOMER_DAYS = int(os.getenv("REFERRAL_NEWCOMER_DAYS", "10"))
 
 _admin_tg_raw = os.getenv("ADMIN_TG_ID")
 if not _admin_tg_raw:

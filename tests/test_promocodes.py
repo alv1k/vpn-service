@@ -1,4 +1,4 @@
-"""Тесты для промокодов — валидация, использование, деактивация."""
+"""Тесты для промокодов — валидация, использование, деактивация, активация без покупки."""
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock, call
 
@@ -258,3 +258,140 @@ def test_list_active_promocodes_empty(mock_get_pool):
     result = list_active_promocodes()
 
     assert result == []
+
+
+# ─────────────────────────────────────────────
+#  log_promo_activation
+# ─────────────────────────────────────────────
+
+@patch("api.db._get_pool")
+def test_log_promo_activation(mock_get_pool):
+    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
+    mock_get_pool.return_value = mock_pool
+
+    from api.db import log_promo_activation
+    log_promo_activation(promo_id=5, tg_id=12345)
+
+    args = mock_cursor.execute.call_args[0]
+    assert "INSERT IGNORE INTO promo_activations" in args[0]
+    assert args[1] == (5, 12345)
+    mock_conn.commit.assert_called_once()
+
+
+@patch("api.db._get_pool")
+def test_log_promo_activation_idempotent(mock_get_pool):
+    """INSERT IGNORE should not fail on duplicate activation."""
+    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
+    mock_get_pool.return_value = mock_pool
+
+    from api.db import log_promo_activation
+    # Should not raise even if called twice
+    log_promo_activation(promo_id=5, tg_id=12345)
+    log_promo_activation(promo_id=5, tg_id=12345)
+
+    assert mock_cursor.execute.call_count == 2
+
+
+# ─────────────────────────────────────────────
+#  get_users_with_unused_activated_promos
+# ─────────────────────────────────────────────
+
+@patch("api.db._get_pool")
+def test_get_users_with_unused_activated_promos_basic(mock_get_pool):
+    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
+    mock_get_pool.return_value = mock_pool
+    mock_cursor.fetchall.return_value = [
+        {
+            "tg_id": 100,
+            "promocode_id": 1,
+            "activated_at": datetime.now() - timedelta(days=5),
+            "code": "WIN100_ABC123",
+            "value": 15,
+            "expires_at": datetime.now() + timedelta(days=9),
+        }
+    ]
+
+    from api.db import get_users_with_unused_activated_promos
+    result = get_users_with_unused_activated_promos(min_days=2)
+
+    assert len(result) == 1
+    assert result[0]["tg_id"] == 100
+    assert result[0]["code"] == "WIN100_ABC123"
+    assert result[0]["value"] == 15
+    # Verify SQL contains key clauses
+    sql = mock_cursor.execute.call_args[0][0]
+    assert "promo_activations" in sql
+    assert "promocode_usages" in sql
+    assert "payments" in sql
+    assert "is_active = 1" in sql
+
+
+@patch("api.db._get_pool")
+def test_get_users_with_unused_activated_promos_empty(mock_get_pool):
+    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
+    mock_get_pool.return_value = mock_pool
+    mock_cursor.fetchall.return_value = []
+
+    from api.db import get_users_with_unused_activated_promos
+    result = get_users_with_unused_activated_promos(min_days=2)
+
+    assert result == []
+
+
+@patch("api.db._get_pool")
+def test_get_users_with_unused_activated_promos_none_result(mock_get_pool):
+    """fetchall returns None → should return empty list."""
+    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
+    mock_get_pool.return_value = mock_pool
+    mock_cursor.fetchall.return_value = None
+
+    from api.db import get_users_with_unused_activated_promos
+    result = get_users_with_unused_activated_promos(min_days=2)
+
+    assert result == []
+
+
+@patch("api.db._get_pool")
+def test_get_users_with_unused_activated_promos_min_days_param(mock_get_pool):
+    """min_days parameter should be passed to SQL."""
+    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
+    mock_get_pool.return_value = mock_pool
+    mock_cursor.fetchall.return_value = []
+
+    from api.db import get_users_with_unused_activated_promos
+    get_users_with_unused_activated_promos(min_days=7)
+
+    args = mock_cursor.execute.call_args[0]
+    assert args[1] == (7,)
+
+
+@patch("api.db._get_pool")
+def test_get_users_with_unused_activated_promos_excludes_used(mock_get_pool):
+    """Users who already used the promo (in promocode_usages) should be excluded."""
+    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
+    mock_get_pool.return_value = mock_pool
+    # Empty result — the SQL LEFT JOIN + IS NULL should filter out used promos
+    mock_cursor.fetchall.return_value = []
+
+    from api.db import get_users_with_unused_activated_promos
+    result = get_users_with_unused_activated_promos(min_days=2)
+
+    assert result == []
+    sql = mock_cursor.execute.call_args[0][0]
+    # Verify the query checks for unused promos
+    assert "pu.promocode_id IS NULL" in sql
+
+
+@patch("api.db._get_pool")
+def test_get_users_with_unused_activated_promos_excludes_paid(mock_get_pool):
+    """Users who already paid should be excluded."""
+    mock_pool, mock_conn, mock_cursor = _make_mock_pool()
+    mock_get_pool.return_value = mock_pool
+    mock_cursor.fetchall.return_value = []
+
+    from api.db import get_users_with_unused_activated_promos
+    result = get_users_with_unused_activated_promos(min_days=2)
+
+    assert result == []
+    sql = mock_cursor.execute.call_args[0][0]
+    assert "pay.tg_id IS NULL" in sql

@@ -340,42 +340,29 @@ async def activate_test(req: TestActivateRequest):
     expiry_ms = int(end_tokyo.timestamp() * 1000)
     expires_at = end_tokyo.astimezone(timezone.utc)
 
-    # Create VLESS client in XUI
+    # Create VLESS+Hysteria client in XUI via new API
     import uuid as _uuid
     client_email = f"tiin_web_{user['id']}"
     client_uuid = str(_uuid.uuid4())
-    inbound_id = int(VLESS_INBOUND_ID)
 
     try:
         xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
-        
-        # 1. Register VLESS
-        success = xui.add_client(
-            inbound_id=inbound_id,
+
+        hysteria_inbound_id = xui.get_hysteria_inbound_id()
+        result = xui.create_client(
             email=client_email,
             tg_id=0,
-            uuid=client_uuid,
             expiry_time=expiry_ms,
-            total_gb=0,
             limit_ip=TARIFFS["test_24h"]["device_limit"],
+            inbound_ids=[int(VLESS_INBOUND_ID), hysteria_inbound_id],
         )
-        if not success:
-            raise RuntimeError("add_vless_client returned False")
-        
-        # 2. Register Hysteria v2
-        hysteria_inbound_id = xui.get_hysteria_inbound_id()
-        xui.add_client(
-            inbound_id=hysteria_inbound_id,
-            email=f"{client_email}_h",
-            tg_id=0,
-            uuid=client_uuid,
-            expiry_time=expiry_ms,
-            sub_id=None # sub_id will be managed by VLESS
-        )
-        
+        if not result.get("success"):
+            raise RuntimeError(f"create_client failed: {result.get('msg')}")
+        if result.get("uuid"):
+            client_uuid = result["uuid"]
+
     except Exception as e:
         logger.error(f"Failed to create VPN clients: {e}")
-        # Rollback the flag so user can retry
         _db2 = get_db()
         _cur2 = _db2.cursor()
         try:
@@ -572,3 +559,32 @@ async def support_contact(req: SupportRequest, request: Request):
 
     logger.info(f"Support contact from {email}")
     return {"ok": True, "message": "Сообщение отправлено"}
+
+
+# ─────────────────────────────────────────────
+#  Message logging (for external senders like Hermes)
+# ─────────────────────────────────────────────
+
+class LogMessageRequest(BaseModel):
+    tg_id: int
+    source: str = "external"
+    scenario: str = "unknown"
+    text: str | None = None
+
+
+@web_api_router.post("/log-message")
+async def log_message(req: LogMessageRequest):
+    """Log a message sent by an external sender (e.g. Hermes Agent)."""
+    from api.db import log_message_sent
+    try:
+        log_message_sent(
+            tg_id=req.tg_id,
+            source=req.source,
+            scenario=req.scenario,
+            message_text=req.text,
+            status="sent",
+        )
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"log-message failed: {e}")
+        return {"ok": False, "error": str(e)}

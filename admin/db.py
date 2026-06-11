@@ -502,3 +502,54 @@ def message_log_source_stats(days: int = 7) -> list[dict]:
     cur.close()
     conn.close()
     return rows
+
+
+def list_webpage_events(limit: int = 100, event_type: str = None, web_token: str = None) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    query = "SELECT * FROM webpage_events WHERE 1=1"
+    params = []
+    if event_type:
+        query += " AND event_type = %s"
+        params.append(event_type)
+    if web_token:
+        query += " AND web_token = %s"
+        params.append(web_token)
+    query += " ORDER BY created_at DESC LIMIT %s"
+    params.append(limit)
+    cur.execute(query, tuple(params))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def webpage_events_stats(days: int = 7) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT event_type, COUNT(*) as cnt
+        FROM webpage_events
+        WHERE created_at >= NOW() - INTERVAL %s DAY
+        GROUP BY event_type
+        ORDER BY cnt DESC
+    """, (days,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def webpage_visitor_journey(web_token: str) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT event_type, element_id, element_text, extra_data, ip, user_agent, created_at
+        FROM webpage_events
+        WHERE web_token = %s
+        ORDER BY created_at ASC
+    """, (web_token,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows

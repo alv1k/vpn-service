@@ -394,6 +394,10 @@
       <h3 class="mb" style="color:var(--muted)">SITE ANALYTICS</h3>
       <div class="cards" id="dash-site-stats"></div>
 
+      <h3 class="mb" style="color:var(--muted)">WEB PORTAL EVENTS (7d)</h3>
+      <div class="cards" id="dash-web-events"></div>
+      <div class="mb" id="dash-web-events-chart" style="margin-top:8px;max-height:200px;overflow:auto"></div>
+
 
       <h3 class="mb" style="color:var(--muted)">
         ONLINE NOW <span id="online-count" style="color:var(--green)"></span>
@@ -1310,6 +1314,17 @@
           <div class="sub">${d.users.active} active (${d.users.active_sub} sub + ${d.users.active_key_only} key)</div>
         </div>
         <div class="card">
+          <h3>NL Proxy</h3>
+          <div class="val" style="font-size:13px">${d.nl_proxy.host}:${d.nl_proxy.port}</div>
+          <div class="sub">
+            <span class="dot ${d.nl_proxy.status === 'up' ? 'on' : 'off'}"></span>
+            ${d.nl_proxy.status === 'up' ? 'UP' : 'DOWN'}
+          </div>
+          <div class="sub" style="font-size:11px;color:var(--muted)">
+            YouTube → ${d.nl_proxy.routing === 'direct' ? 'DIRECT' : 'NL'}
+          </div>
+        </div>
+        <div class="card">
           <h3>MTProxy</h3>
           <div class="val">${d.proxy.connections}</div>
           <div class="sub">
@@ -1381,6 +1396,32 @@
           </div>`;
       } catch(e) { console.warn('site-stats:', e) }
 
+      // Web portal events
+      try {
+        const we = await api('/api/admin/webpage-events/stats?days=7');
+        const total7d = we.reduce((s, r) => s + r.cnt, 0);
+        const topEvents = we.slice(0, 6);
+        const eventCards = topEvents.map(e => `
+          <div class="card">
+            <h3>${e.event_type.replace(/_/g, ' ')}</h3>
+            <div class="val">${e.cnt}</div>
+            <div class="sub">7d total: ${total7d}</div>
+          </div>`).join('');
+        document.getElementById('dash-web-events').innerHTML = eventCards || '<div class="card"><h3>No events</h3></div>';
+        // Simple bar chart
+        const maxCnt = Math.max(...topEvents.map(e => e.cnt), 1);
+        const chartHtml = topEvents.map(e => {
+          const pct = Math.round((e.cnt / maxCnt) * 100);
+          return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px">
+            <span style="width:140px;color:var(--muted);text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.event_type.replace(/_/g, ' ')}</span>
+            <div style="flex:1;background:var(--border);border-radius:4px;height:16px;overflow:hidden">
+              <div style="width:${pct}%;background:var(--accent);height:100%;border-radius:4px"></div>
+            </div>
+            <span style="color:var(--text);width:40px;text-align:right">${e.cnt}</span>
+          </div>`;
+        }).join('');
+        document.getElementById('dash-web-events-chart').innerHTML = chartHtml;
+      } catch(e) { console.warn('webpage-events:', e) }
 
       // Online users
       await refreshOnline();

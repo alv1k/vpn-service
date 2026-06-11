@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from api.db import execute_query, get_referral_count, create_winback_promo
+from api.db import execute_query, get_referral_count, create_winback_promo, get_users_with_unused_activated_promos
 from bot_xui.utils import XUIClient
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, ADMIN_TG_ID
 
@@ -85,9 +85,11 @@ def get_hysteria_clients_from_panel(xui):
     try:
         inbounds = xui.get_inbounds()
         for ib in inbounds:
-            if ib.get('protocol') != 'hysteria':
+            if ib.get('protocol') not in ('hysteria', 'hysteria2'):
                 continue
-            settings = json.loads(ib.get('settings', '{}'))
+            settings = ib.get('settings', {})
+            if isinstance(settings, str):
+                settings = json.loads(settings)
             for client in settings.get('clients', []):
                 tg_id = client.get('tgId')
                 if tg_id:
@@ -139,7 +141,9 @@ def get_traffic_from_panel(xui):
     # Build email→tg_id map ONCE from all inbounds (covers both VLESS and hysteria clients)
     email_to_tg = {}
     for ib in inbounds:
-        settings = json.loads(ib.get('settings', '{}'))
+        settings = ib.get('settings', {})
+        if isinstance(settings, str):
+            settings = json.loads(settings)
         for client in settings.get('clients', []):
             if client.get('tgId'):
                 email_to_tg[client.get('email')] = int(client['tgId'])
@@ -240,13 +244,20 @@ DELAY = {
     'long_inactive_7d': 7,    # не заходил 7+ дней (был активен)
     'recently_inactive': 1,   # не заходил 1-3 дня (был активен)
     'referral_prompt': 3,     # активный пользователь, но не пригласил ни одного друга
+    'promo_activated_no_purchase': 2,  # активировал промокод, но не купил 2+ дня
 }
 
 
-def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=None):
+def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=None, unused_promos=None):
     """Классифицировать пользователей по сценариям возврата."""
     if hysteria_tg_ids is None:
         hysteria_tg_ids = set()
+    if unused_promos is None:
+        unused_promos = []
+    # Build set of tg_ids with unused activated promos for quick lookup
+    unused_promo_by_tg = {}
+    for up in unused_promos:
+        unused_promo_by_tg.setdefault(up['tg_id'], []).append(up)
     results = {
         'zero_traffic': [],        # 0 MB — не подключался
         'low_traffic': [],         # < 5 MB — попробовал, не заработало
@@ -265,6 +276,7 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=N
         'long_inactive_7d': [],    # не заходил 7+ дней (был активен)
         'recently_inactive': [],   # не заходил 1-3 дня (был активен)
         'referral_prompt': [],     # активный, но не пригласил друзей
+        'promo_activated_no_purchase': [],  # активировал промокод, но не купил
     }
 
     for user in users:
@@ -310,6 +322,16 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=N
             user.get('test_awg_activated') or
             user.get('test_softether_activated')
         )
+        # Сценарий: Активировал промокод, но не купил (check before key-gated continues)
+        if tg_id in unused_promo_by_tg:
+            for up in unused_promo_by_tg[tg_id]:
+                results['promo_activated_no_purchase'].append({
+                    **info,
+                    'promo_code': up['code'],
+                    'discount': up['value'],
+                    'expires': up['expires_at'].strftime('%d.%m.%Y') if up['expires_at'] else '∞',
+                })
+
         if not user_keys and not test_used and not user_payments:
             reg_age = (NOW - user['created_at']).days if user.get('created_at') else 0
             if reg_age >= DELAY['never_activated']:
@@ -448,14 +470,20 @@ MESSAGES = {
         "⏰ Ваша подписка недавно истекла.\n\n"
         "Продлите сейчас и получите бесперебойный доступ к VPN!\n\n"
         "🎁 <b>Персональный промокод:</b> <b>{promo_code}</b> — скидка 10% на любой тариф!\n"
-        "Действует 7 дней, только для вас."
+        "Действует 7 дней, только для вас.\n\n"
+        "💡 <b>Как активировать:</b>\n"
+        "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
+        "<code>/promo {promo_code}</code>"
     ),
     'expired_old': (
         "👋 Давно не виделись!\n\n"
         "Мы обновили сервис — стало быстрее и стабильнее.\n\n"
         "🎁 <b>Подарок для возвращения:</b>\n"
         "Промокод <b>{promo_code}</b> — скидка 20% на любой тариф!\n"
-        "Действует 14 дней, только для вас."
+        "Действует 14 дней, только для вас.\n\n"
+        "💡 <b>Как активировать:</b>\n"
+        "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
+        "<code>/promo {promo_code}</code>"
     ),
     'test_no_purchase': (
         "👋 Вы пробовали наш тестовый период.\n\n"
@@ -463,6 +491,9 @@ MESSAGES = {
         "🎁 <b>Специальное предложение:</b>\n"
         "Промокод <b>{promo_code}</b> — скидка 15% на первый тариф!\n"
         "Действует 7 дней, только для вас.\n\n"
+        "💡 <b>Как активировать:</b>\n"
+        "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
+        "<code>/promo {promo_code}</code>\n\n"
         "Выберите тариф — подписка от {price} ₽/мес с доступом ко всем сайтам 🌐"
     ),
     'test_no_connect': (
@@ -471,6 +502,9 @@ MESSAGES = {
         "🎁 <b>Бонус за возвращение:</b>\n"
         "Промокод <b>{promo_code}</b> — скидка 15% на первый тариф!\n"
         "Действует 7 дней.\n\n"
+        "💡 <b>Как активировать:</b>\n"
+        "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
+        "<code>/promo {promo_code}</code>\n\n"
         "📱 <b>Быстрый старт:</b>\n"
         "1️⃣ Нажмите <b>Мои конфиги</b>\n"
         "2️⃣ Скопируйте ссылку подписки\n"
@@ -521,7 +555,17 @@ MESSAGES = {
         "Продлите сейчас, чтобы вернуть доступ к VPN!\n\n"
         "💡 <b>Специальное предложение для вас:</b>\n"
         "Промокод <b>{promo_code}</b> — скидка 20% на любой тариф!\n"
-        "Действует 14 дней, только для вас."
+        "Действует 14 дней, только для вас.\n\n"
+        "💡 <b>Как активировать:</b>\n"
+        "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
+        "<code>/promo {promo_code}</code>"
+    ),
+    'promo_activated_no_purchase': (
+        "👋 Привет!\n\n"
+        "Вы активировали промокод <b>{promo_code}</b> со скидкой <b>{discount}%</b>, "
+        "но ещё не воспользовались им.\n\n"
+        "⏰ Промокод действует до {expires}.\n\n"
+        "Выберите тариф и получите скидку!"
     ),
     'hysteria_inactive': (
         "👋 Привет!\n\n"
@@ -540,8 +584,8 @@ MESSAGES = {
         "Вы с нами уже <b>{reg_days} дней</b> — надеемся, всё работает отлично!\n\n"
         "💡 <b>Знали ли вы, что можно получать VPN бесплатно?</b>\n\n"
         "Пригласите друга — и вы оба получите бонус:\n"
-        "🎁 Вы: <b>+10 дней</b> подписки\n"
-        "🎁 Друг: <b>+3 дня</b> бесплатно\n\n"
+        "🎁 Вы: <b>+{referrer_days} дней</b> подписки\n"
+        "🎁 Друг: <b>+{newcomer_days} дней</b> бесплатно\n\n"
         "Делитесь ссылкой прямо сейчас!"
     ),
 }
@@ -593,6 +637,10 @@ def get_buttons_for_scenario(scenario, tg_id=None):
     elif scenario == 'second_expiry_reminder':
         return [
             [{"text": "💎 Продлить со скидкой", "callback_data": "tariffs"}],
+        ]
+    elif scenario == 'promo_activated_no_purchase':
+        return [
+            [{"text": "💎 Тарифы со скидкой", "callback_data": "tariffs"}],
         ]
     elif scenario == 'hysteria_inactive':
         return [
@@ -696,13 +744,41 @@ async def send_messages(results):
     rows = execute_query("SELECT tg_id, COUNT(*) as c FROM winback_log GROUP BY tg_id", fetch='all') or []
     sent_counts = {r['tg_id']: r['c'] for r in rows}
 
-    for scenario, users in results.items():
-        if not users or scenario == 'multi_config_partial':
-            continue
-        if scenario == 'zero_traffic':
+    already_sent = set()
+
+    priority_order = [
+        'payment_no_config',
+        'panel_db_mismatch',
+        'expired_fresh',
+        'expired_old',
+        'second_expiry_reminder',
+        'test_no_purchase',
+        'test_no_connect',
+        'promo_activated_no_purchase',
+        'vless_only_inactive',
+        'awg_inactive',
+        'hysteria_inactive',
+        'low_traffic',
+        'zero_traffic',
+        'recently_inactive',
+        'long_inactive_7d',
+        'referral_prompt',
+        'never_activated',
+        'multi_config_partial',
+    ]
+
+    for scenario in priority_order:
+        users = results.get(scenario, [])
+        if not users or scenario in ('multi_config_partial', 'zero_traffic'):
             continue
 
         for u in users:
+            tg_id = u['tg_id']
+
+            if tg_id in already_sent:
+                log.info(f"⏭ Skip {tg_id} [{scenario}] — already sent this run")
+                skipped += 1
+                continue
             tg_id = u['tg_id']
             if not tg_id:
                 log.info(f"⏭ Skip user_id={u.get('id','?')} [{scenario}] — no tg_id")
@@ -745,9 +821,20 @@ async def send_messages(results):
                     msg = msg.replace('{days_expired}', str(u.get('days_expired', '')))
                 if '{reg_days}' in msg:
                     msg = msg.replace('{reg_days}', str(u.get('reg_days', '')))
+                if '{referrer_days}' in msg or '{newcomer_days}' in msg:
+                    from config import REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS
+                    msg = msg.replace('{referrer_days}', str(REFERRAL_REWARD_DAYS))
+                    msg = msg.replace('{newcomer_days}', str(REFERRAL_NEWCOMER_DAYS))
                 if '{promo_code}' in msg:
-                    promo_code = create_winback_promo(tg_id, promo_type='discount', value=15, days_valid=14)
-                    msg = msg.replace('{promo_code}', promo_code)
+                    if scenario == 'promo_activated_no_purchase':
+                        msg = msg.replace('{promo_code}', u.get('promo_code', ''))
+                    else:
+                        promo_code = create_winback_promo(tg_id, promo_type='discount', value=15, days_valid=14)
+                        msg = msg.replace('{promo_code}', promo_code)
+                if '{discount}' in msg:
+                    msg = msg.replace('{discount}', str(u.get('discount', '')))
+                if '{expires}' in msg:
+                    msg = msg.replace('{expires}', str(u.get('expires', '')))
                 buttons = get_buttons_for_scenario(scenario, tg_id)
 
                 # Extend expired test keys for specific scenario
@@ -763,6 +850,7 @@ async def send_messages(results):
             )
             if ok:
                 sent += 1
+                already_sent.add(tg_id)
                 log_send(tg_id, "final" if is_final else scenario)
                 recent[tg_id] = NOW
                 sent_counts[tg_id] = current_count + 1
@@ -788,10 +876,11 @@ def main():
     payments_by_tg = get_all_payments()
     traffic = get_traffic_from_panel(xui)
     hysteria_tg_ids = get_hysteria_clients_from_panel(xui)
+    unused_promos = get_users_with_unused_activated_promos(min_days=DELAY['promo_activated_no_purchase'])
 
-    log.info(f"Пользователей: {len(users)}, с ключами: {len(keys_by_tg)}, с трафиком: {len(traffic)}, с hysteria2: {len(hysteria_tg_ids)}")
+    log.info(f"Пользователей: {len(users)}, с ключами: {len(keys_by_tg)}, с трафиком: {len(traffic)}, с hysteria2: {len(hysteria_tg_ids)}, с неиспользованными промо: {len(unused_promos)}")
 
-    results = classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids)
+    results = classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids, unused_promos)
     print_report(results)
 
     if send_mode:

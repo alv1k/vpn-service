@@ -849,6 +849,25 @@ async def dashboard():
     # MTProto Proxy stats
     proxy_metrics = _parse_mtg_metrics()
 
+    nl_proxy_status = "unknown"
+    nl_proxy_routing = "de-to-nl-youtube"
+    try:
+        with open("/home/alvik/vpn-service/data/yt_nl_proxy_state", "r") as f:
+            nl_proxy_status = f.read().strip()
+        logger.info(f"NL proxy state file: {nl_proxy_status}")
+    except Exception as e:
+        logger.warning(f"NL proxy state read error: {e}")
+    try:
+        with open("/usr/local/x-ui/bin/config.json", "r") as f:
+            xcfg = json.load(f)
+        for rule in xcfg.get("routing", {}).get("rules", []):
+            if any(d in rule.get("domain", []) for d in ["youtube.com", "geosite:youtube"]):
+                nl_proxy_routing = rule.get("outboundTag", "unknown")
+                break
+        logger.info(f"NL proxy routing from config: {nl_proxy_routing}")
+    except Exception as e:
+        logger.warning(f"NL proxy config read error: {e}")
+
     return {
         "awg": {
             "clients_total": len(awg_clients),
@@ -876,6 +895,12 @@ async def dashboard():
             "traffic_down": xui_data["down"],
             "traffic_down_fmt": _fmt_bytes(xui_data["down"]),
             "xray_running": xui_data["running"],
+        },
+        "nl_proxy": {
+            "status": nl_proxy_status,
+            "routing": nl_proxy_routing,
+            "host": "2.26.76.210",
+            "port": 15687,
         },
         "users": {
             "total": user_stats["total"],
@@ -1553,16 +1578,24 @@ _WINBACK_MESSAGES = {
     'second_expiry_reminder': "⏰ Напоминаем: ваша подписка истекла 14 дней назад.\nПродлите сейчас!\n🎁 Персональный промокод со скидкой 20% (14 дней) создан автоматически.",
     'hysteria_inactive': "👋 Привет!\nЗаметили, что вы давно не подключались к Hysteria 2.\nЭтот протокол отлично работает для обхода жёстких блокировок.\nЕсли возникли проблемы — напишите нам, поможем! 💬",
     'long_inactive_7d': "👋 Давно не виделись!\nВы не заходили к нам больше недели. Мы обновили сервис — стало быстрее и стабильнее!\nВозвращайтесь — будем рады 🎁",
-    'referral_prompt': "👋 Привет!\nВы с нами уже {reg_days} дней — надеемся, всё отлично!\n💡 Приглашайте друзей: вы +10 дней, друг +3 дня бесплатно!\nДелитесь ссылкой прямо сейчас!",
+    'referral_prompt': "👋 Привет!\nВы с нами уже {reg_days} дней — надеемся, всё отлично!\n💡 Приглашайте друзей: вы +{referrer_days} дней, друг +{newcomer_days} дней бесплатно!\nДелитесь ссылкой прямо сейчас!",
 }
 
 
 @router.get("/winback")
 async def winback_log():
+    from config import REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS
     rows = admin_db.list_winback_log()
     cleaned = _clean(rows)
     for r in cleaned:
-        r["message"] = _WINBACK_MESSAGES.get(r.get("scenario", ""), "")
+        msg = _WINBACK_MESSAGES.get(r.get("scenario", ""), "")
+        if '{referrer_days}' in msg:
+            msg = msg.format(
+                reg_days=r.get("reg_days", ""),
+                referrer_days=REFERRAL_REWARD_DAYS,
+                newcomer_days=REFERRAL_NEWCOMER_DAYS,
+            )
+        r["message"] = msg
     return cleaned
 
 
@@ -2229,3 +2262,6 @@ function resetFilters(){
 
 loadData();
 </script></body></html>"""
+
+
+

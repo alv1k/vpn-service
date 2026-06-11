@@ -891,6 +891,40 @@ def list_active_promocodes() -> list[dict]:
     )
 
 
+def log_promo_activation(promo_id: int, tg_id: int):
+    """Record that user activated a discount promo via /promo (not yet consumed)."""
+    execute_query(
+        "INSERT IGNORE INTO promo_activations (promocode_id, tg_id) VALUES (%s, %s)",
+        (promo_id, tg_id),
+    )
+
+
+def get_users_with_unused_activated_promos(min_days: int = 2) -> list[dict]:
+    """Find users who activated a discount promo but never completed a payment."""
+    rows = execute_query(
+        """
+        SELECT pa.tg_id, pa.promocode_id, pa.activated_at, p.code, p.value, p.expires_at
+        FROM promo_activations pa
+        JOIN promocodes p ON p.id = pa.promocode_id
+        LEFT JOIN (
+            SELECT DISTINCT pu.promocode_id, pu.tg_id
+            FROM promocode_usages pu
+        ) pu ON pu.promocode_id = pa.promocode_id AND pu.tg_id = pa.tg_id
+        LEFT JOIN (
+            SELECT DISTINCT tg_id FROM payments WHERE status = 'paid'
+        ) pay ON pay.tg_id = pa.tg_id
+        WHERE pu.promocode_id IS NULL
+          AND pay.tg_id IS NULL
+          AND p.is_active = 1
+          AND (p.expires_at IS NULL OR p.expires_at > NOW())
+          AND pa.activated_at < NOW() - INTERVAL %s DAY
+        """,
+        (min_days,),
+        fetch='all',
+    ) or []
+    return rows
+
+
 # ─────────────────────────────────────────────
 #  Autopay
 # ─────────────────────────────────────────────

@@ -13,17 +13,56 @@ from io import BytesIO
 
 
 import qrcode
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, Response, JSONResponse
+from pydantic import BaseModel
 from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET
 from awg_api.config import SERVER_ENDPOINT as AWG_SERVER_HOST, LISTEN_PORT as AWG_LISTEN_PORT
 
-from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id, is_vless_test_activated_by_id
+from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id, is_vless_test_activated_by_id, execute_query
 from bot_xui.helpers import get_user_sub_url
 
 
 logger = logging.getLogger(__name__)
 web_router = APIRouter()
+
+
+class WebEventRequest(BaseModel):
+    event_type: str
+    element_id: str | None = None
+    element_text: str | None = None
+    extra_data: dict | None = None
+
+
+def _log_webpage_event(web_token: str, event_type: str, element_id: str | None = None,
+                       element_text: str | None = None, extra_data: dict | None = None,
+                       ip: str | None = None, user_agent: str | None = None):
+    user = get_user_by_web_token(web_token)
+    user_id = user.get("id") if user else None
+    tg_id = user.get("tg_id") if user else None
+    try:
+        execute_query(
+            "INSERT INTO webpage_events (web_token, user_id, tg_id, event_type, element_id, element_text, extra_data, ip, user_agent) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (web_token, user_id, tg_id, event_type, element_id, element_text,
+             json_mod.dumps(extra_data) if extra_data else None, ip, user_agent[:512] if user_agent else None),
+        )
+    except Exception as e:
+        logger.warning(f"Failed to log webpage event: {e}")
+
+
+@web_router.post("/my/{token}/event")
+async def track_webpage_event(token: str, req: WebEventRequest, request: Request):
+    _log_webpage_event(
+        web_token=token,
+        event_type=req.event_type,
+        element_id=req.element_id,
+        element_text=req.element_text,
+        extra_data=req.extra_data,
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    return JSONResponse({"ok": True})
 
 
 def _parse_awg_conf(conf_text: str) -> dict:
@@ -562,11 +601,88 @@ function showStep(n) {{
 }}
 
 showStep(1);
+
+// ── Click tracking ──
+(function() {{
+  var TOKEN = {json_mod.dumps(web_token)};
+  var API = '/my/' + TOKEN + '/event';
+
+  function track(eventType, el, extra) {{
+    var payload = {{
+      event_type: eventType,
+      element_id: el ? el.id || null : null,
+      element_text: el ? (el.textContent || '').trim().substring(0, 200) : null,
+      extra_data: extra || null
+    }};
+    navigator.sendBeacon(API, JSON.stringify(payload));
+  }}
+
+  // Track all clicks on interactive elements
+  document.addEventListener('click', function(e) {{
+    var el = e.target.closest('a, button, .device-btn, .app-card, .connect-btn, .sub-link, .faq-item');
+    if (!el) return;
+
+    var extra = {{}};
+    if (el.classList.contains('device-btn')) {{
+      extra.device = el.querySelector('.label') ? el.querySelector('.label').textContent.trim() : null;
+      track('select_device', el, extra);
+    }} else if (el.classList.contains('app-card')) {{
+      extra.app = el.querySelector('.app-name') ? el.querySelector('.app-name').textContent.trim() : null;
+      track('select_app', el, extra);
+    }} else if (el.classList.contains('connect-btn')) {{
+      extra.href = el.href || null;
+      extra.btn_text = el.textContent.trim();
+      track('click_connect_btn', el, extra);
+    }} else if (el.classList.contains('sub-link')) {{
+      track('click_sub_link', el);
+    }} else if (el.classList.contains('faq-item')) {{
+      extra.question = el.querySelector('.faq-q span') ? el.querySelector('.faq-q span').textContent.trim() : null;
+      track('click_faq', el, extra);
+    }} else if (el.tagName === 'A') {{
+      extra.href = el.href || null;
+      extra.link_text = el.textContent.trim().substring(0, 100);
+      track('click_link', el, extra);
+    }} else if (el.tagName === 'BUTTON') {{
+      extra.btn_text = el.textContent.trim();
+      track('click_button', el, extra);
+    }}
+  }});
+
+  // Track page sections visibility via IntersectionObserver
+  var sections = ['step1','step2','step3','step4','awgExtras','vlessExtras'];
+  var seen = {{}};
+  if ('IntersectionObserver' in window) {{
+    var observer = new IntersectionObserver(function(entries) {{
+      entries.forEach(function(entry) {{
+        if (entry.isIntersecting && entry.intersectionRatio > 0.5 && !seen[entry.target.id]) {{
+          seen[entry.target.id] = true;
+          track('view_section', entry.target, {{ section: entry.target.id }});
+        }}
+      }});
+    }}, {{ threshold: 0.5 }});
+    sections.forEach(function(id) {{
+      var el = document.getElementById(id);
+      if (el) observer.observe(el);
+    }});
+  }}
+
+  // Track time on page
+  var pageStart = Date.now();
+  window.addEventListener('beforeunload', function() {{
+    var duration = Math.round((Date.now() - pageStart) / 1000);
+    track('page_unload', null, {{ duration_seconds: duration }});
+  }});
+
+  // Track copy events
+  document.addEventListener('copy', function() {{
+    track('copy', null, {{ selection: window.getSelection().toString().substring(0, 100) }});
+  }});
+}})();
 </script>
 </body>
 </html>"""
 
-    return html  # ← этот return должен быть на том же уровне, что и начало функции (без лишних пробелов)
+    return html
 
 def _render_no_sub(web_token="", test_used=False):
     # Если тест уже активирован, показываем мастер с подсказкой о тестовом периоде
