@@ -20,18 +20,18 @@ class XUIClient:
         self.cookie_file = '/tmp/xui-cookie.txt'
         self._logged_in = False
 
+    def _get_csrf_token(self) -> str:
+        """Get a fresh CSRF token from the panel."""
+        csrf_resp = self.session.get(f"{self.host}/csrf-token")
+        return csrf_resp.json().get("obj", "")
+
     def login(self) -> bool:
         """Login to x-ui panel (v3.x with CSRF support)."""
         try:
-            # Step 1: Get CSRF token (sets session cookie)
-            csrf_url = f"{self.host}/csrf-token"
-            csrf_resp = self.session.get(csrf_url)
-            csrf_token = csrf_resp.json().get("obj", "")
+            csrf_token = self._get_csrf_token()
 
-            # Step 2: Login with CSRF token in header
-            login_url = f"{self.host}/login"
             response = self.session.post(
-                login_url,
+                f"{self.host}/login",
                 data={"username": self.username, "password": self.password},
                 headers={"X-CSRF-Token": csrf_token},
             )
@@ -39,6 +39,7 @@ class XUIClient:
             if response.status_code == 200 and response.json().get("success"):
                 logger.info("✅ XUI login successful")
                 self._logged_in = True
+                self._csrf_token = self._get_csrf_token()
                 return True
             logger.warning(f"XUI login failed: {response.text}")
             return False
@@ -50,8 +51,26 @@ class XUIClient:
         """Выполняет запрос, при необходимости делает login/re-login."""
         kwargs.setdefault('timeout', 10)
         if not self._logged_in:
-            self.login()  # Синхронный вызов, без await
+            self.login()
+
+        if method.upper() == "POST":
+            headers = kwargs.get("headers", {})
+            if "X-CSRF-Token" not in headers:
+                if not getattr(self, "_csrf_token", ""):
+                    self._csrf_token = self._get_csrf_token()
+                headers["X-CSRF-Token"] = self._csrf_token
+                kwargs["headers"] = headers
+
         response = self.session.request(method, url, **kwargs)
+
+        if response.status_code == 403 and method.upper() == "POST":
+            logger.info("XUI CSRF expired, refreshing token and retrying")
+            self._csrf_token = self._get_csrf_token()
+            headers = kwargs.get("headers", {})
+            headers["X-CSRF-Token"] = self._csrf_token
+            kwargs["headers"] = headers
+            response = self.session.request(method, url, **kwargs)
+
         content_type = response.headers.get('content-type', '')
         if response.status_code in (401, 404) or (
             'application/json' not in content_type and response.status_code == 200
@@ -59,7 +78,14 @@ class XUIClient:
             logger.info("XUI session expired, re-logging in")
             self._logged_in = False
             self.login()
+
+            if method.upper() == "POST":
+                headers = kwargs.get("headers", {})
+                headers["X-CSRF-Token"] = getattr(self, "_csrf_token", "")
+                kwargs["headers"] = headers
+
             response = self.session.request(method, url, **kwargs)
+
         return response
 
     def get_inbounds(self):  # Убран async
@@ -81,7 +107,22 @@ class XUIClient:
         return fallback_id
 
     def get_client_by_email(self, email):
-        """Найти клиента по email"""
+        """Найти клиента по email через новый API."""
+        try:
+            response = self._request("GET", f"{self.host}/panel/api/clients/get/{email}")
+            result = response.json()
+            if result.get('success') and result.get('obj'):
+                obj = result['obj']
+                client = obj.get('client', {})
+                inbound_ids = obj.get('inboundIds', [])
+                return {
+                    'inbound_id': inbound_ids[0] if inbound_ids else None,
+                    'inboundIds': inbound_ids,
+                    'client': client,
+                }
+        except Exception as e:
+            logger.error(f"Error getting client by email: {e}")
+
         inbounds = self.get_inbounds()
         for inbound in inbounds:
             raw_settings = inbound.get('settings', '{}')
@@ -97,6 +138,7 @@ class XUIClient:
                 if client.get('email') == email:
                     return {
                         'inbound_id': inbound['id'],
+                        'inboundIds': [inbound['id']],
                         'client': client,
                         'inbound': inbound
                     }
@@ -149,23 +191,24 @@ class XUIClient:
 
             logger.info(f"duration_ms: {duration_ms}, new_expiry: {new_expiry}")
 
-            client_id = client.get('id') or client.get('auth')
-            if not client_id:
-                logger.error(f"Client has no 'id' or 'auth' field: {client.get('email', 'unknown')}")
+            email = client.get('email')
+            if not email:
+                logger.error(f"Client has no 'email' field")
                 return False
 
-            updated_client = {**client, 'expiryTime': new_expiry}
-            if not updated_client.get('flow'):
-                updated_client['flow'] = 'xtls-rprx-vision'
-
             payload = {
-                "id": inbound_id,
-                "settings": json.dumps({"clients": [updated_client]})
+                "email": email,
+                "totalGB": client.get('totalGB', 0),
+                "expiryTime": new_expiry,
+                "tgId": client.get('tgId', 0),
+                "enable": client.get('enable', True),
+                "limitIp": client.get('limitIp', 0),
+                "reset": client.get('reset', 0),
             }
 
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/updateClient/{client_id}",
+                f"{self.host}/panel/api/clients/update/{email}",
                 json=payload,
                 headers={"Content-Type": "application/json"}
             )
@@ -204,81 +247,94 @@ class XUIClient:
         return self.add_client(inbound_id, email, tg_id, uuid, expiry_time, total_gb, limit_ip)
 
     def add_client(self, inbound_id, email, tg_id, uuid, expiry_time=0, total_gb=0, limit_ip=10, sub_id=None):
-        """Добавить клиента в inbound с учетом протокола (VLESS или Hysteria)"""
+        """Добавить клиента в inbound (legacy-обёртка для совместимости)."""
+        return self.create_client(email=email, tg_id=tg_id, expiry_time=expiry_time, total_gb=total_gb, limit_ip=limit_ip, inbound_ids=[inbound_id])
+
+    def create_client(self, email, tg_id, expiry_time=0, total_gb=0, limit_ip=10, inbound_ids=None):
+        """
+        Создать клиента через новый API 3x-ui (v3.x+).
+        POST /panel/api/clients/add
+        Body: {"client": {...}, "inboundIds": [id1, id2]}
+        Сервер сам генерирует UUID/auth и subId.
+        Возвращает dict с полями: success, subId, uuid, auth, msg
+        """
         import uuid as uuid_lib
-        
-        # 1. Сначала узнаем протокол инбаунда
-        protocol = "vless"
-        for ib in self.get_inbounds():
-            if ib['id'] == inbound_id:
-                protocol = ib.get('protocol', 'vless').lower()
-                break
 
-        final_sub_id = sub_id or str(uuid_lib.uuid4()).replace('-', '')[:16]
-        
-        # 2. Формируем данные клиента в зависимости от протокола
-        client_obj = {
-            "email": email,
-            "limitIp": limit_ip,
-            "totalGB": total_gb,
-            "expiryTime": expiry_time,
-            "enable": True,
-            "tgId": tg_id,
-            "subId": final_sub_id,
-            "reset": 0
+        if inbound_ids is None:
+            inbound_ids = []
+
+        payload = {
+            "client": {
+                "email": email,
+                "limitIp": limit_ip,
+                "totalGB": total_gb,
+                "expiryTime": expiry_time,
+                "enable": True,
+                "tgId": tg_id,
+                "reset": 0,
+            },
+            "inboundIds": inbound_ids,
         }
 
-        if protocol == "hysteria":
-            client_obj["auth"] = uuid # Для Hysteria ID — это auth (password)
-        else:
-            client_obj["id"] = uuid
-            client_obj["flow"] = "xtls-rprx-vision"
-        
-        client_data = {
-            "id": inbound_id,
-            "settings": json.dumps({"clients": [client_obj]})
-        }
-        
         try:
-            logger.info(f"Sending addClient request ({protocol}) to: {self.host}/panel/api/inbounds/addClient")
-            
+            logger.info(f"Sending createClient request to: {self.host}/panel/api/clients/add for email={email}, inboundIds={inbound_ids}")
+
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/addClient",
-                json=client_data,
+                f"{self.host}/panel/api/clients/add",
+                json=payload,
                 headers={"Content-Type": "application/json"}
             )
-            
+
             result = response.json()
-            logger.info(f"api Response: {result}")
+            logger.info(f"createClient Response: {result}")
+
             if result.get('success', False):
-                return {"success": True, "subId": final_sub_id}
-            return {"success": False, "msg": result.get('msg')}
-            
+                client_data = self.get_client_by_email(email)
+                if client_data:
+                    c = client_data['client']
+                    return {
+                        "success": True,
+                        "subId": c.get('subId') or str(uuid_lib.uuid4()).replace('-', '')[:16],
+                        "uuid": c.get('uuid') or c.get('id'),
+                        "auth": c.get('auth'),
+                        "inboundIds": client_data.get('inboundIds', inbound_ids),
+                    }
+                sub_id = str(uuid_lib.uuid4()).replace('-', '')[:16]
+                return {"success": True, "subId": sub_id, "uuid": None, "auth": None}
+            return {"success": False, "msg": result.get('msg', 'Unknown error')}
+
         except Exception as e:
-            logger.error(f"Error adding client: {e}")
-            return {"success": False}
+            logger.error(f"Error creating client: {e}")
+            return {"success": False, "msg": str(e)}
 
     def get_hysteria_inbound_id(self, fallback_id: int = 4) -> int:
         """Find the first Hysteria inbound id dynamically."""
         for inbound in self.get_inbounds():
             protocol = inbound.get('protocol', '')
-            if protocol == 'hysteria':
+            if protocol in ('hysteria', 'hysteria2'):
                 return inbound['id']
         logger.warning(f"No Hysteria inbound found, using fallback={fallback_id}")
         return fallback_id
 
     def deactivate_client(self, inbound_id, client):
         """Отключить клиента (enable=false)"""
-        client_to_update = {**client, 'enable': False}
+        email = client.get('email')
+        if not email:
+            return False
         payload = {
-            "id": inbound_id,
-            "settings": json.dumps({"clients": [client_to_update]})
+            "email": email,
+            "totalGB": client.get('totalGB', 0),
+            "expiryTime": client.get('expiryTime', 0),
+            "tgId": client.get('tgId', 0),
+            "enable": False,
+            "limitIp": client.get('limitIp', 0),
+            "reset": client.get('reset', 0),
         }
         try:
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/updateClient/{client['id']}",
+                f"{self.host}/panel/api/clients/update/{email}",
                 json=payload,
                 headers={"Content-Type": "application/json"}
             )
@@ -288,15 +344,11 @@ class XUIClient:
             return False
 
     def delete_client(self, inbound_id, client_email):
-        """Удалить клиента по email из inbound"""
-        client_info = self.get_client_by_email(client_email)
-        if not client_info:
-            return False
-            
+        """Удалить клиента по email"""
         try:
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/deleteClient/{client_info['client']['id']}",
+                f"{self.host}/panel/api/clients/del/{client_email}",
                 headers={"Content-Type": "application/json"}
             )
             return response.json().get('success', False)
@@ -309,7 +361,7 @@ class XUIClient:
         try:
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/{inbound_id}/resetClientTraffic/{client_email}",
+                f"{self.host}/panel/api/clients/resetTraffic/{client_email}",
                 headers={"Content-Type": "application/json"}
             )
             return response.json().get('success', False)

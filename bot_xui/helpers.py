@@ -3,7 +3,7 @@
 """
 import io
 import logging
-import sqlite3 
+import sqlite3
 import json
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -11,6 +11,103 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET, BOT_USERNAME, REFERRAL_REWARD_DAYS, XUI_SUB_PATH
 
 logger = logging.getLogger(__name__)
+
+
+async def _log_message(tg_id: int, source: str, scenario: str, text: str, status: str = "sent"):
+    """Log a sent message to the database."""
+    try:
+        from api.db import log_message_sent
+        short = (text[:200] + "...") if text and len(text) > 200 else (text or "")
+        log_message_sent(tg_id=tg_id, source=source, scenario=scenario,
+                         message_text=short, status=status)
+    except Exception:
+        pass
+
+
+async def log_and_reply_text(update_or_query, text: str, scenario: str = "bot",
+                              reply_markup=None, parse_mode: str = "HTML", **kwargs):
+    """Reply with text and log to database."""
+    if hasattr(update_or_query, 'message') and update_or_query.message:
+        result = await update_or_query.message.reply_text(text, reply_markup=reply_markup,
+                                                          parse_mode=parse_mode, **kwargs)
+    elif hasattr(update_or_query, 'chat'):
+        result = await update_or_query.chat.send_message(text, reply_markup=reply_markup,
+                                                         parse_mode=parse_mode, **kwargs)
+    else:
+        result = await update_or_query.reply_text(text, reply_markup=reply_markup,
+                                                  parse_mode=parse_mode, **kwargs)
+    tg_id = _get_tg_id(update_or_query)
+    if tg_id:
+        await _log_message(tg_id, "bot", scenario, text)
+    return result
+
+
+async def log_and_reply_photo(update_or_query, photo, caption: str = None, scenario: str = "bot",
+                               reply_markup=None, parse_mode: str = "HTML", **kwargs):
+    """Reply with photo and log to database."""
+    if hasattr(update_or_query, 'message') and update_or_query.message:
+        result = await update_or_query.message.reply_photo(photo, caption=caption,
+                                                           reply_markup=reply_markup,
+                                                           parse_mode=parse_mode, **kwargs)
+    elif hasattr(update_or_query, 'chat'):
+        result = await update_or_query.chat.send_photo(photo, caption=caption,
+                                                       reply_markup=reply_markup,
+                                                       parse_mode=parse_mode, **kwargs)
+    else:
+        result = await update_or_query.reply_photo(photo, caption=caption,
+                                                   reply_markup=reply_markup,
+                                                   parse_mode=parse_mode, **kwargs)
+    tg_id = _get_tg_id(update_or_query)
+    if tg_id:
+        await _log_message(tg_id, "bot", scenario, caption or "")
+    return result
+
+
+async def log_and_reply_document(update_or_query, document, caption: str = None, scenario: str = "bot",
+                                  reply_markup=None, parse_mode: str = "HTML", **kwargs):
+    """Reply with document and log to database."""
+    if hasattr(update_or_query, 'message') and update_or_query.message:
+        result = await update_or_query.message.reply_document(document, caption=caption,
+                                                              reply_markup=reply_markup,
+                                                              parse_mode=parse_mode, **kwargs)
+    elif hasattr(update_or_query, 'chat'):
+        result = await update_or_query.chat.send_document(document, caption=caption,
+                                                          reply_markup=reply_markup,
+                                                          parse_mode=parse_mode, **kwargs)
+    else:
+        result = await update_or_query.reply_document(document, caption=caption,
+                                                      reply_markup=reply_markup,
+                                                      parse_mode=parse_mode, **kwargs)
+    tg_id = _get_tg_id(update_or_query)
+    if tg_id:
+        await _log_message(tg_id, "bot", scenario, caption or "")
+    return result
+
+
+async def log_and_send_message(chat, text: str, scenario: str = "bot",
+                                reply_markup=None, parse_mode: str = "HTML", **kwargs):
+    """Send message to chat and log to database."""
+    result = await chat.send_message(text, reply_markup=reply_markup, parse_mode=parse_mode, **kwargs)
+    tg_id = chat.id if hasattr(chat, 'id') else None
+    if tg_id:
+        await _log_message(tg_id, "bot", scenario, text)
+    return result
+
+
+def _get_tg_id(obj):
+    """Extract tg_id from update, query, or chat object."""
+    try:
+        if hasattr(obj, 'effective_user') and obj.effective_user:
+            return obj.effective_user.id
+        if hasattr(obj, 'from_user') and obj.from_user:
+            return obj.from_user.id
+        if hasattr(obj, 'message') and obj.message and obj.message.from_user:
+            return obj.message.from_user.id
+        if hasattr(obj, 'chat') and obj.chat:
+            return obj.chat.id
+    except Exception:
+        pass
+    return None
 
 
 def convert_to_local(dt: datetime, offset_hours: int = 9) -> str:

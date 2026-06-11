@@ -46,7 +46,10 @@ from api.db import (
     set_permanent_discount,
 )
 
-from bot_xui.helpers  import make_main_keyboard, MAIN_MENU_TEXT, MTPROTO_PROXY_LINK, safe_edit_text, make_proxy_file
+from bot_xui.helpers  import (make_main_keyboard, MAIN_MENU_TEXT, MTPROTO_PROXY_LINK,
+                              safe_edit_text, make_proxy_file,
+                              log_and_reply_text, log_and_reply_photo, log_and_reply_document,
+                              log_and_send_message, _get_tg_id, _log_message)
 from bot_xui.views    import (
     show_main_menu, show_tariffs, show_configs,
     show_single_config, show_renew_tariffs,
@@ -74,8 +77,11 @@ async def send_start_screen(chat, text: str, reply_markup=None) -> None:
     Падает на чистый текст, если файла нет, caption > 1024 или Telegram отказал.
     """
     global _START_IMAGE_FILE_ID
+    tg_id = chat.id if hasattr(chat, 'id') else None
     if not START_IMAGE_PATH.exists() or len(text) > 1024:
-        await chat.send_message(text, reply_markup=reply_markup, parse_mode="HTML")
+        result = await log_and_send_message(chat, text, reply_markup=reply_markup, parse_mode="HTML")
+        if tg_id:
+            await _log_message(tg_id, "bot", "start_screen", text)
         return
     try:
         if _START_IMAGE_FILE_ID:
@@ -91,9 +97,13 @@ async def send_start_screen(chat, text: str, reply_markup=None) -> None:
                 )
             if sent.photo:
                 _START_IMAGE_FILE_ID = sent.photo[-1].file_id
+        if tg_id:
+            await _log_message(tg_id, "bot", "start_screen", text)
     except Exception as e:
         logger.warning(f"send_start_screen photo failed, falling back to text: {e}")
-        await chat.send_message(text, reply_markup=reply_markup, parse_mode="HTML")
+        result = await log_and_send_message(chat, text, reply_markup=reply_markup, parse_mode="HTML")
+        if tg_id:
+            await _log_message(tg_id, "bot", "start_screen", text)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -115,7 +125,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from bot_xui.views import _build_tariff_text_and_keyboard
         register_user_with_referral(tg_id, None, first_name, last_name)
         text, markup = _build_tariff_text_and_keyboard(tg_id, mode="buy")
-        await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
+        await log_and_reply_text(update, text, reply_markup=markup, parse_mode="HTML")
         return
 
     # Parse referral deep link: /start <referrer_tg_id>
@@ -131,7 +141,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if newcomer_result and newcomer_result["action"] == "created":
             from bot_xui.vpn_factory import make_qr_bytes
             bio = make_qr_bytes(newcomer_result["sub_url"])
-            await update.message.reply_photo(
+            await log_and_reply_photo(update, 
                 photo=bio,
                 caption=(
                     f"🎁 Вы перешли по реферальной ссылке!\n"
@@ -142,7 +152,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=make_main_keyboard(tg_id)
             )
         else:
-            await update.message.reply_text(
+            await log_and_reply_text(update, 
                 "🎁 Вы перешли по реферальной ссылке!\n"
                 f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дня</b> подписки!\n"
                 f"Ваш друг тоже получил <b>+{REFERRAL_REWARD_DAYS} дней</b>.",
@@ -166,7 +176,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         get_or_create_user(tg_id, first_name, last_name)
         if referrer_tg_id:
             # User already registered but clicked a referral link
-            await update.message.reply_text(
+            await log_and_reply_text(update, 
                 "Вы уже зарегистрированы — реферальная ссылка действует только для новых пользователей.\n\n"
                 f"Но вы можете пригласить друзей и получить <b>+{REFERRAL_REWARD_DAYS} дня</b> подписки!",
                 parse_mode="HTML",
@@ -203,7 +213,7 @@ async def test_xui_connection(xui: XUIClient) -> bool:
 async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, link = await _refer_text(context, update.effective_user.id)
     qr = _make_qr(link)
-    await update.message.reply_photo(photo=qr, caption=text, parse_mode="HTML")
+    await log_and_reply_photo(update, photo=qr, caption=text, parse_mode="HTML")
 
 
 def _make_qr(data: str) -> io.BytesIO:
@@ -296,23 +306,23 @@ async def post_init(application):
 async def send_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда: /send <tg_id> <сообщение>"""
     if update.effective_user.id != ADMIN_TG_ID:
-        await update.message.reply_text("❌ Нет доступа")
+        await log_and_reply_text(update, "❌ Нет доступа")
         return
 
     raw = update.message.text.split(maxsplit=2)
     if len(raw) < 3:
-        await update.message.reply_text("Использование: /send <tg_id> <сообщение>")
+        await log_and_reply_text(update, "Использование: /send <tg_id> <сообщение>")
         return
 
     try:
         tg_id = int(raw[1])
     except ValueError:
-        await update.message.reply_text("❌ tg_id должен быть числом")
+        await log_and_reply_text(update, "❌ tg_id должен быть числом")
         return
 
     ok = await send_message_by_tg_id(tg_id, raw[2], bot=context.bot,
         source="admin_send")
-    await update.message.reply_text(
+    await log_and_reply_text(update, 
         "✅ Сообщение отправлено" if ok else "❌ Не удалось отправить"
     )
 
@@ -320,7 +330,7 @@ async def send_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def testmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/testmode — переключить тестовый режим оплаты (только админ)."""
     if update.effective_user.id != ADMIN_TG_ID:
-        await update.message.reply_text("❌ Нет доступа")
+        await log_and_reply_text(update, "❌ Нет доступа")
         return
 
     new_state = toggle_test_mode()
@@ -339,7 +349,7 @@ async def testmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ <b>Тестовый режим ВЫКЛЮЧЕН</b>\n\n"
             "Платежи идут через боевой магазин ЮKassa."
         )
-    await update.message.reply_text(text, parse_mode="HTML")
+    await log_and_reply_text(update, text, parse_mode="HTML")
 
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -347,12 +357,12 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Поддерживает HTML-разметку из Telegram-форматирования (жирный, курсив и т.д.).
     """
     if update.effective_user.id != ADMIN_TG_ID:
-        await update.message.reply_text("❌ Нет доступа")
+        await log_and_reply_text(update, "❌ Нет доступа")
         return
 
     raw = update.message.text.split(maxsplit=1)
     if len(raw) < 2:
-        await update.message.reply_text("Использование: /broadcast <сообщение>\n\nИспользуйте форматирование Telegram (жирный, курсив) — оно сохранится в рассылке.")
+        await log_and_reply_text(update, "Использование: /broadcast <сообщение>\n\nИспользуйте форматирование Telegram (жирный, курсив) — оно сохранится в рассылке.")
         return
 
     # text_html сохраняет форматирование (bold, italic и т.д.) как HTML-теги
@@ -369,21 +379,21 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             fail += 1
 
-    await update.message.reply_text(f"📬 Рассылка завершена\n✅ {ok}\n❌ {fail}")
+    await log_and_reply_text(update, f"📬 Рассылка завершена\n✅ {ok}\n❌ {fail}")
 
 
 async def broadcast_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/broadcast_ref — персональная рассылка с реферальной ссылкой на сайт."""
     if update.effective_user.id != ADMIN_TG_ID:
-        await update.message.reply_text("❌ Нет доступа")
+        await log_and_reply_text(update, "❌ Нет доступа")
         return
 
     users = get_all_users_with_web_token()
     if not users:
-        await update.message.reply_text("Нет пользователей с web_token")
+        await log_and_reply_text(update, "Нет пользователей с web_token")
         return
 
-    await update.message.reply_text(f"📬 Начинаю рассылку {len(users)} пользователям...")
+    await log_and_reply_text(update, f"📬 Начинаю рассылку {len(users)} пользователям...")
 
     ok = fail = 0
     for u in users:
@@ -403,13 +413,13 @@ async def broadcast_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             fail += 1
 
-    await update.message.reply_text(f"📬 Рассылка завершена\n✅ {ok}\n❌ {fail}")
+    await log_and_reply_text(update, f"📬 Рассылка завершена\n✅ {ok}\n❌ {fail}")
 
 
 async def notify_sub_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/notify_sub_update — уведомить активных подписчиков об обновлении ссылки подписки."""
     if update.effective_user.id != ADMIN_TG_ID:
-        await update.message.reply_text("❌ Нет доступа")
+        await log_and_reply_text(update, "❌ Нет доступа")
         return
 
     text = (
@@ -433,7 +443,7 @@ async def notify_sub_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             fail += 1
 
-    await update.message.reply_text(f"📬 Уведомление отправлено активным подписчикам\n✅ {ok}\n❌ {fail}")
+    await log_and_reply_text(update, f"📬 Уведомление отправлено активным подписчикам\n✅ {ok}\n❌ {fail}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -448,20 +458,25 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     get_or_create_user(tg_id, first_name, last_name)
 
     if not context.args:
-        await update.message.reply_text("Использование: /promo <КОД>")
+        await log_and_reply_text(update, 
+            "📝 Отправьте команду в формате:\n"
+            "<code>/promo ПРОМОКОД</code>\n\n"
+            "Например: <code>/promo WIN123456_ABCDEF</code>",
+            parse_mode="HTML",
+        )
         return
 
     code = context.args[0]
     promo_data, error = validate_promocode(code, tg_id)
 
     if error:
-        await update.message.reply_text(f"❌ {error}")
+        await log_and_reply_text(update, f"❌ {error}")
         return
 
     if promo_data['type'] == 'days':
         result = await grant_referral_vpn(tg_id, promo_data['value'], xui)
         if not result:
-            await update.message.reply_text("❌ Ошибка активации промокода. Попробуйте позже.")
+            await log_and_reply_text(update, "❌ Ошибка активации промокода. Попробуйте позже.")
             return
 
         use_promocode(promo_data['id'], tg_id)
@@ -469,7 +484,7 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result["action"] == "created":
             from bot_xui.vpn_factory import make_qr_bytes
             bio = make_qr_bytes(result["sub_url"])
-            await update.message.reply_photo(
+            await log_and_reply_photo(update, 
                 photo=bio,
                 caption=(
                     f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
@@ -480,20 +495,23 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=make_main_keyboard(tg_id)
             )
         else:
-            await update.message.reply_text(
+            await log_and_reply_text(update, 
                 f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
                 f"Вам начислено <b>+{promo_data['value']} дней</b> VPN подписки.",
                 parse_mode="HTML",
                 reply_markup=make_main_keyboard(tg_id)
             )
 
-    elif promo_data['type'] == 'discount':
+    elif promo_data['type'] in ('discount', 'winback_discount'):
+        # Track activation for win-back follow-up
+        from api.db import log_promo_activation
+        log_promo_activation(promo_data['id'], tg_id)
         context.user_data["promo"] = {
             "id": promo_data['id'],
             "code": promo_data['code'],
             "value": promo_data['value'],
         }
-        await update.message.reply_text(
+        await log_and_reply_text(update, 
             f"🎉 Промокод <b>{code.upper()}</b> применён!\n"
             f"Скидка <b>{promo_data['value']}%</b> будет применена к следующей оплате.\n\n"
             f"Выберите тариф:",
@@ -504,24 +522,9 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif promo_data['type'] == 'permanent_discount':
         set_permanent_discount(tg_id, promo_data['value'])
         use_promocode(promo_data['id'], tg_id)
-        await update.message.reply_text(
+        await log_and_reply_text(update, 
             f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
             f"Вам установлена постоянная скидка <b>{promo_data['value']}%</b> на все будущие оплаты.",
-            parse_mode="HTML",
-            reply_markup=make_main_keyboard(tg_id)
-        )
-
-    elif promo_data['type'] == 'winback_discount':
-        context.user_data["promo"] = {
-            "id": promo_data['id'],
-            "code": promo_data['code'],
-            "value": promo_data['value'],
-        }
-        use_promocode(promo_data['id'], tg_id)
-        await update.message.reply_text(
-            f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
-            f"Скидка <b>{promo_data['value']}%</b> применена к вашей подписке.\n\n"
-            f"Спасибо, что вернулись! 💙",
             parse_mode="HTML",
             reply_markup=make_main_keyboard(tg_id)
         )
@@ -529,10 +532,10 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif promo_data['type'] == 'loyalty_bonus':
         result = await grant_referral_vpn(tg_id, promo_data['value'], xui)
         if not result:
-            await update.message.reply_text("❌ Ошибка активации промокода. Попробуйте позже.")
+            await log_and_reply_text(update, "❌ Ошибка активации промокода. Попробуйте позже.")
             return
         use_promocode(promo_data['id'], tg_id)
-        await update.message.reply_text(
+        await log_and_reply_text(update, 
             f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
             f"Вам начислено <b>+{promo_data['value']} дней</b> бонуса за лояльность!\n\n"
             f"Спасибо, что остаётесь с нами! 💙",
@@ -543,13 +546,13 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif promo_data['type'] == 'holiday':
         result = await grant_referral_vpn(tg_id, promo_data['value'], xui)
         if not result:
-            await update.message.reply_text("❌ Ошибка активации промокода. Попробуйте позже.")
+            await log_and_reply_text(update, "❌ Ошибка активации промокода. Попробуйте позже.")
             return
         use_promocode(promo_data['id'], tg_id)
         if result["action"] == "created":
             from bot_xui.vpn_factory import make_qr_bytes
             bio = make_qr_bytes(result["sub_url"])
-            await update.message.reply_photo(
+            await log_and_reply_photo(update, 
                 photo=bio,
                 caption=(
                     f"🎉 Праздничный промокод <b>{code.upper()}</b> активирован!\n"
@@ -560,7 +563,7 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=make_main_keyboard(tg_id)
             )
         else:
-            await update.message.reply_text(
+            await log_and_reply_text(update, 
                 f"🎉 Праздничный промокод <b>{code.upper()}</b> активирован!\n"
                 f"Вам начислено <b>+{promo_data['value']} дней</b> VPN!\n\n"
                 f"С праздником! 🎄",
@@ -570,7 +573,7 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif promo_data['type'] == 'referral_boost':
         use_promocode(promo_data['id'], tg_id)
-        await update.message.reply_text(
+        await log_and_reply_text(update, 
             f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
             f"Теперь за каждого приглашённого друга вы получите "
             f"<b>+{promo_data['value']} дней</b> вместо стандартных +10!\n\n"
@@ -583,12 +586,12 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/addpromo CODE days|discount|permanent_discount VALUE [MAX_USES] [EXPIRES YYYY-MM-DD]"""
     if update.effective_user.id != ADMIN_TG_ID:
-        await update.message.reply_text("❌ Нет доступа")
+        await log_and_reply_text(update, "❌ Нет доступа")
         return
 
     args = context.args
     if not args or len(args) < 3:
-        await update.message.reply_text(
+        await log_and_reply_text(update, 
             "Использование:\n"
             "<pre>/addpromo CODE days 7</pre>\n"
             "<pre>/addpromo CODE discount 50 100 2026-04-01</pre>\n\n"
@@ -601,13 +604,13 @@ async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     promo_type = args[1]
     allowed_types = ('days', 'discount', 'permanent_discount', 'winback_discount', 'loyalty_bonus', 'holiday', 'referral_boost')
     if promo_type not in allowed_types:
-        await update.message.reply_text(f"❌ Тип должен быть одним из: {', '.join(f'<pre>{t}</pre>' for t in allowed_types)}", parse_mode="HTML")
+        await log_and_reply_text(update, f"❌ Тип должен быть одним из: {', '.join(f'<pre>{t}</pre>' for t in allowed_types)}", parse_mode="HTML")
         return
 
     try:
         value = int(args[2])
     except ValueError:
-        await update.message.reply_text("❌ Значение должно быть числом")
+        await log_and_reply_text(update, "❌ Значение должно быть числом")
         return
 
     max_uses = None
@@ -616,7 +619,7 @@ async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             max_uses = int(args[3])
         except ValueError:
-            await update.message.reply_text("❌ Макс. использований должно быть числом")
+            await log_and_reply_text(update, "❌ Макс. использований должно быть числом")
             return
     if len(args) >= 5:
         expires_at = args[4]
@@ -624,10 +627,10 @@ async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         create_promocode(code, promo_type, value, max_uses=max_uses, expires_at=expires_at)
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await log_and_reply_text(update, f"❌ Ошибка: {e}")
         return
 
-    await update.message.reply_text(
+    await log_and_reply_text(update, 
         f"✅ Промокод <b>{code.upper()}</b> создан\n"
         f"Тип: <b>{promo_type}</b>, значение: <b>{value}</b>"
         + (f", лимит: <b>{max_uses}</b>" if max_uses else "")
@@ -639,27 +642,27 @@ async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/delpromo CODE — деактивировать промокод."""
     if update.effective_user.id != ADMIN_TG_ID:
-        await update.message.reply_text("❌ Нет доступа")
+        await log_and_reply_text(update, "❌ Нет доступа")
         return
 
     if not context.args:
-        await update.message.reply_text("Использование: /delpromo <КОД>")
+        await log_and_reply_text(update, "Использование: /delpromo <КОД>")
         return
 
     code = context.args[0]
     deactivate_promocode(code)
-    await update.message.reply_text(f"✅ Промокод <b>{code.upper()}</b> деактивирован", parse_mode="HTML")
+    await log_and_reply_text(update, f"✅ Промокод <b>{code.upper()}</b> деактивирован", parse_mode="HTML")
 
 
 async def promos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/promos — список активных промокодов."""
     if update.effective_user.id != ADMIN_TG_ID:
-        await update.message.reply_text("❌ Нет доступа")
+        await log_and_reply_text(update, "❌ Нет доступа")
         return
 
     items = list_active_promocodes()
     if not items:
-        await update.message.reply_text("Нет активных промокодов")
+        await log_and_reply_text(update, "Нет активных промокодов")
         return
 
     text = "📋 <b>Активные промокоды:</b>\n\n"
@@ -671,7 +674,7 @@ async def promos(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f" | исп: {uses} | до: {exp}\n"
         )
 
-    await update.message.reply_text(text, parse_mode="HTML")
+    await log_and_reply_text(update, text, parse_mode="HTML")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -730,7 +733,7 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
                     bot=context.bot,
                     source="admin_send", scenario="support_reply",
                 )
-                await update.message.reply_text("✅ Ответ отправлен")
+                await log_and_reply_text(update, "✅ Ответ отправлен")
                 return
             except (ValueError, IndexError):
                 pass
@@ -762,7 +765,7 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
         source="bot_command", scenario="support_forward",
     )
 
-    await update.message.reply_text(
+    await log_and_reply_text(update, 
         "✅ Ваше сообщение отправлено! Мы ответим в ближайшее время.",
         reply_markup=make_main_keyboard(tg_id),
         parse_mode="HTML",
@@ -1199,7 +1202,7 @@ async def autopay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (tg_id,), fetch='one',
     )
     if not user:
-        await update.message.reply_text("❌ Пользователь не найден")
+        await log_and_reply_text(update, "❌ Пользователь не найден")
         return
 
     enabled = user['autopay_enabled']
@@ -1208,7 +1211,7 @@ async def autopay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tariff = TARIFFS.get(tariff_id, {})
 
     if not has_method:
-        await update.message.reply_text(
+        await log_and_reply_text(update, 
             "🔄 <b>Автопродление</b>\n\n"
             "У вас нет сохранённой карты.\n"
             "Оплатите любой тариф — карта сохранится автоматически, "
@@ -1224,7 +1227,7 @@ async def autopay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     toggle_text = "Выключить" if enabled else "Включить"
     toggle_data = "autopay_off" if enabled else "autopay_on"
 
-    await update.message.reply_text(
+    await log_and_reply_text(update, 
         f"🔄 <b>Автопродление</b>\n\n"
         f"Статус: {status}\n"
         f"Тариф: {tariff.get('name', tariff_id)}\n"

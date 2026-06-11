@@ -127,72 +127,48 @@ def _get_dynamic_remark(expires_at: datetime) -> str:
 
 async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) -> dict:
     """
-    Создаёт VLESS и Hysteria клиентов через XUI с единым subId.
+    Создаёт VLESS и Hysteria клиентов через новый API 3x-ui (v3.x+).
+    Один запрос /panel/api/clients/add создаёт клиента и привязывает к обоим inbounds.
     Возвращает dict с полями:
-        client_email, client_uuid, vless_link, hysteria_link, expires_at
-    Бросает RuntimeError при критической ошибке (VLESS).
+        client_email, client_uuid, vless_link, hysteria_link, expires_at, sub_id
+    Бросает RuntimeError при критической ошибке.
     """
     client_email = f"tiin_{tg_id}"
     client_uuid = str(uuid.uuid4())
     tz_tokyo = timezone(timedelta(hours=9))
-    
+
     if days is None:
         days_to_add = TARIFFS["test_24h"]["hours"] / 24
     else:
         days_to_add = days
-        
+
     raw_end = datetime.now(timezone.utc) + timedelta(days=days_to_add)
     end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
     expiry_ms = int(end_tokyo.timestamp() * 1000)
     expires_at = end_tokyo.astimezone(timezone.utc)
 
-    # 1. Создаем VLESS (основной)
-    res_vless_raw = xui.add_client(
-        inbound_id=int(VLESS_INBOUND_ID),
+    result = xui.create_client(
         email=client_email,
         tg_id=tg_id,
-        uuid=client_uuid,
         expiry_time=expiry_ms,
+        inbound_ids=[int(VLESS_INBOUND_ID), int(HYSTERIA_INBOUND_ID)],
     )
-    # Преобразуем boolean результат в словарь для совместимости
-    if isinstance(res_vless_raw, dict):
-        res_vless = res_vless_raw
-    else:
-        # Если метод вернул True (как раньше), пробуем найти subId через sub_url
-        if res_vless_raw:
-             # Это fallback для старых версий add_client, которые возвращали True
-             sub_url = xui.get_client_subscription_url(tg_id)
-             sub_id = sub_url.split('/')[-1] if sub_url else "legacy_sub"
-             res_vless = {"success": True, "subId": sub_id}
-        else:
-             res_vless = {"success": False}
-             
-    if not res_vless.get("success"):
-        msg = res_vless.get("msg", "")
-        if "Duplicate email" in msg:
-            # Клиент уже существует — просто получаем его subId
-            logger.info(f"VLESS client for {client_email} already exists, reusing")
+
+    if not result.get("success"):
+        msg = result.get("msg", "")
+        if "Duplicate email" in msg or "already exists" in msg.lower():
+            logger.info(f"Client for {client_email} already exists, reusing")
             sub_url = xui.get_client_subscription_url(tg_id)
             if sub_url:
                 sub_id = sub_url.split('/')[-1]
-                res_vless = {"success": True, "subId": sub_id}
             else:
                 raise RuntimeError(f"Клиент {client_email} уже существует, но не удалось получить subId")
         else:
-            raise RuntimeError(f"Не удалось создать VLESS клиента: {msg}")
-
-    sub_id = res_vless["subId"]
-
-    # 2. Создаем Hysteria (дополнительный) с тем же sub_id и паролем
-    # Используем суффикс _h для email, так как email должен быть уникальным
-    xui.add_client(
-        inbound_id=int(HYSTERIA_INBOUND_ID),
-        email=f"{client_email}_h",
-        tg_id=tg_id,
-        uuid=client_uuid, # Пароль для Hysteria такой же как UUID VLESS
-        expiry_time=expiry_ms,
-        sub_id=sub_id
-    )
+            raise RuntimeError(f"Не удалось создать клиента: {msg}")
+    else:
+        sub_id = result["subId"]
+        if result.get("uuid"):
+            client_uuid = result["uuid"]
 
     dynamic_remark = _get_dynamic_remark(expires_at)
 
@@ -210,8 +186,9 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
         remark=dynamic_remark,
     )
 
+    hysteria_auth = result.get("auth") or client_uuid
     hysteria_link = generate_hysteria2_link(
-        auth=client_uuid,
+        auth=hysteria_auth,
         domain=VLESS_DOMAIN,
         port=HYSTERIA_PORT,
         client_name=dynamic_remark,
@@ -291,7 +268,7 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
         data = await create_xui_multi_config(tg_id, xui, days=days)
         if not data:
             return None
-        
+
         sub_url = xui.get_client_subscription_url(tg_id)
         expires_at = data["expires_at"]
 
@@ -303,7 +280,6 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
             subscription_link=sub_url,
         )
 
-        # Sync expiry to users.subscription_until + vpn_keys
         sync_expiry(tg_id, expires_at)
 
         logger.info(f"Referral: created new Multi-VPN for {tg_id}, {days} days")
@@ -677,6 +653,8 @@ async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
     Создаёт тестовый Multi-XUI-конфиг, если пользователь ещё не активировал тест.
     Возвращает dict с данными конфига или None, если тест уже активирован либо возникла ошибка.
     """
+    if is_vless_test_activated(tg_id):
+        return None
     try:
         data = await create_xui_multi_config(tg_id, xui)
         sub_url = xui.get_client_subscription_url(tg_id)

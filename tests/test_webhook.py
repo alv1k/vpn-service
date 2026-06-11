@@ -218,9 +218,8 @@ async def test_vless_payment_sets_hysteria_link(
     mock_xui.get_vless_reality_inbound_id.return_value = 1
     mock_xui.get_hysteria_inbound_id.return_value = 4
     mock_xui.get_client_by_tg_id.return_value = None
-    mock_xui.add_or_extend_client.return_value = True
-    mock_xui.get_client_by_email.return_value = None  # no existing hysteria client
-    mock_xui.add_client.return_value = {"success": True, "subId": "sub123"}
+    mock_xui.get_client_by_email.return_value = None
+    mock_xui.create_client.return_value = {"success": True, "subId": "sub123", "uuid": "test-uuid"}
 
     with patch("bot_xui.utils.XUIClient", return_value=mock_xui):
         result = await process_successful_payment(

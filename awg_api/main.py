@@ -171,6 +171,35 @@ async def admin_websocket(websocket: WebSocket):
 app.include_router(admin_router)
 
 
+# ── Webpage Events (public, protected by nginx auth_basic) ──────────────────────
+
+from fastapi import Query as _Query
+
+@app.get("/api/admin/webpage-events")
+async def webpage_events_list(
+    limit: int = _Query(100),
+    event_type: str = _Query(None),
+    web_token: str = _Query(None),
+):
+    from admin.db import list_webpage_events
+    from admin.routes import _clean
+    return _clean(list_webpage_events(limit=limit, event_type=event_type, web_token=web_token))
+
+
+@app.get("/api/admin/webpage-events/stats")
+async def webpage_events_stats(days: int = _Query(7)):
+    from admin.db import webpage_events_stats
+    from admin.routes import _clean
+    return _clean(webpage_events_stats(days=days))
+
+
+@app.get("/api/admin/webpage-events/journey/{token}")
+async def webpage_visitor_journey(token: str):
+    from admin.db import webpage_visitor_journey
+    from admin.routes import _clean
+    return _clean(webpage_visitor_journey(token))
+
+
 app.get("/")(get_admin_page_route())
 
 

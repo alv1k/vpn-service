@@ -57,7 +57,8 @@ class TestActivateTest:
         cur = _mock_cursor(rowcount=1)
         mock_get_db.return_value = _mock_db(cur)
         xui = MagicMock()
-        xui.add_client.return_value = True
+        xui.create_client.return_value = {"success": True, "subId": "sub123", "uuid": "uuid-1"}
+        xui.get_hysteria_inbound_id.return_value = 4
         xui.get_client_subscription_url.return_value = "https://sub/uuid"
         mock_xui_cls.return_value = xui
 
@@ -67,7 +68,7 @@ class TestActivateTest:
         data = resp.json()
         assert data["ok"] is True
         assert "3 дня" in data["message"]
-        assert xui.add_client.call_count == 2
+        xui.create_client.assert_called_once()
         mock_create_key.assert_called_once()
         mock_update_sub.assert_called_once()
 
@@ -101,22 +102,20 @@ class TestActivateTest:
         """XUI failure returns 500 and resets test_vless_activated flag."""
         mock_get_user.return_value = FAKE_USER.copy()
 
-        # First get_db call: claim flag (success)
         cur1 = _mock_cursor(rowcount=1)
         db1 = _mock_db(cur1)
-        # Second get_db call: rollback
         cur2 = _mock_cursor()
         db2 = _mock_db(cur2)
         mock_get_db.side_effect = [db1, db2]
 
         xui = MagicMock()
-        xui.add_client.return_value = False  # XUI fails
+        xui.create_client.return_value = {"success": False, "msg": "error"}
+        xui.get_hysteria_inbound_id.return_value = 4
         mock_xui_cls.return_value = xui
 
         resp = client.post("/api/web/activate-test", json={"web_token": "tok-abc"})
 
         assert resp.status_code == 500
-        # Verify rollback: second cursor ran UPDATE ... SET test_vless_activated = 0
         rollback_sql = cur2.execute.call_args[0][0]
         assert "test_vless_activated = 0" in rollback_sql
 
@@ -134,7 +133,8 @@ class TestActivateTest:
         mock_get_db.side_effect = [db1, db2]
 
         xui = MagicMock()
-        xui.add_client.side_effect = ConnectionError("panel down")
+        xui.create_client.side_effect = ConnectionError("panel down")
+        xui.get_hysteria_inbound_id.return_value = 4
         mock_xui_cls.return_value = xui
 
         resp = client.post("/api/web/activate-test", json={"web_token": "tok-abc"})
@@ -157,7 +157,8 @@ class TestActivateTest:
         cur = _mock_cursor(rowcount=1)
         mock_get_db.return_value = _mock_db(cur)
         xui = MagicMock()
-        xui.add_client.return_value = True
+        xui.create_client.return_value = {"success": True, "subId": "s", "uuid": "u"}
+        xui.get_hysteria_inbound_id.return_value = 4
         xui.get_client_subscription_url.return_value = ""
         mock_xui_cls.return_value = xui
 
@@ -181,7 +182,8 @@ class TestActivateTest:
         cur = _mock_cursor(rowcount=1)
         mock_get_db.return_value = _mock_db(cur)
         xui = MagicMock()
-        xui.add_client.return_value = True
+        xui.create_client.return_value = {"success": True, "subId": "s", "uuid": "u"}
+        xui.get_hysteria_inbound_id.return_value = 4
         xui.get_client_subscription_url.return_value = ""
         mock_xui_cls.return_value = xui
         mock_process_ref.return_value = True

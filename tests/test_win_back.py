@@ -7,7 +7,7 @@ import pytest
 
 sys.modules.setdefault("yookassa", MagicMock())
 
-from scripts.win_back_users import classify_users, NOW, DELAY, MB
+from scripts.win_back_users import classify_users, NOW, DELAY, MB, MESSAGES
 
 
 def _make_user(tg_id=100, first_name="Test", sub_until=None,
@@ -287,3 +287,168 @@ class TestHysteria2:
         # 3 types (vless, awg, hysteria), key_age=20d ≥ 7d → multi_config_partial
         assert len(results["multi_config_partial"]) == 1
         assert "hysteria" in results["multi_config_partial"][0]["vpn_types"]
+
+
+# ═════════════════════════════════════════════
+#  promo_activated_no_purchase scenario
+# ═════════════════════════════════════════════
+
+class TestPromoActivatedNoPurchase:
+
+    def _make_unused_promo(self, tg_id, code="WIN100_ABC123", value=15, days_active=5, days_expire=9):
+        return {
+            "tg_id": tg_id,
+            "promocode_id": 1,
+            "activated_at": NOW - timedelta(days=days_active),
+            "code": code,
+            "value": value,
+            "expires_at": NOW + timedelta(days=days_expire),
+        }
+
+    def test_promo_activated_no_purchase_basic(self):
+        """User with unused activated promo → promo_activated_no_purchase."""
+        user = _make_user(tg_id=2000)
+        keys = {2000: [_make_key(2000)]}
+        traffic = _make_traffic(2000, upload=10 * MB, download=20 * MB)
+        unused = [self._make_unused_promo(2000)]
+
+        results = classify_users([user], keys, {}, traffic, unused_promos=unused)
+
+        assert len(results["promo_activated_no_purchase"]) == 1
+        assert results["promo_activated_no_purchase"][0]["tg_id"] == 2000
+        assert results["promo_activated_no_purchase"][0]["promo_code"] == "WIN100_ABC123"
+        assert results["promo_activated_no_purchase"][0]["discount"] == 15
+
+    def test_promo_activated_no_purchase_includes_expires(self):
+        """Result should contain formatted expiry date."""
+        user = _make_user(tg_id=2001)
+        keys = {2001: [_make_key(2001)]}
+        traffic = _make_traffic(2001, upload=10 * MB, download=20 * MB)
+        unused = [self._make_unused_promo(2001)]
+
+        results = classify_users([user], keys, {}, traffic, unused_promos=unused)
+
+        entry = results["promo_activated_no_purchase"][0]
+        assert "expires" in entry
+        # Should be a formatted date string like 'dd.mm.yyyy'
+        assert isinstance(entry["expires"], str)
+        assert "." in entry["expires"]
+
+    def test_promo_activated_no_purchase_no_expiry(self):
+        """Promo with no expiry → expires shows '∞'."""
+        user = _make_user(tg_id=2002)
+        keys = {2002: [_make_key(2002)]}
+        traffic = _make_traffic(2002, upload=10 * MB, download=20 * MB)
+        promo = self._make_unused_promo(2002)
+        promo["expires_at"] = None
+        unused = [promo]
+
+        results = classify_users([user], keys, {}, traffic, unused_promos=unused)
+
+        entry = results["promo_activated_no_purchase"][0]
+        assert entry["expires"] == "∞"
+
+    def test_promo_activated_no_purchase_multiple_users(self):
+        """Multiple users with unused promos."""
+        users = [_make_user(tg_id=2010), _make_user(tg_id=2011)]
+        keys = {
+            2010: [_make_key(2010)],
+            2011: [_make_key(2011)],
+        }
+        traffic = {
+            2010: {"upload": 10 * MB, "download": 20 * MB, "enabled": True, "last_online": 0},
+            2011: {"upload": 10 * MB, "download": 20 * MB, "enabled": True, "last_online": 0},
+        }
+        unused = [
+            self._make_unused_promo(2010, code="WIN2010_AAAA", value=10),
+            self._make_unused_promo(2011, code="WIN2011_BBBB", value=20),
+        ]
+
+        results = classify_users(users, keys, {}, traffic, unused_promos=unused)
+
+        assert len(results["promo_activated_no_purchase"]) == 2
+        codes = {u["promo_code"] for u in results["promo_activated_no_purchase"]}
+        assert codes == {"WIN2010_AAAA", "WIN2011_BBBB"}
+
+    def test_promo_activated_no_purchase_user_without_keys(self):
+        """User with unused promo but no keys — still classified (no has_active_key gate)."""
+        user = _make_user(tg_id=2020)
+        keys = {}
+        traffic = {}
+        unused = [self._make_unused_promo(2020)]
+
+        results = classify_users([user], keys, {}, traffic, unused_promos=unused)
+
+        # The scenario has no has_active_key gate, so user should be matched
+        assert len(results["promo_activated_no_purchase"]) == 1
+
+    def test_promo_activated_no_purchase_does_not_interfere_other_scenarios(self):
+        """User with unused promo AND should get another scenario — both apply."""
+        user = _make_user(tg_id=2030, sub_until=NOW - timedelta(days=2))
+        keys = {2030: [_make_key(2030, expires_at=NOW - timedelta(days=2))]}
+        # No traffic, has active key — zero_traffic won't fire (expired sub)
+        traffic = {2030: {"upload": 0, "download": 0, "enabled": True, "last_online": 0}}
+        unused = [self._make_unused_promo(2030, value=10)]
+
+        results = classify_users([user], keys, {}, traffic, unused_promos=unused)
+
+        # Sub is expired → expired_fresh
+        assert len(results["expired_fresh"]) == 1
+        # Also should have promo_activated_no_purchase
+        assert len(results["promo_activated_no_purchase"]) == 1
+
+    def test_promo_activated_no_purchase_empty_unused(self):
+        """No unused promos → empty list."""
+        user = _make_user(tg_id=2040)
+        keys = {2040: [_make_key(2040)]}
+        traffic = _make_traffic(2040, upload=10 * MB, download=20 * MB)
+
+        results = classify_users([user], keys, {}, traffic, unused_promos=[])
+
+        assert len(results["promo_activated_no_purchase"]) == 0
+
+    def test_promo_activated_no_purchase_default_none(self):
+        """Default unused_promos=None → empty list."""
+        user = _make_user(tg_id=2050)
+        keys = {2050: [_make_key(2050)]}
+        traffic = _make_traffic(2050, upload=10 * MB, download=20 * MB)
+
+        results = classify_users([user], keys, {}, traffic)
+
+        assert len(results["promo_activated_no_purchase"]) == 0
+
+
+# ═════════════════════════════════════════════
+#  Win-back message templates
+# ═════════════════════════════════════════════
+
+class TestWinBackMessages:
+
+    def test_promo_message_has_howto_instruction(self):
+        """All promo messages should contain activation instructions."""
+        promo_msgs = ['expired_fresh', 'expired_old', 'test_no_purchase', 'test_no_connect', 'second_expiry_reminder']
+        for key in promo_msgs:
+            msg = MESSAGES[key]
+            assert "Как активировать" in msg, f"Message '{key}' missing activation instructions"
+
+    def test_promo_message_has_promo_code_placeholder(self):
+        """Promo messages should have {promo_code} placeholder."""
+        promo_msgs = ['expired_fresh', 'expired_old', 'test_no_purchase', 'test_no_connect', 'second_expiry_reminder']
+        for key in promo_msgs:
+            msg = MESSAGES[key]
+            assert "{promo_code}" in msg, f"Message '{key}' missing {{promo_code}} placeholder"
+
+    def test_promo_message_has_example_command(self):
+        """Promo messages should show example /promo command."""
+        promo_msgs = ['expired_fresh', 'expired_old', 'test_no_purchase', 'test_no_connect', 'second_expiry_reminder']
+        for key in promo_msgs:
+            msg = MESSAGES[key]
+            assert "/promo" in msg, f"Message '{key}' missing /promo command example"
+
+    def test_promo_activated_no_purchase_message(self):
+        """New promo_activated_no_purchase message should have required placeholders."""
+        msg = MESSAGES['promo_activated_no_purchase']
+        assert "{promo_code}" in msg
+        assert "{discount}" in msg
+        assert "{expires}" in msg
+        assert "активировали" in msg

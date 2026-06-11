@@ -364,128 +364,45 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
             expiry_time = int(end_tokyo.timestamp() * 1000)
             
-            # ===== Создаем/продлеваем клиента в 3x-ui (VLESS) =====
+            # ===== Создаем/продлеваем клиента в 3x-ui (VLESS + Hysteria) =====
             sub_id = None
+            existing = None
             if tg_id and tg_id != 0:
                 existing = xui.get_client_by_tg_id(tg_id)
-                if existing:
-                    client_id = existing['client']['id']
-                    sub_id = existing['client'].get('subId')
-                    logger.info(f"Existing client found, reusing uuid: {client_id}")
+            else:
+                existing = xui.get_client_by_email(client_name)
 
+            if existing:
+                client_id = existing['client']['id']
+                sub_id = existing['client'].get('subId')
+                logger.info(f"Existing client found, reusing uuid: {client_id}")
                 import time as _time
                 now_ms = int(_time.time() * 1000)
                 duration_ms = duration_days * 86400 * 1000
-                extend_ms = duration_ms if existing else None
-                res_vless = xui.add_or_extend_client(
-                    inbound_id=inbound_id,
+                success = bool(xui.extend_client_expiry(
+                    existing['inbound_id'],
+                    existing['client'],
+                    duration_ms,
+                ))
+                if not success:
+                    raise RuntimeError("Failed to extend client expiry")
+            else:
+                logger.info(f"Creating new client {client_name} in inbounds {inbound_id}, {hysteria_inbound_id}")
+                result = xui.create_client(
                     email=client_name,
-                    tg_id=tg_id,
-                    uuid=client_id,
+                    tg_id=tg_id if tg_id else 0,
                     expiry_time=expiry_time,
-                    total_gb=0,
                     limit_ip=TARIFFS[tariff_key].get('device_limit', 10),
-                    extend_ms=extend_ms,
+                    inbound_ids=[inbound_id, hysteria_inbound_id],
                 )
-                # add_or_extend returns expiryTime on success or bool
-                success = bool(res_vless)
-                if not sub_id:
-                    # After add, try to find sub_id
-                    updated = xui.get_client_by_tg_id(tg_id)
-                    sub_id = updated['client'].get('subId') if updated else None
-            else:
-                # Web user without tg_id — check for existing client by email
-                existing_web = xui.get_client_by_email(client_name)
-                if existing_web:
-                    client_id = existing_web['client']['id']
-                    sub_id = existing_web['client'].get('subId')
-                    logger.info(f"Existing web client found, reusing uuid: {client_id}")
-                    import time as _time
-                    now_ms = int(_time.time() * 1000)
-                    duration_ms = expiry_time - now_ms
-                    success = bool(xui.extend_client_expiry(
-                        existing_web['inbound_id'],
-                        existing_web['client'],
-                        duration_ms,
-                    ))
-                else:
-                    logger.info(f"Web user (no tg_id), creating new VLESS client")
-                    res_add = xui.add_client(
-                        inbound_id=inbound_id,
-                        email=client_name,
-                        tg_id=0,
-                        uuid=client_id,
-                        expiry_time=expiry_time,
-                        total_gb=0,
-                        limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
-                    )
-                    success = res_add.get("success")
-                    sub_id = res_add.get("subId")
-            
-            if not success:
-                raise RuntimeError("Failed to create/extend VLESS client")
+                if not result.get("success"):
+                    raise RuntimeError(f"create_client failed: {result.get('msg')}")
+                success = True
+                sub_id = result.get("subId")
+                if result.get("uuid"):
+                    client_id = result["uuid"]
 
-            # ===== Создаем/продлеваем клиента в 3x-ui (Hysteria) =====
-            # Мы используем тот же client_id (UUID) и sub_id
-            # Используем суффикс _h для уникальности email
-            hysteria_email = f"{client_name}_h"
-            existing_hysteria = xui.get_client_by_email(hysteria_email)
-            
-            hysteria_ok = False
-            if existing_hysteria and existing_hysteria['inbound_id'] == hysteria_inbound_id:
-                import time as _time
-                now_ms = int(_time.time() * 1000)
-                duration_ms = duration_days * 86400 * 1000
-                hyst_result = xui.extend_client_expiry(
-                    hysteria_inbound_id,
-                    existing_hysteria['client'],
-                    duration_ms
-                )
-                if not hyst_result:
-                    logger.critical(f"⚠️ Failed to extend Hysteria client {hysteria_email} — payment {payment_id} will proceed with VLESS only")
-                    try:
-                        from config import ADMIN_TG_ID
-                        await send_telegram_notification(
-                            ADMIN_TG_ID,
-                            f"⚠️ <b>Hysteria extend failed</b>\n\n"
-                            f"Email: {hysteria_email}\n"
-                            f"Payment: {payment_id}\n"
-                            f"tg_id: {tg_id}\n"
-                            f"User gets VLESS only.",
-                            source="webhook", scenario="hysteria_extend_failed",
-                        )
-                    except Exception:
-                        pass
-                else:
-                    logger.info(f"Hysteria client {hysteria_email} extended to {hyst_result}")
-                    hysteria_ok = True
-            else:
-                hyst_add = xui.add_client(
-                    inbound_id=hysteria_inbound_id,
-                    email=hysteria_email,
-                    tg_id=tg_id,
-                    uuid=client_id,
-                    expiry_time=expiry_time,
-                    sub_id=sub_id
-                )
-                if not hyst_add.get("success"):
-                    logger.critical(f"⚠️ Failed to create Hysteria client {hysteria_email} — payment {payment_id} will proceed with VLESS only")
-                    try:
-                        from config import ADMIN_TG_ID
-                        await send_telegram_notification(
-                            ADMIN_TG_ID,
-                            f"⚠️ <b>Hysteria create failed</b>\n\n"
-                            f"Email: {hysteria_email}\n"
-                            f"Payment: {payment_id}\n"
-                            f"tg_id: {tg_id}\n"
-                            f"User gets VLESS only.",
-                            source="webhook", scenario="hysteria_create_failed",
-                        )
-                    except Exception:
-                        pass
-                else:
-                    logger.info(f"Hysteria client {hysteria_email} created in inbound {hysteria_inbound_id}")
-                    hysteria_ok = True
+            hysteria_ok = True
 
             if hysteria_ok:
                 hysteria_link = generate_hysteria2_link(
@@ -650,21 +567,24 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             sub_until_ms = int(subscription_until.replace(tzinfo=timezone.utc).timestamp() * 1000) if subscription_until.tzinfo is None else int(subscription_until.timestamp() * 1000)
             existing_xui = xui.get_client_by_tg_id(tg_id)
             if existing_xui:
-                updated_client = {**existing_xui['client'], 'expiryTime': sub_until_ms}
-                if not updated_client.get('flow'):
-                    updated_client['flow'] = 'xtls-rprx-vision'
-                import json as _json
-                payload = {
-                    "id": existing_xui['inbound_id'],
-                    "settings": _json.dumps({"clients": [updated_client]})
-                }
-                xui._request(
-                    "POST",
-                    f"{xui.host}/XhU5cXVfMCyHzAXlrT/api/inbounds/updateClient/{existing_xui['client']['id']}",
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
-                )
-                logger.info(f"Re-synced 3x-ui expiry to {subscription_until}")
+                email = existing_xui['client'].get('email')
+                if email:
+                    payload = {
+                        "email": email,
+                        "totalGB": existing_xui['client'].get('totalGB', 0),
+                        "expiryTime": sub_until_ms,
+                        "tgId": existing_xui['client'].get('tgId', 0),
+                        "enable": existing_xui['client'].get('enable', True),
+                        "limitIp": existing_xui['client'].get('limitIp', 0),
+                        "reset": existing_xui['client'].get('reset', 0),
+                    }
+                    xui._request(
+                        "POST",
+                        f"{xui.host}/panel/api/clients/update/{email}",
+                        json=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    logger.info(f"Re-synced 3x-ui expiry to {subscription_until}")
 
         # ===== 7. Сохранение в БД (UPSERT: обновляем существующий ключ или создаём новый) =====
         upsert_vpn_key(
