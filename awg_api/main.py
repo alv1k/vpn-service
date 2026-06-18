@@ -19,7 +19,7 @@ import os
 import qrcode
 
 from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, FileResponse
 
 from . import db, awg_manager
 from admin.routes import router as admin_router, get_admin_page_route, _admin_ws_connections, _ws_authenticate, _broadcast_ws, _get_online_users
@@ -201,6 +201,11 @@ async def webpage_visitor_journey(token: str):
 
 
 app.get("/")(get_admin_page_route())
+
+@app.get("/favicon.png")
+async def favicon():
+    path = os.path.join(os.path.dirname(__file__), "..", "admin", "static", "favicon.png")
+    return FileResponse(path, media_type="image/png")
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────

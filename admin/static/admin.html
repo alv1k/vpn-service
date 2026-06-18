@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TIIN VPN Admin</title>
-  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="icon" type="image/png" href="/tiin_admin_panel/favicon.png">
   <style>
     :root {
       --bg: #0a0a0a;
@@ -1300,14 +1300,7 @@
           </div>
           <div class="sub">↑${d.xui.traffic_up_fmt} ↓${d.xui.traffic_down_fmt}</div>
         </div>
-        <div class="card">
-          <h3>SoftEther</h3>
-          <div class="val">${d.softether.users_total}</div>
-          <div class="sub">
-            <span class="dot ${d.softether.running ? 'on' : 'off'}"></span>
-            vpnserver ${d.softether.running ? 'UP' : 'DOWN'}
-          </div>
-        </div>
+
         <div class="card">
           <h3>Users</h3>
           <div class="val">${d.users.total}</div>
