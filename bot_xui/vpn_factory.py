@@ -10,7 +10,6 @@ import httpx
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
-import qrcode
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import (
@@ -18,37 +17,20 @@ from config import (
     VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
     VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
     HYSTERIA_PORT, HYSTERIA_SNI, HYSTERIA_INBOUND_ID,
-    SOFTETHER_CONNECT_HOST, SOFTETHER_CONNECT_PORT, SOFTETHER_HUB,
-
     SERVER_LOCATION,
 )
 from bot_xui.utils import XUIClient, generate_vless_link, generate_hysteria2_link
-from bot_xui.helpers import make_back_keyboard
-from bot_xui import softether
+from bot_xui.helpers import make_back_keyboard, _log_message, make_qr_bytes, WEB_BASE_URL
 from bot_xui.tariffs import TARIFFS
 from api.db import (
     upsert_vpn_key, set_awg_test_activated, set_vless_test_activated,
     is_awg_test_activated, is_vless_test_activated,
-    set_softether_test_activated, is_softether_test_activated,
-
     get_keys_by_tg_id, sync_expiry, get_subscription_until,
     get_web_token,
 )
 
 logger = logging.getLogger(__name__)
 
-
-def make_qr_bytes(data: str, box_size: int = 10, border: int = 5) -> BytesIO:
-    """Генерирует PNG QR-код и возвращает BytesIO."""
-    qr = qrcode.QRCode(version=1, box_size=box_size, border=border)
-    qr.add_data(data)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    bio = BytesIO()
-    bio.name = "qr.png"
-    img.save(bio, "PNG")
-    bio.seek(0)
-    return bio
 
 
 async def create_awg_config(tg_id: int, client_name: str = None) -> dict:
@@ -326,19 +308,21 @@ async def handle_test_awg(query, xui: XUIClient):
         config_file = BytesIO(data["config"].encode("utf-8"))
         config_file.name = f"amneziawg_test_{tg_id}.conf"
 
+        caption = (
+            f"🔵 <b>Тестовый AmneziaWG конфиг</b>\n\n"
+            f"👤 Клиент: <code>{data['client_name']}</code>\n"
+            f"🌐 IP: <code>{data['client_ip']}</code>\n"
+            f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
+            f"📱 <b>Инструкция:</b>\n"
+            f"1. Установите <a href='https://amnezia.org'>AmneziaVPN</a>\n"
+            f"2. Импортируйте файл конфигурации\n"
+            f"3. Подключитесь\n\n"
+            f"💬 Поддержка: кнопка «Написать нам» в меню"
+        )
+
         await query.message.reply_document(
             document=config_file,
-            caption=(
-                f"🔵 <b>Тестовый AmneziaWG конфиг</b>\n\n"
-                f"👤 Клиент: <code>{data['client_name']}</code>\n"
-                f"🌐 IP: <code>{data['client_ip']}</code>\n"
-                f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
-                f"📱 <b>Инструкция:</b>\n"
-                f"1. Установите <a href='https://amnezia.org'>AmneziaVPN</a>\n"
-                f"2. Импортируйте файл конфигурации\n"
-                f"3. Подключитесь\n\n"
-                f"💬 Поддержка: кнопка «Написать нам» в меню"
-            ),
+            caption=caption,
             parse_mode="HTML",
         )
 
@@ -350,6 +334,8 @@ async def handle_test_awg(query, xui: XUIClient):
                 [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")]
             ]),
         )
+
+        await _log_message(tg_id, "bot_menu", "test_awg_config", f"sent document: {config_file.name}")
 
     except Exception as e:
         logger.error(f"AWG config error: {e}")
@@ -428,6 +414,8 @@ async def handle_get_awg_config(query):
             ]),
         )
 
+        await _log_message(tg_id, "bot_menu", "awg_config", f"sent document: {config_file.name}")
+
     except Exception as e:
         logger.error(f"AWG config error (winback): {e}")
         await query.message.reply_text(
@@ -494,6 +482,8 @@ async def handle_get_awg_config_v2(query):
             ]),
         )
 
+        await _log_message(tg_id, "bot_menu", "awg2_config", f"sent document: {config_file.name}")
+
     except Exception as e:
         logger.error(f"AWG 2.0 config error: {e}")
         await query.message.reply_text(
@@ -504,88 +494,7 @@ async def handle_get_awg_config_v2(query):
         )
 
 
-async def handle_get_softether_config(query):
-    """Выдаёт SoftEther конфиг пользователю с активной подпиской (дополнительный протокол)."""
-    tg_id = query.from_user.id
 
-    existing_keys = get_keys_by_tg_id(tg_id)
-    has_se = any(k['vpn_type'] == 'softether' for k in existing_keys)
-    if has_se:
-        await query.edit_message_text(
-            "✅ У вас уже есть SoftEther конфиг.\n\n"
-            "Нажмите «Мои конфиги» чтобы посмотреть.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
-            ]),
-        )
-        return
-
-    sub_until = get_subscription_until(tg_id)
-    if not sub_until or sub_until < datetime.utcnow():
-        await query.edit_message_text(
-            "❌ У вас нет активной подписки.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💎 Тарифы", callback_data="tariffs")],
-            ]),
-        )
-        return
-
-    await query.edit_message_text("⏳ Создаю SoftEther конфиг...")
-
-    try:
-        # Ensure sub_until has timezone info
-        if sub_until.tzinfo is None:
-            sub_until = sub_until.replace(tzinfo=timezone.utc)
-
-        remaining_days = max(1, (sub_until - datetime.now(timezone.utc)).days)
-
-        data = create_softether_config(tg_id, days=remaining_days)
-
-        upsert_vpn_key(
-            tg_id=tg_id, payment_id=None,
-            client_id=data["username"], client_name=data["username"],
-            client_ip=None, client_public_key=None,
-            vless_link=data["config"], expires_at=sub_until,
-            vpn_type="softether",
-            vpn_file=data["vpn_file"],
-        )
-
-        vpn_file = _make_softether_vpn_file(data["username"], data["password"])
-        await query.message.reply_document(
-            document=vpn_file,
-            caption=(
-                f"🖥 <b>SoftEther VPN конфиг</b>\n\n"
-                f"Для Windows (включая XP/7/10/11).\n\n"
-                f"📱 <b>Инструкция:</b>\n"
-                f"1. Установите <b>SoftEther VPN Client</b>\n"
-                f"2. Импортируйте этот файл в клиент\n"
-                f"3. Подключитесь\n\n"
-                f"⏱ Действует до: {sub_until.strftime('%d.%m.%Y')}"
-            ),
-            parse_mode="HTML",
-        )
-
-        await query.message.reply_text(
-            _softether_credentials_text(data["username"], data["password"]),
-            parse_mode="HTML",
-        )
-
-        await query.edit_message_text(
-            "✅ SoftEther конфиг создан!\n\nПроверьте сообщение выше ☝️",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
-                [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")],
-            ]),
-        )
-
-    except Exception as e:
-        logger.error(f"SoftEther config error (additional): {e}")
-        await query.message.reply_text(
-            "❌ Ошибка создания конфига. Попробуйте позже или напишите в поддержку.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
-            ]),
-        )
 
 
 async def handle_test_vless(query, xui: XUIClient):
@@ -612,9 +521,12 @@ async def handle_test_vless(query, xui: XUIClient):
             vless_link=data["vless_link"], hysteria_link=data["hysteria_link"], expires_at=data["expires_at"], vpn_type="vless",
             subscription_link=sub_url,
         )
-        bio = make_qr_bytes(sub_url)
+        web_token = get_web_token(tg_id)
+        qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+        bio = make_qr_bytes(qr_url) if qr_url else None
 
         from config import SERVER_LOCATION
+        instr_url = f"https://344988.snk.wtf/my/{web_token}" if web_token else ""
         await query.message.reply_photo(
             photo=bio,
             caption=(
@@ -625,18 +537,20 @@ async def handle_test_vless(query, xui: XUIClient):
                 f"🚀 <b>Hysteria 2</b>\n"
                 f"   Скоростной протокол для обхода блокировок\n\n"
                 f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
-                f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>\n\n'
+                f'📲 <a href="{instr_url}">Инструкция по подключению</a>\n\n'
                 f"💬 Поддержка: кнопка «Написать нам» в меню"
             ),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{get_web_token(tg_id) or ''}")],
+                [InlineKeyboardButton("📖 Инструкция", url=instr_url)],
                 [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
             ]),
         )
 
         set_vless_test_activated(tg_id)
         sync_expiry(tg_id, data["expires_at"])
+
+        await _log_message(tg_id, "bot_menu", "test_vless_config", "sent photo: test_vless_qr")
 
     except Exception as e:
         logger.error(f"XUI multi-config error: {e}")
@@ -691,7 +605,9 @@ async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_fun
     result = await ensure_test_subscription(tg_id, xui)
     if not result:
         return False
-    bio = make_qr_bytes(result["sub_url"])
+    web_token = get_web_token(tg_id)
+    qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+    bio = make_qr_bytes(qr_url) if qr_url else None
     from config import SERVER_LOCATION
     try:
         await reply_photo_func(
@@ -702,11 +618,11 @@ async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_fun
                 f"🟢 VLESS + Reality · 🚀 Hysteria 2\n"
                 f"👤 ID: {result['client_email']}\n"
                 f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
-                f"📎 Ссылка:\n<code>{result['sub_url']}</code>\n\n"
-                f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
+                f'📲 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
             ),
             parse_mode="HTML",
         )
+        await _log_message(tg_id, "bot_menu", "auto_test_grant", "sent photo: auto_test_qr")
     except Exception as e:
         logger.warning(f"Failed to send auto-test notification: {e}")
     return True
@@ -715,12 +631,10 @@ async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_fun
 async def activate_test_period(query, xui):
     """Активирует тестовый период для пользователя"""
     from datetime import datetime
-    from bot_xui.vpn_factory import ensure_test_subscription, make_qr_bytes
-    from api.db import get_web_token
+    from bot_xui.vpn_factory import ensure_test_subscription
 
     tg_id = query.from_user.id
 
-    # Проверяем, не активирован ли уже тест
     if is_vless_test_activated(tg_id):
         try:
             await query.message.delete()
@@ -733,7 +647,6 @@ async def activate_test_period(query, xui):
         )
         return
 
-    # Проверяем, нет ли уже активного VLESS ключа
     keys = get_keys_by_tg_id(tg_id)
     now = datetime.utcnow()
     active_vless_keys = [k for k in keys if k.get("vpn_type") == "vless" and k.get("expires_at") and k["expires_at"] > now]
@@ -749,8 +662,7 @@ async def activate_test_period(query, xui):
             reply_markup=make_back_keyboard()
         )
         return
-    
-    # Отправляем сообщение о начале активации
+
     try:
         await query.message.delete()
     except Exception:
@@ -759,10 +671,9 @@ async def activate_test_period(query, xui):
         "🎁 Активируем тестовый период...\n\n"
         "⏳ Пожалуйста, подожди несколько секунд.",
     )
-    
-    # Создаем тестовую подписку
+
     result = await ensure_test_subscription(tg_id, xui)
-    
+
     if not result:
         await query.message.reply_text(
             "❌ Не удалось активировать тестовый период.\n\n"
@@ -770,10 +681,11 @@ async def activate_test_period(query, xui):
             reply_markup=make_back_keyboard()
         )
         return
-    
-    # Отправляем QR-код с конфигом
-    bio = make_qr_bytes(result["sub_url"])
-    
+
+    web_token = get_web_token(tg_id)
+    qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+    bio = make_qr_bytes(qr_url) if qr_url else None
+
     from config import SERVER_LOCATION
     try:
         await query.message.reply_photo(
@@ -785,17 +697,17 @@ async def activate_test_period(query, xui):
                 f"🚀 <b>Hysteria 2</b> — скоростной\n\n"
                 f"👤 ID: <code>{result['client_email']}</code>\n"
                 f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
-                f"📎 Ссылка подписки:\n<code>{result['sub_url']}</code>\n\n"
+                f'📎 <b>Личный кабинет:</b>\n<code>https://344988.snk.wtf/my/{web_token}</code>\n\n'
                 f"📲 <b>Как подключиться:</b>\n"
                 f"1. Скачай приложение (кнопка 👇)\n"
-                f"2. Скопируй <b>ссылку подписки</b> или отсканируй <b>QR</b>\n"
-                f"3. Вставь в приложение нажав «+»\n"
+                f"2. Отсканируй <b>QR-код</b> или открой <b>личный кабинет</b>\n"
+                f"3. Скопируй ссылку и вставь в приложение нажав «+»\n"
                 f"4. Подключись! ✅\n\n"
                 f"💎 После окончания теста выбери тариф для продолжения."
             ),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{get_web_token(tg_id) or ''}")],
+                [InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{web_token}")],
                 [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
                 [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
             ])
@@ -807,195 +719,15 @@ async def activate_test_period(query, xui):
             f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n"
             f"👤 ID: <code>{result['client_email']}</code>\n"
             f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
-            f"🔗 <b>Ссылка подписки:</b>\n"
-            f"<code>{result['sub_url']}</code>\n\n"
-            f'📖 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция</a>',
+            f'📖 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция</a>',
             parse_mode="HTML",
             reply_markup=make_back_keyboard("💎 Выбрать тариф", "tariffs")
         )
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# SoftEther
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _softether_credentials_text(username: str, password: str) -> str:
-    """Форматирует данные подключения SoftEther."""
-    return (
-        f"🖥 <b>Данные для подключения SoftEther VPN</b>\n\n"
-        f"┌─────────────────────\n"
-        f"│ 🌐 Сервер: <code>{SOFTETHER_CONNECT_HOST}</code>\n"
-        f"│ 🔌 Порт: <code>{SOFTETHER_CONNECT_PORT}</code>\n"
-        f"│ 🏠 Hub: <code>{SOFTETHER_HUB}</code>\n"
-        f"│ 👤 Логин: <code>{username}</code>\n"
-        f"│ 🔑 Пароль123: <code>{password}</code>\n"
-        f"└─────────────────────\n"
-    )
+    await _log_message(tg_id, "bot_menu", "test_activation", "sent photo: test_activation_qr")
 
 
-def _make_softether_vpn_file(username: str, password: str) -> BytesIO:
-    """Генерирует .vpn файл для импорта в SoftEther VPN Client."""
-    import hashlib
-    # SoftEther хранит пароль как SHA-0 хеш, но для import connection
-    # используется открытый текст с HashedPassword + Plain password
-    content = f"""# VPN Client VPN Connection Setting File
-#
-# This file is exported by SoftEther VPN Client.
-# The contents of this file can be edited by a text editor.
-#
-
-declare root
-{{
-	bool CheckServerCert false
-	uint64 CreateDateTime 0
-	uint64 LastConnectDateTime 0
-	bool StartupAccount false
-	uint64 UpdateDateTime 0
-
-	declare ClientAuth
-	{{
-		uint AuthType 1
-		string Username {username}
-		byte HashedPassword {hashlib.new('sha1', password.encode()).hexdigest()}
-		string PlainPassword {password}
-	}}
-
-	declare ClientOption
-	{{
-		string AccountName TIIN_VPN
-		uint AdditionalConnectionInterval 1
-		uint ConnectionDisconnectSpan 0
-		string DeviceName VPN
-		bool DisableQoS false
-		bool HalfConnection false
-		bool HideNicInfoWindow false
-		bool HideStatusWindow false
-		string Hostname {SOFTETHER_CONNECT_HOST}
-		string HubName {SOFTETHER_HUB}
-		uint MaxConnection 1
-		bool NoRoutingTracking false
-		uint NumRetry 4294967295
-		uint Port {SOFTETHER_CONNECT_PORT}
-		uint RetryInterval 15
-		bool UseCompress false
-		bool UseEncrypt true
-	}}
-}}
-"""
-    bio = BytesIO(content.encode("utf-8"))
-    bio.name = f"tiin_vpn_{username}.vpn"
-    return bio
 
 
-def create_softether_config(tg_id: int, days: int = None, hours: int = None) -> dict:
-    """Создаёт пользователя SoftEther и возвращает данные подключения."""
-    username = f"se_{tg_id}_{uuid.uuid4().hex[:8]}"
-    password = secrets.token_hex(8)
-
-    success = softether.create_user(username, password)
-    if not success:
-        raise RuntimeError("Failed to create SoftEther user")
-
-    tz_tokyo = timezone(timedelta(hours=9))
-    if days:
-        raw_end = datetime.now(timezone.utc) + timedelta(days=days)
-    elif hours:
-        raw_end = datetime.now(timezone.utc) + timedelta(hours=hours)
-    else:
-        raw_end = datetime.now(timezone.utc) + timedelta(days=30)
-
-    end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
-    expires_at = end_tokyo.astimezone(timezone.utc)
-
-    # Set expiry in SoftEther (date-only granularity)
-    expiry_date_str = end_tokyo.strftime("%Y/%m/%d")
-    if not softether.set_user_expiry(username, expiry_date_str):
-        softether.delete_user(username)
-        raise RuntimeError("Failed to set SoftEther user expiry")
-
-    vpn_file_bio = _make_softether_vpn_file(username, password)
-    vpn_file_content = vpn_file_bio.getvalue().decode("utf-8")
-
-    config_json = json.dumps({
-        "host": SOFTETHER_CONNECT_HOST,
-        "port": SOFTETHER_CONNECT_PORT,
-        "hub": SOFTETHER_HUB,
-        "username": username,
-        "password": password,
-    })
-
-    return {
-        "username": username,
-        "password": password,
-        "config": config_json,
-        "vpn_file": vpn_file_content,
-        "expires_at": expires_at,
-    }
 
 
-async def handle_test_softether(query):
-    """Создаёт тестовый SoftEther конфиг и отправляет пользователю."""
-    tg_id = query.from_user.id
-    if is_softether_test_activated(tg_id):
-        from bot_xui.views import show_configs
-        await show_configs(query, xui)
-        return
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-    await query.message.chat.send_message("⏳ Создаю тестовый SoftEther конфиг...")
-
-    try:
-        data = create_softether_config(tg_id, hours=TARIFFS["test_24h"]["hours"])
-
-        upsert_vpn_key(
-            tg_id=tg_id, payment_id=None,
-            client_id=data["username"], client_name=data["username"],
-            client_ip=None, client_public_key=None,
-            vless_link=data["config"], expires_at=data["expires_at"],
-            vpn_type="softether",
-            vpn_file=data["vpn_file"],
-        )
-
-        # Отправляем .vpn файл
-        vpn_file = _make_softether_vpn_file(data["username"], data["password"])
-        caption = (
-            f"🖥 <b>Тестовый SoftEther VPN конфиг</b>\n\n"
-            f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
-            f"<b>📱 Инструкция:</b>\n"
-            f"1. Установите <b>SoftEther VPN Client</b>\n"
-            f"2. Импортируйте этот файл в клиент\n"
-            f"3. Подключитесь\n\n"
-            f"💬 Поддержка: кнопка «Написать нам» в меню"
-        )
-        await query.message.reply_document(
-            document=vpn_file,
-            caption=caption,
-            parse_mode="HTML",
-        )
-
-        # Также отправляем текстом на случай ручного ввода
-        await query.message.reply_text(
-            _softether_credentials_text(data["username"], data["password"]),
-            parse_mode="HTML",
-        )
-
-        set_softether_test_activated(tg_id)
-
-        await query.message.reply_text(
-            "✅ Конфиг создан! Выберите действие:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📑 Инструкция и ссылки", url=f"https://344988.snk.wtf/my/{get_web_token(tg_id) or ''}")],
-                [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")],
-            ]),
-        )
-
-    except Exception as e:
-        logger.error(f"SoftEther config error: {e}")
-        await query.message.reply_text(
-            "❌ Ошибка создания конфига\n\nПопробуйте позже.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
-            ]),
-        )

@@ -21,34 +21,31 @@ def test_offline_user_filtering(mock_time, mock_subprocess, mock_admin_db, mock_
         # Mock database call to return empty expiry for simplicity
         mock_admin_db.get_expiry_by_client_names.return_value = {}
 
-        # Mock SoftEther list_users to return an empty list so it doesn't pollute the test
-        with patch("bot_xui.softether.list_users", return_value=[]):
-            # 2. Mock SQLite for offline VLESS check
-            # We need to simulate the sqlite connection
-            with patch("sqlite3.connect") as mock_conn:
-                mock_cur = MagicMock()
-                mock_conn.return_value.cursor.return_value = mock_cur
+        # Mock SQLite for offline VLESS check
+        with patch("sqlite3.connect") as mock_conn:
+            mock_cur = MagicMock()
+            mock_conn.return_value.cursor.return_value = mock_cur
 
-                # Simulate one online user and one offline user in the DB
-                mock_cur.fetchall.side_effect = [
-                    [], # client_traffics
-                    [('{"clients": [{"email": "user1@email.com"}, {"email": "user2@email.com"}]}',)] # inbounds
-                ]
+            # Simulate one online user and one offline user in the DB
+            mock_cur.fetchall.side_effect = [
+                [], # client_traffics
+                [('{"clients": [{"email": "user1@email.com"}, {"email": "user2@email.com"}]}',)] # inbounds
+            ]
 
-                from admin.routes import offline_users
+            from admin.routes import offline_users
 
-                # This requires an async context if called directly, but we are in a test
-                import asyncio
-                result = asyncio.run(offline_users())
+            # This requires an async context if called directly, but we are in a test
+            import asyncio
+            result = asyncio.run(offline_users())
 
                 # 3. Assertions — offline users are merged by tg_id/user_id
-                # Each entry has "names" array; check that online user is excluded
-                all_names = []
-                for u in result:
-                    if u.get("names"):
-                        all_names.extend(u["names"])
-                    elif u.get("name"):
-                        all_names.append(u["name"])
-                assert "user1@email.com" not in all_names
-                assert "user2@email.com" in all_names
-                assert len(result) == 1
+            # Each entry has "names" array; check that online user is excluded
+            all_names = []
+            for u in result:
+                if u.get("names"):
+                    all_names.extend(u["names"])
+                elif u.get("name"):
+                    all_names.append(u["name"])
+            assert "user1@email.com" not in all_names
+            assert "user2@email.com" in all_names
+            assert len(result) == 1

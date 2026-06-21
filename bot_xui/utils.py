@@ -101,7 +101,7 @@ class XUIClient:
         for inbound in self.get_inbounds():
             protocol = inbound.get('protocol', '')
             stream = inbound.get('streamSettings', '{}')
-            if protocol == 'vless' and 'reality' in stream.lower():
+            if protocol == 'vless' and 'reality' in str(stream).lower():
                 return inbound['id']
         logger.warning(f"No VLESS Reality inbound found, using fallback={fallback_id}")
         return fallback_id
@@ -189,12 +189,14 @@ class XUIClient:
             base = current_expiry if current_expiry > now_ms else now_ms
             new_expiry = base + duration_ms
 
-            logger.info(f"duration_ms: {duration_ms}, new_expiry: {new_expiry}")
+            logger.info(f"extend_client_expiry: inbound_id={inbound_id}, duration_ms={duration_ms}, current_expiry={current_expiry}, new_expiry={new_expiry}")
 
             email = client.get('email')
             if not email:
-                logger.error(f"Client has no 'email' field")
+                logger.error(f"extend_client_expiry: Client has no 'email' field, client keys: {list(client.keys())}")
                 return False
+
+            logger.info(f"extend_client_expiry: updating client email={email}")
 
             payload = {
                 "email": email,
@@ -206,21 +208,22 @@ class XUIClient:
                 "reset": client.get('reset', 0),
             }
 
-            response = self._request(
-                "POST",
-                f"{self.host}/panel/api/clients/update/{email}",
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            )
+            url = f"{self.host}/panel/api/clients/update/{email}"
+            logger.info(f"extend_client_expiry: POST {url}")
+
+            response = self._request("POST", url, json=payload, headers={"Content-Type": "application/json"})
+
+            logger.info(f"extend_client_expiry: response status={response.status_code}")
 
             result = response.json()
-            logger.info(f"Extend expiry response: {result}")
+            logger.info(f"extend_client_expiry: response body={result}")
             if result.get('success', False):
                 return new_expiry
+            logger.error(f"extend_client_expiry: XUI returned success=False: {result}")
             return False
 
         except Exception as e:
-            logger.error(f"Error extending client expiry: {e}", exc_info=True)
+            logger.error(f"extend_client_expiry: exception: {e}", exc_info=True)
             return False
 
     def add_or_extend_client(self, inbound_id, email, tg_id, uuid, expiry_time=0, total_gb=0, limit_ip=10, extend_ms=None):

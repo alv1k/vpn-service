@@ -328,7 +328,7 @@ def protocol_breakdown() -> list[dict]:
     conn.close()
     
     # Ensure all expected protocols are present, even if count is 0
-    known_protocols = ['vless', 'awg', 'softether', 'hysteria']
+    known_protocols = ['vless', 'awg', 'hysteria']
     result_map = {r['vpn_type']: r['count'] for r in rows}
     return [{"vpn_type": p, "count": result_map.get(p, 0)} for p in known_protocols]
 

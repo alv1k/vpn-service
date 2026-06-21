@@ -80,13 +80,11 @@ class TestPickVlessKey:
         assert result is None
 
     @patch("api.sub_proxy.get_keys_by_tg_id")
-    def test_ignores_awg_and_softether(self, mock_keys):
+    def test_ignores_awg(self, mock_keys):
         from api.sub_proxy import _pick_vless_key
         future = datetime.utcnow() + timedelta(days=10)
         mock_keys.return_value = [
             {"vpn_type": "awg", "subscription_link": "https://awg",
-             "expires_at": future},
-            {"vpn_type": "softether", "subscription_link": "https://se",
              "expires_at": future},
         ]
         result = _pick_vless_key({"tg_id": 100, "id": 1})

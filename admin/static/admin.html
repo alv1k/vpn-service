@@ -214,7 +214,7 @@
     .badge.hyst { background: #ec489922; color: #ec4899; }
     .badge.hysteria { background: #ec489922; color: #ec4899; }
     .badge.vless { background: #3b82f622; color: #60a5fa; }
-    .badge.softether { background: #f9731622; color: #f97316; }
+
 
     .mono { font-family: monospace; font-size: 12px; }
     .trunc {
@@ -325,7 +325,7 @@
       .col-ip, .col-uuid, .col-last-online, .col-limit,
       .col-expires-promo, .col-auth, .col-logins, .col-created { display: none; }
 
-      /* Shorten protocol badge: VLESS→V, AWG→A, SOFTETHER→S */
+      /* Shorten protocol badge: VLESS→V, AWG→A */
       .type-full { display: none; }
       .type-short { display: inline; }
       .speed-unit { display: none; }
@@ -350,7 +350,6 @@
         <button onclick="showTab('dashboard')" id="tab-dashboard" class="active">Dashboard</button>
         <button onclick="showTab('awg')" id="tab-awg">AWG</button>
         <button onclick="showTab('vless')" id="tab-vless">VLESS</button>
-        <button onclick="showTab('softether')" id="tab-softether">SoftEther</button>
         <button onclick="showTab('users')" id="tab-users">Users</button>
         <button onclick="showTab('proxy')" id="tab-proxy">MTProxy</button>
         <button onclick="showTab('testpay')" id="tab-testpay">Test Pay</button>
@@ -608,34 +607,6 @@
       </div>
     </div>
 
-    <!-- SoftEther -->
-    <div id="s-softether" class="section">
-      <div class="toolbar">
-        <b>SoftEther Users</b>
-        <span style="flex:1"></span>
-        <button class="btn" onclick="loadSoftEther()">Refresh</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>tg_id</th>
-              <th>Server</th>
-              <th>Password</th>
-              <th class="col-logins">Logins</th>
-              <th>Last Login</th>
-              <th>Expires</th>
-              <th>Transfer</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="se-users"></tbody>
-        </table>
-      </div>
-    </div>
-
     <!-- MTProxy -->
     <div id="s-proxy" class="section">
       <div class="toolbar">
@@ -765,7 +736,6 @@
           <option value="vless">VLESS</option>
           <option value="hysteria">Hysteria2</option>
           <option value="awg">AWG</option>
-          <option value="softether">SoftEther</option>
         </select>
         <input type="search" id="traffic-search" placeholder="Search name or tg_id..." oninput="debounce(loadTraffic,400)()" style="max-width:200px;margin-left:8px">
         <span style="flex:1"></span>
@@ -774,17 +744,17 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead>
+           <thead>
             <tr>
-              <th>User</th>
-              <th>Protocol</th>
-              <th>IPs</th>
-              <th>Total Traffic</th>
-              <th>RX</th>
-              <th>TX</th>
-              <th>Speed (max)</th>
-              <th>Speed (avg)</th>
-              <th>Snapshots</th>
+              <th onclick="sortTraffic('name')" style="cursor:pointer">User <span id="sort-name"></span></th>
+              <th onclick="sortTraffic('protocol')" style="cursor:pointer">Protocol <span id="sort-protocol"></span></th>
+              <th onclick="sortTraffic('ip_count')" style="cursor:pointer">IPs <span id="sort-ip_count"></span></th>
+              <th onclick="sortTraffic('total_bytes')" style="cursor:pointer">Total Traffic <span id="sort-total_bytes"></span></th>
+              <th onclick="sortTraffic('rx_bytes')" style="cursor:pointer">RX <span id="sort-rx_bytes"></span></th>
+              <th onclick="sortTraffic('tx_bytes')" style="cursor:pointer">TX <span id="sort-tx_bytes"></span></th>
+              <th onclick="sortTraffic('rx_speed_max')" style="cursor:pointer">Speed ↓max <span id="sort-rx_speed_max"></span></th>
+              <th onclick="sortTraffic('tx_speed_max')" style="cursor:pointer">Speed ↑max <span id="sort-tx_speed_max"></span></th>
+              <th onclick="sortTraffic('snapshots')" style="cursor:pointer">Snapshots <span id="sort-snapshots"></span></th>
             </tr>
           </thead>
           <tbody id="traffic-body"></tbody>
@@ -875,6 +845,8 @@
     let _onlineUsers = [];
     let _debounceTimers = {};
 
+    function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
     function portalLink(token, label) {
       if (!token) return label || '—';
       return `<a href="${PORTAL}${token}" target="_blank" style="color:var(--accent);text-decoration:none" title="Open portal">${label || '—'} 🔗</a>`;
@@ -916,7 +888,6 @@
       if (id === 'dashboard') loadDashboard();
       if (id === 'awg') loadAWG();
       if (id === 'vless') loadVLESS();
-      if (id === 'softether') loadSoftEther();
       if (id === 'proxy') loadProxy();
       if (id === 'testpay') { /* static UI, no load needed */ }
       if (id === 'messages') loadMsgLog(true);
@@ -1235,6 +1206,57 @@
     }
 
     // ── Traffic ─────────────────────────────────────────────────────────────────
+    let _trafficData = [];
+    let _trafficSort = { key: 'total_bytes', dir: 'asc' };
+
+    function sortTraffic(key) {
+      if (_trafficSort.key === key) {
+        _trafficSort.dir = _trafficSort.dir === 'desc' ? 'asc' : 'desc';
+      } else {
+        _trafficSort.key = key;
+        _trafficSort.dir = 'desc';
+      }
+      _trafficData.sort((a, b) => {
+        let va = a[key], vb = b[key];
+        if (typeof va === 'string') va = va.toLowerCase();
+        if (typeof vb === 'string') vb = vb.toLowerCase();
+        if (va < vb) return _trafficSort.dir === 'desc' ? 1 : -1;
+        if (va > vb) return _trafficSort.dir === 'desc' ? -1 : 1;
+        return 0;
+      });
+      renderTraffic();
+      document.querySelectorAll('[id^="sort-"]').forEach(el => el.textContent = '');
+      document.getElementById('sort-' + key).textContent = _trafficSort.dir === 'desc' ? '▼' : '▲';
+    }
+
+    function renderTraffic() {
+      const tbody = document.getElementById('traffic-body');
+      if (!_trafficData.length) {
+        tbody.innerHTML = '<tr><td colspan="9" style="color:var(--muted);text-align:center;padding:24px">No traffic data for this period</td></tr>';
+        return;
+      }
+      tbody.innerHTML = _trafficData.map(u => {
+        const name = u.first_name
+          ? `<b>${esc(u.first_name)}</b><br><span style="color:var(--muted);font-size:11px">${esc(u.client_name)}</span>`
+          : `<b>${esc(u.client_name)}</b>`;
+        const tgLink = u.tg_id
+          ? `<br><a href="tg://user?id=${u.tg_id}" style="color:var(--muted);font-size:11px">tg:${u.tg_id}</a>`
+          : '';
+        const protoBadge = `<span class="badge badge-${u.protocol}">${u.protocol}</span>`;
+        const ips = u.ip_count ? `<span style="color:var(--green)">${u.ip_count}</span>` : '0';
+        return `<tr>
+          <td>${name}${tgLink}</td>
+          <td>${protoBadge}</td>
+          <td style="text-align:center">${ips}</td>
+          <td><b>${u.total_fmt}</b></td>
+          <td style="color:var(--muted)">${u.rx_fmt}</td>
+          <td style="color:var(--muted)">${u.tx_fmt}</td>
+          <td style="font-size:11px"><span style="color:var(--green)">↓${u.rx_speed_max}</span> <span style="color:var(--orange)">↑${u.tx_speed_max}</span></td>
+          <td style="font-size:11px;color:var(--muted)"><span>↓${u.rx_speed_avg}</span> <span>↑${u.tx_speed_avg}</span></td>
+          <td style="text-align:center;color:var(--muted);font-size:11px">${u.snapshots}</td>
+        </tr>`;
+      }).join('');
+    }
 
     async function loadTraffic() {
       const hours = document.getElementById('traffic-hours').value;
@@ -1244,35 +1266,14 @@
       if (search) params.set('search', search);
       try {
         const d = await api('/api/admin/speed/users?' + params);
-        const tbody = document.getElementById('traffic-body');
         document.getElementById('traffic-count').textContent = `${d.total} users`;
-        if (!d.users.length) {
-          tbody.innerHTML = '<tr><td colspan="9" style="color:var(--muted);text-align:center;padding:24px">No traffic data for this period</td></tr>';
-          return;
-        }
-        tbody.innerHTML = d.users.map(u => {
-          const name = u.first_name
-            ? `<b>${esc(u.first_name)}</b><br><span style="color:var(--muted);font-size:11px">${esc(u.client_name)}</span>`
-            : `<b>${esc(u.client_name)}</b>`;
-          const tgLink = u.tg_id
-            ? `<br><a href="tg://user?id=${u.tg_id}" style="color:var(--muted);font-size:11px">tg:${u.tg_id}</a>`
-            : '';
-          const protoBadge = `<span class="badge badge-${u.protocol}">${u.protocol}</span>`;
-          const ips = u.ip_count ? `<span style="color:var(--green)">${u.ip_count}</span>` : '0';
-          return `<tr>
-            <td>${name}${tgLink}</td>
-            <td>${protoBadge}</td>
-            <td style="text-align:center">${ips}</td>
-            <td><b>${u.total_fmt}</b></td>
-            <td style="color:var(--muted)">${u.rx_fmt}</td>
-            <td style="color:var(--muted)">${u.tx_fmt}</td>
-            <td style="font-size:11px"><span style="color:var(--green)">↓${u.rx_speed_max}</span> <span style="color:var(--orange)">↑${u.tx_speed_max}</span></td>
-            <td style="font-size:11px;color:var(--muted)"><span>↓${u.rx_speed_avg}</span> <span>↑${u.tx_speed_avg}</span></td>
-            <td style="text-align:center;color:var(--muted);font-size:11px">${u.snapshots}</td>
-          </tr>`;
-        }).join('');
+        _trafficData = d.users;
+        document.querySelectorAll('[id^="sort-"]').forEach(el => el.textContent = '');
+        sortTraffic(_trafficSort.key);
       } catch (e) {
         console.error('Traffic load error:', e);
+        _trafficData = [];
+        renderTraffic();
         document.getElementById('traffic-body').innerHTML =
           `<tr><td colspan="9" style="color:var(--red);text-align:center">Error: ${e.message}</td></tr>`;
       }
@@ -1766,132 +1767,12 @@
       `);
     }
 
-    // ── SoftEther ──────────────────────────────────────────────────────────────
-
     function fmtBytes(b) {
       if (!b) return '0 B';
       const units = ['B', 'KB', 'MB', 'GB', 'TB'];
       let i = 0;
       while (b >= 1024 && i < units.length - 1) { b /= 1024; i++; }
       return b.toFixed(1) + ' ' + units[i];
-    }
-
-    async function loadSoftEther() {
-      const [users, _] = await Promise.all([
-        api('/api/admin/softether/users'),
-        refreshOnline(),
-      ]);
-
-      document.getElementById('se-users').innerHTML = users.map(u => {
-        const c = u.config || {};
-        const server = c.host ? `${c.host}:${c.port || 443}` : '—';
-        const pass = c.password || '—';
-        return `
-        <tr>
-          <td class="mono">${onlineDot(u.username, 'softether')}${u.username}</td>
-          <td class="mono">${u.tg_id || '—'}</td>
-          <td class="mono" style="font-size:11px">${server}</td>
-          <td class="mono"><span class="se-pass" style="cursor:pointer;filter:blur(4px)" onclick="this.style.filter=this.style.filter?'':'blur(4px)'" title="Click to reveal">${pass}</span></td>
-          <td class="col-logins">${u.num_logins || 0}</td>
-          <td>${u.last_login || '—'}</td>
-          <td>${u.expires || '∞'}</td>
-          <td>${fmtBytes(u.transfer_bytes)}</td>
-          <td>${u.created_at ? u.created_at.slice(0, 10) : '—'}</td>
-          <td>
-            <button class="btn sm" onclick="seShowConfig('${u.username}')">Config</button>
-            ${u.has_vpn_file ? `<button class="btn sm" onclick="seDownloadVpnRemote('${u.username}')">↓vpn</button>` : ''}
-            <button class="btn sm" onclick="seSetPassword('${u.username}')">Pass</button>
-            <button class="btn sm" onclick="seSetExpiry('${u.username}')">Expiry</button>
-            <button class="btn sm red" onclick="seDisable('${u.username}')">Disable</button>
-            <button class="btn sm red" onclick="seDelete('${u.username}')">Del</button>
-          </td>
-        </tr>`;
-      }).join('');
-    }
-
-    async function seShowConfig(username) {
-      try {
-        const r = await api(`/api/admin/softether/users/${username}/config`);
-        const c = r.config || {};
-        let html = `<h2>SoftEther Config: ${username}</h2>`;
-        if (c.host) {
-          html += `<pre>Server: ${c.host}\nPort:   ${c.port}\nHub:    ${c.hub}\nUser:   ${c.username}\nPass:   ${c.password}</pre>`;
-        } else if (c.raw) {
-          html += `<pre>${c.raw}</pre>`;
-        } else {
-          html += `<p style="color:var(--muted)">No stored credentials</p>`;
-        }
-        html += `<div style="display:flex; gap:8px; margin-top:12px">`;
-        if (c.host) {
-          html += `<button class="btn" onclick="navigator.clipboard.writeText(document.querySelector('.modal pre').textContent); this.textContent='Copied!'">Copy</button>`;
-        }
-        if (r.vpn_file) {
-          html += `<button class="btn" onclick="seDownloadVpn('${username}')">Download .vpn</button>`;
-        }
-        html += `<button class="btn" onclick="closeModal()">Close</button></div>`;
-        openModal(html);
-        window._seVpnFile = r.vpn_file;
-      } catch (e) {
-        openModal(`<h2>SoftEther Config: ${username}</h2>
-          <p style="color:var(--muted)">No stored config found for this user</p>
-          <button class="btn mt" onclick="closeModal()">Close</button>`);
-      }
-    }
-
-    function seDownloadVpn(username) {
-      if (!window._seVpnFile) return;
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([window._seVpnFile], { type: 'text/plain' }));
-      a.download = username + '.vpn';
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }
-
-    async function seDownloadVpnRemote(username) {
-      try {
-        const r = await api(`/api/admin/softether/users/${username}/config`);
-        if (r.vpn_file) {
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(new Blob([r.vpn_file], { type: 'text/plain' }));
-          a.download = username + '.vpn';
-          a.click();
-          URL.revokeObjectURL(a.href);
-        }
-      } catch (e) { alert('Failed to download .vpn file'); }
-    }
-
-    async function seSetPassword(username) {
-      const password = prompt(`New password for ${username}:`);
-      if (!password) return;
-      await api(`/api/admin/softether/users/${username}/password`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
-      });
-      loadSoftEther();
-    }
-
-    async function seSetExpiry(username) {
-      const expiry = prompt(`Set expiry for ${username} (YYYY/MM/DD or "none"):`);
-      if (!expiry) return;
-      await api(`/api/admin/softether/users/${username}/expiry`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expiry }),
-      });
-      loadSoftEther();
-    }
-
-    async function seDisable(username) {
-      if (!confirm(`Disable ${username}?`)) return;
-      await api(`/api/admin/softether/users/${username}/disable`, { method: 'POST' });
-      loadSoftEther();
-    }
-
-    async function seDelete(username) {
-      if (!confirm(`Delete ${username}?`)) return;
-      await api(`/api/admin/softether/users/${username}`, { method: 'DELETE' });
-      loadSoftEther();
     }
 
     // ── MTProxy ────────────────────────────────────────────────────────────────
@@ -2232,8 +2113,6 @@
   <script>
   (function(){
     var msgOffset = 0, msgLimit = 50;
-
-    function esc(s){ var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
     function msgBadge(s){
       var c = s==='sent'?'#34d399':s==='failed'?'#f87171':'#fbbf24';

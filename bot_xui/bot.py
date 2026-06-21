@@ -47,9 +47,9 @@ from api.db import (
 )
 
 from bot_xui.helpers  import (make_main_keyboard, MAIN_MENU_TEXT, MTPROTO_PROXY_LINK,
-                              safe_edit_text, make_proxy_file,
+                              safe_edit_text, safe_edit_text_logged, make_proxy_file, make_qr_bytes,
                               log_and_reply_text, log_and_reply_photo, log_and_reply_document,
-                              log_and_send_message, _get_tg_id, _log_message)
+                              log_and_send_message, _get_tg_id, _log_message, WEB_BASE_URL)
 from bot_xui.views    import (
     show_main_menu, show_tariffs, show_configs,
     show_single_config, show_renew_tariffs,
@@ -57,7 +57,7 @@ from bot_xui.views    import (
     # show_vless_link,
 )
 from bot_xui.payment     import process_payment
-from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_test_softether, handle_get_awg_config, handle_get_awg_config_v2, handle_get_softether_config, grant_referral_vpn, activate_test_period
+from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_get_awg_config, handle_get_awg_config_v2, grant_referral_vpn, activate_test_period
 from bot_xui.messaging   import send_message_by_tg_id
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -79,9 +79,7 @@ async def send_start_screen(chat, text: str, reply_markup=None) -> None:
     global _START_IMAGE_FILE_ID
     tg_id = chat.id if hasattr(chat, 'id') else None
     if not START_IMAGE_PATH.exists() or len(text) > 1024:
-        result = await log_and_send_message(chat, text, reply_markup=reply_markup, parse_mode="HTML")
-        if tg_id:
-            await _log_message(tg_id, "bot", "start_screen", text)
+        result = await log_and_send_message(chat, text, reply_markup=reply_markup, parse_mode="HTML", scenario="start_screen")
         return
     try:
         if _START_IMAGE_FILE_ID:
@@ -101,9 +99,7 @@ async def send_start_screen(chat, text: str, reply_markup=None) -> None:
             await _log_message(tg_id, "bot", "start_screen", text)
     except Exception as e:
         logger.warning(f"send_start_screen photo failed, falling back to text: {e}")
-        result = await log_and_send_message(chat, text, reply_markup=reply_markup, parse_mode="HTML")
-        if tg_id:
-            await _log_message(tg_id, "bot", "start_screen", text)
+        result = await log_and_send_message(chat, text, reply_markup=reply_markup, parse_mode="HTML", scenario="start_screen")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -136,17 +132,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     referral_applied = register_user_with_referral(tg_id, referrer_tg_id, first_name, last_name)
 
     if referral_applied:
-        # Grant VPN to newcomer
         newcomer_result = await grant_referral_vpn(tg_id, REFERRAL_NEWCOMER_DAYS, xui)
-        if newcomer_result and newcomer_result["action"] == "created":
-            from bot_xui.vpn_factory import make_qr_bytes
-            bio = make_qr_bytes(newcomer_result["sub_url"])
-            await log_and_reply_photo(update, 
+        web_token = get_web_token(tg_id)
+        qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+        if newcomer_result and newcomer_result["action"] == "created" and qr_url:
+            bio = make_qr_bytes(qr_url)
+            await log_and_reply_photo(update,
                 photo=bio,
                 caption=(
                     f"🎁 Вы перешли по реферальной ссылке!\n"
                     f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дня</b> VPN подписки!\n\n"
-                    f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
+                    f'📲 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
                 ),
                 parse_mode="HTML",
                 reply_markup=make_main_keyboard(tg_id)
@@ -217,13 +213,8 @@ async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _make_qr(data: str) -> io.BytesIO:
-    """Генерирует QR-код и возвращает PNG в BytesIO."""
-    img = qrcode.make(data, box_size=8, border=2)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    buf.name = "qr.png"
-    return buf
+    """Генерирует QR-код и возвращает PNG в BytesIO. Deprecated: используйте make_qr_bytes."""
+    return make_qr_bytes(data)
 
 
 async def _refer_text(context, tg_id: int) -> tuple[str, str]:
@@ -482,18 +473,20 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         use_promocode(promo_data['id'], tg_id)
 
         if result["action"] == "created":
-            from bot_xui.vpn_factory import make_qr_bytes
-            bio = make_qr_bytes(result["sub_url"])
-            await log_and_reply_photo(update, 
-                photo=bio,
-                caption=(
-                    f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
-                    f"Вам подарено <b>+{promo_data['value']} дней</b> VPN подписки!\n\n"
-                    f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
-                ),
-                parse_mode="HTML",
-                reply_markup=make_main_keyboard(tg_id)
-            )
+            web_token = get_web_token(tg_id)
+            qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+            if qr_url:
+                bio = make_qr_bytes(qr_url)
+                await log_and_reply_photo(update,
+                    photo=bio,
+                    caption=(
+                        f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
+                        f"Вам подарено <b>+{promo_data['value']} дней</b> VPN подписки!\n\n"
+                        f'📲 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=make_main_keyboard(tg_id)
+                )
         else:
             await log_and_reply_text(update, 
                 f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
@@ -550,18 +543,20 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         use_promocode(promo_data['id'], tg_id)
         if result["action"] == "created":
-            from bot_xui.vpn_factory import make_qr_bytes
-            bio = make_qr_bytes(result["sub_url"])
-            await log_and_reply_photo(update, 
-                photo=bio,
-                caption=(
-                    f"🎉 Праздничный промокод <b>{code.upper()}</b> активирован!\n"
-                    f"Вам подарено <b>+{promo_data['value']} дней</b> VPN!\n\n"
-                    f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
-                ),
-                parse_mode="HTML",
-                reply_markup=make_main_keyboard(tg_id)
-            )
+            web_token = get_web_token(tg_id)
+            qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+            if qr_url:
+                bio = make_qr_bytes(qr_url)
+                await log_and_reply_photo(update,
+                    photo=bio,
+                    caption=(
+                        f"🎉 Праздничный промокод <b>{code.upper()}</b> активирован!\n"
+                        f"Вам подарено <b>+{promo_data['value']} дней</b> VPN!\n\n"
+                        f'📲 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=make_main_keyboard(tg_id)
+                )
         else:
             await log_and_reply_text(update, 
                 f"🎉 Праздничный промокод <b>{code.upper()}</b> активирован!\n"
@@ -801,36 +796,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         token = get_web_token(query.from_user.id)
         if token:
             url = f"https://344988.snk.wtf/my/{token}"
-            await safe_edit_text(
-                query,
+            text = (
                 f"🌐 <b>Личный кабинет</b>\n\n"
                 f"Работает даже без Telegram. Сохраните в закладки:\n\n"
-                f"<code>{url}</code>",
+                f"<code>{url}</code>"
+            )
+            await safe_edit_text_logged(
+                query, text, "web_portal",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🌐 Открыть", url=url)],
                     [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
                 ]),
             )
         else:
-            await safe_edit_text(query, "❌ Ошибка. Попробуйте позже.",
+            await safe_edit_text_logged(query, "❌ Ошибка. Попробуйте позже.", "web_portal",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]))
 
     elif data == "test_protocol_choose":
-        # Explicit protocol choice (from instructions or menu)
-        await query.edit_message_text(
+        text = (
             f"🎁 <b>Бесплатный тест — {TARIFFS['test_24h']['period']}</b>\n\n"
             "Выберите протокол:\n\n"
-            "🟢 <b>VLESS</b> — телефоны, ПК, macOS\n"
-            "🖥 <b>SoftEther</b> — Windows (включая XP/7)",
+            "🟢 <b>VLESS</b> — телефоны, ПК, macOS"
+        )
+        await query.edit_message_text(
+            text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("🟢 VLESS", callback_data="test_vless"),
-                    InlineKeyboardButton("🖥 SoftEther", callback_data="test_softether"),
-                ],
+                [InlineKeyboardButton("🟢 VLESS", callback_data="test_vless")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
             ])
         )
+        await _log_message(query.from_user.id, "bot_menu", "test_protocol_choose", text)
 
     elif data == "get_awg_config":
         await handle_get_awg_config(query)
@@ -838,17 +834,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "get_awg_config_v2":
         await handle_get_awg_config_v2(query)
 
-    elif data == "get_softether_config":
-        await handle_get_softether_config(query)
-
     elif data == "test_awg":
         await handle_test_awg(query, xui)
 
     elif data == "test_vless":
         await handle_test_vless(query, xui)
-
-    elif data == "test_softether":
-        await handle_test_softether(query)
 
     elif data.startswith("show_key_"):
         client_name = data.removeprefix("show_key_")
@@ -856,8 +846,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "split_tunneling":
         happ_routing_url = "https://344988.snk.wtf/happ-routing"
-        await safe_edit_text(
-            query,
+        text = (
             "🔀 <b>Split tunneling для Happ</b>\n\n"
             "Российские сайты будут открываться напрямую, "
             "остальной трафик — через VPN.\n\n"
@@ -865,7 +854,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "добавятся в Happ.\n\n"
             "После импорта откройте в Happ:\n"
             "<b>Настройки</b> → <b>Настройки туннеля</b> → <b>Маршрутизация</b>\n"
-            "и выберите <b>Tiin Split Rules</b>.",
+            "и выберите <b>Tiin Split Rules</b>."
+        )
+        await safe_edit_text_logged(
+            query, text, "split_tunneling",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📲 Установить правила в Happ", url=happ_routing_url)],
                 [InlineKeyboardButton("🔑 Мои конфиги", callback_data="my_configs")],
@@ -884,7 +876,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if tariff.get("is_test"):
-            # Skip protocol selection — go straight to VLESS
             await handle_test_vless(query, xui)
         else:
             renew_info = context.user_data.get("renew_info", {})
@@ -895,6 +886,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 inbound_id=renew_info.get("inbound_id"),
                 promo=context.user_data.pop("promo", None),
             )
+        await _log_message(query.from_user.id, "bot_menu", "buy_tariff", f"tariff={tariff_id} renew={is_renew}")
 
     elif data.startswith("renew_"):
         parts       = data.removeprefix("renew_")
@@ -925,10 +917,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     elif data == "proxy_file":
-        await query.edit_message_text(
+        text = (
             "🔗 <b>Прокси для Telegram</b>\n\n"
             "Нажмите кнопку ниже — прокси подключится автоматически.\n"
-            "Перешлите файл друзьям, у кого не работает Telegram.",
+            "Перешлите файл друзьям, у кого не работает Telegram."
+        )
+        await query.edit_message_text(
+            text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⚡ Подключить прокси", url=MTPROTO_PROXY_LINK)],
@@ -936,6 +931,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
             ]),
         )
+        await _log_message(query.from_user.id, "bot_menu", "proxy_info", text)
 
     elif data == "proxy_download":
         proxy = make_proxy_file()
@@ -962,11 +958,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "feedback":
         import time as _time
         WAITING_FEEDBACK[query.from_user.id] = _time.time()
-        await safe_edit_text(
-            query,
+        text = (
             "✉️ <b>Поддержка</b>\n\n"
             "Напишите ваш вопрос или предложение — мы ответим в ближайшее время.\n\n"
-            "👇 Просто отправьте сообщение в чат\n\n",
+            "👇 Просто отправьте сообщение в чат\n\n"
+        )
+        await safe_edit_text_logged(
+            query, text, "feedback_prompt",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ Отмена", callback_data="back_to_menu")],
             ])
@@ -978,31 +976,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "UPDATE users SET autopay_enabled = 1 WHERE tg_id = %s AND payment_method_id IS NOT NULL",
             (query.from_user.id,),
         )
-        await query.edit_message_text(
+        text = (
             "✅ Автопродление <b>включено</b>.\n\n"
             "Списание произойдёт за 1 день до окончания подписки.\n"
-            "Отключить: /autopay",
-            parse_mode="HTML",
+            "Отключить: /autopay"
         )
+        await query.edit_message_text(text, parse_mode="HTML")
+        await _log_message(query.from_user.id, "bot_menu", "autopay_on", text)
 
     elif data == "autopay_off":
         from api.db import disable_autopay
         disable_autopay(query.from_user.id)
-        await query.edit_message_text(
+        text = (
             "🔴 Автопродление <b>выключено</b>.\n\n"
-            "Включить снова: /autopay",
-            parse_mode="HTML",
+            "Включить снова: /autopay"
         )
+        await query.edit_message_text(text, parse_mode="HTML")
+        await _log_message(query.from_user.id, "bot_menu", "autopay_off", text)
 
     elif data == "autopay_remove_card":
         from api.db import remove_payment_method
         remove_payment_method(query.from_user.id)
-        await query.edit_message_text(
+        text = (
             "🗑 <b>Карта отвязана</b>\n\n"
             "Автопродление выключено.\n"
-            "При следующей оплате карта сохранится заново.",
-            parse_mode="HTML",
+            "При следующей оплате карта сохранится заново."
         )
+        await query.edit_message_text(text, parse_mode="HTML")
+        await _log_message(query.from_user.id, "bot_menu", "autopay_remove_card", text)
 
     elif data == "autopay_manage":
         from api.db import execute_query
@@ -1019,18 +1020,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tariff = TARIFFS.get(tariff_id, {})
         toggle_text = "Выключить" if enabled else "Включить"
         toggle_data = "autopay_off" if enabled else "autopay_on"
-        await query.edit_message_text(
+        text = (
             f"🔄 <b>Автопродление</b>\n\n"
             f"Статус: {'✅ Включено' if enabled else '❌ Выключено'}\n"
             f"Тариф: {tariff.get('name', tariff_id)}\n"
             f"💳 Карта сохранена\n\n"
-            f"При автопродлении списание происходит за 1 день до окончания подписки.",
+            f"При автопродлении списание происходит за 1 день до окончания подписки."
+        )
+        await query.edit_message_text(
+            text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"{'🔴' if enabled else '🟢'} {toggle_text}", callback_data=toggle_data)],
                 [InlineKeyboardButton("🗑 Отвязать карту", callback_data="autopay_remove_card")],
             ]),
         )
+        await _log_message(tg_id, "bot_menu", "autopay_manage", text)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

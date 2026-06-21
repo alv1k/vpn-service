@@ -19,7 +19,6 @@ from awg_api.config import (
 )
 from config import (
     XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
-    SOFTETHER_SERVER_PASSWORD, SOFTETHER_CONNECT_HOST, SOFTETHER_CONNECT_PORT,
 )
 
 logging.basicConfig(
@@ -211,51 +210,6 @@ def _collect_awg():
     return entries
 
 
-def _collect_softether():
-    """Get SoftEther user traffic from vpncmd."""
-    entries = []
-    try:
-        from bot_xui.softether import list_sessions, list_users as se_list_users
-        active_usernames = set()
-
-        for s in list_sessions():
-            uname = s.get("username", "")
-            if not uname:
-                continue
-            active_usernames.add(uname)
-            transfer = s.get("transfer_bytes", 0)
-            entries.append({
-                "client_name": uname,
-                "vpn_type": "softether",
-                "protocol": "softether",
-                "ip_count": 1,
-                "ips": [s.get("client_ip", "")] if s.get("client_ip") else [],
-                "rx_bytes": s.get("rx_bytes", 0),
-                "tx_bytes": s.get("tx_bytes", 0),
-                "total_bytes": transfer,
-                "is_online": True,
-            })
-
-        # Also record offline users with 0 traffic so they appear in the list
-        for u in se_list_users():
-            uname = u.get("username", "")
-            if uname and uname not in active_usernames:
-                entries.append({
-                    "client_name": uname,
-                    "vpn_type": "softether",
-                    "protocol": "softether",
-                    "ip_count": 0,
-                    "ips": [],
-                    "rx_bytes": 0,
-                    "tx_bytes": 0,
-                    "total_bytes": 0,
-                    "is_online": False,
-                })
-    except Exception as e:
-        logger.warning(f"SoftEther collect error: {e}")
-    return entries
-
-
 def _resolve_to_users(client_names):
     """Resolve client names to user info via vpn_keys + users tables."""
     if not client_names:
@@ -348,7 +302,6 @@ def collect():
     all_entries = []
     all_entries.extend(_collect_vless_hysteria())
     all_entries.extend(_collect_awg())
-    all_entries.extend(_collect_softether())
 
     if not all_entries:
         logger.warning("No entries collected from any protocol")
@@ -493,7 +446,6 @@ if __name__ == "__main__":
         all_entries = []
         all_entries.extend(_collect_vless_hysteria())
         all_entries.extend(_collect_awg())
-        all_entries.extend(_collect_softether())
         all_names = [e["client_name"] for e in all_entries]
         user_info = _resolve_to_users(all_names)
         for entry in all_entries:

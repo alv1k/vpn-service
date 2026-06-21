@@ -10,7 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot_xui.tariffs import TARIFFS
 from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated, get_permanent_discount, update_vless_link, get_web_token, get_user_by_tg_id, get_payment_by_id, get_referral_count, get_user_by_web_token
-from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, get_user_sub_url
+from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, safe_edit_text_logged, reply_text_logged, reply_photo_logged, reply_document_logged, get_user_sub_url, _log_message, make_qr_bytes, WEB_BASE_URL
 
 from bot_xui.test_mode import is_test_mode
 from config import ADMIN_TG_ID, REFERRAL_REWARD_DAYS, BOT_USERNAME
@@ -206,13 +206,14 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
 async def show_tariffs(query):
     text, markup = _build_tariff_text_and_keyboard(query.from_user.id, mode="buy")
     await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+    await _log_message(query.from_user.id, "bot_menu", "tariffs", text)
 
 
 async def show_renew_tariffs(query, context, inbound_id: int, client_name: str):
     """Клавиатура продления — сохраняет контекст и показывает тарифы."""
     context.user_data["renew_info"] = {"inbound_id": inbound_id, "client_name": client_name}
     text, markup = _build_tariff_text_and_keyboard(query.from_user.id, mode="renew")
-    await query.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
+    await reply_text_logged(query.message.chat, text, "renew_tariffs", reply_markup=markup, parse_mode="HTML")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -243,14 +244,12 @@ def _refresh_vless_links(tg_id: int, xui):
 
 
 _PROTOCOL_LABELS = {
-    "softether":  ("🖥", "SoftEther"),
     "vless":      ("🟢", "VLESS"),
     "awg":        ("📱", "AmneziaWG"),
     "hysteria":   ("🚀", "Hysteria 2"),
 }
 
 _PROTOCOL_DESCRIPTIONS = {
-    "softether":  "Windows XP/7/10/11",
     "vless":      "Reality • Все платформы",
     "awg":        "AmneziaWG • Нестабильные каналы",
     "hysteria":   "Hysteria 2 • Обход блокировок",
@@ -340,12 +339,9 @@ async def show_configs(query, xui=None):
                 row = []
 
         has_awg    = any(k['vpn_type'] == 'awg' for k in active_keys)
-        has_se     = any(k['vpn_type'] == 'softether' for k in active_keys)
         extra_row = []
         if not has_awg:
             extra_row.append(InlineKeyboardButton("➕ AmneziaWG", callback_data="get_awg_config"))
-        if not has_se:
-            extra_row.append(InlineKeyboardButton("➕ SoftEther", callback_data="get_softether_config"))
         if extra_row:
             keyboard.append(extra_row)
 
@@ -370,7 +366,7 @@ async def show_configs(query, xui=None):
 
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")])
 
-    await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await safe_edit_text_logged(query, text, "my_configs", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _show_no_configs(query):
@@ -387,6 +383,7 @@ async def _show_no_configs(query):
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML",
     )
+    await _log_message(query.from_user.id, "bot_menu", "my_configs", text)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -456,49 +453,6 @@ async def show_single_config(query, client_name: str, xui):
     back_buttons.append([InlineKeyboardButton("🔙 К списку", callback_data="my_configs")])
     back_markup = InlineKeyboardMarkup(back_buttons)
 
-    # SoftEther — текстовое сообщение без QR
-    if key["vpn_type"] == "softether":
-        import json
-        try:
-            creds = json.loads(key.get("vless_link") or "{}")
-        except (json.JSONDecodeError, TypeError):
-            creds = {}
-
-        caption = (
-            f"{sub_info}\n\n"
-            f"{pretty_emoji} <b>{pretty_label}</b>  {status[0]} {status[1]}\n"
-            f"⏱ До: {convert_to_local(expires_at)}\n\n"
-            f"<b>Данные для подключения:</b>\n\n"
-            f"Сервер: <pre>{creds.get('host', '')}</pre>\n"
-            f"Порт: <pre>{creds.get('port', '')}</pre>\n"
-            f"Hub: <pre>{creds.get('hub', '')}</pre>\n"
-            f"Логин: <pre>{creds.get('username', '')}</pre>\n"
-            f"Пароль: <pre>{creds.get('password', '')}</pre>\n"
-        )
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-
-        # Отправляем .vpn файл если есть
-        vpn_file_content = key.get("vpn_file")
-        if vpn_file_content:
-            vpn_bio = BytesIO(vpn_file_content.encode("utf-8"))
-            vpn_bio.name = f"tiin_vpn_{creds.get('username', 'config')}.vpn"
-            await query.message.chat.send_document(
-                document=vpn_bio,
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=back_markup,
-            )
-        else:
-            await query.message.chat.send_message(
-                text=caption,
-                parse_mode="HTML",
-                reply_markup=back_markup,
-            )
-        return
-
     # AWG — отправить .conf файл
     if key["vpn_type"] == "awg":
         conf_text = key.get("vless_link") or ""
@@ -520,32 +474,22 @@ async def show_single_config(query, client_name: str, xui):
             await query.message.delete()
         except Exception:
             pass
-        await query.message.chat.send_document(
-            document=conf_bio,
+        await reply_document_logged(
+            query.message.chat, conf_bio, "single_config",
             caption=caption,
-            parse_mode="HTML",
             reply_markup=back_markup,
         )
         return
 
-    # VLESS — QR + ссылка подписки (через прокси-эндпоинт, который переписывает remark)
-    token = get_web_token(tg_id)
-    user_data = get_user_by_web_token(token)
-    sub_url = get_user_sub_url(tg_id, user_data['id']) or key.get("subscription_link") or ""
+    web_token = get_web_token(tg_id)
+    qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+    bio = make_qr_bytes(qr_url) if qr_url else None
     vless_link = key.get("vless_link") or ""
     hysteria_link = key.get("hysteria_link") or ""
 
-    bio = BytesIO()
-    bio.name = "qr.png"
-    qr = qrcode.QRCode(version=1, box_size=8, border=4)
-    qr.add_data(sub_url)
-    qr.make(fit=True)
-    qr.make_image(fill_color="black", back_color="white").save(bio, "PNG")
-    bio.seek(0)
-
     from config import SERVER_LOCATION
-    # Subscription link is always included — it's the primary way to connect
-    sub_link_text = f"📎 <b>Ссылка подписки</b> (VLESS + Hysteria в одной):\n<code>{sub_url}</code>"
+    my_url = f"https://344988.snk.wtf/my/{web_token}" if web_token else ""
+    sub_link_text = f"📎 <b>Личный кабинет с инструкциями:</b>\n<code>{my_url}</code>"
 
     caption = (
         f"{sub_info}\n\n"
@@ -560,14 +504,12 @@ async def show_single_config(query, client_name: str, xui):
         f"🚀 <b>Hysteria 2</b>\n"
         f"   <i>Скоростной, обход жёстких блокировок</i>\n\n"
         f"{sub_link_text}\n\n"
-        f"💡 <i>Скопируйте ссылку или отсканируйте QR-код</i>"
+        f"💡 <i>Отсканируйте QR-код или откройте личный кабинет</i>"
     )
 
-    instr_token = get_web_token(tg_id)
-    if instr_token:
-        caption += f'\n\n📖 <a href="https://344988.snk.wtf/my/{instr_token}">Инструкция по подключению</a>'
+    if web_token:
+        caption += f'\n\n📖 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
 
-    # Telegram caption limit is 1024 chars; append standalone links only if they fit
     extra_links = ""
     if vless_link:
         extra_links += f"\n\n🟢 <b>VLESS standalone:</b>\n<code>{vless_link}</code>"
@@ -578,11 +520,9 @@ async def show_single_config(query, client_name: str, xui):
         caption += extra_links
     else:
         logger.info(f"show_single_config: standalone links dropped, caption={len(caption)}, extra={len(extra_links)}, total={len(caption)+len(extra_links)}")
-    # If too long: sub_url subscription link is always kept, standalone links dropped
 
     logger.info(f"show_single_config: sending photo caption, length={len(caption)}")
 
-    # Telegram caption limit is 1024 chars — truncate if needed
     if len(caption) > 1024:
         caption = caption[:1020] + "…"
         logger.warning(f"show_single_config: caption truncated to 1024 chars")
@@ -590,8 +530,8 @@ async def show_single_config(query, client_name: str, xui):
     keyboard = [
         [InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")],
     ]
-    if instr_token:
-        keyboard.append([InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{instr_token}")])
+    if web_token:
+        keyboard.append([InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{web_token}")])
     if is_test_tariff:
         keyboard.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])
     keyboard.append([InlineKeyboardButton("🔙 К списку", callback_data="my_configs")])
@@ -600,10 +540,9 @@ async def show_single_config(query, client_name: str, xui):
         await query.message.delete()
     except Exception:
         pass
-    await query.message.chat.send_photo(
-        photo=bio,
+    await reply_photo_logged(
+        query.message.chat, bio, "single_config",
         caption=caption,
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 

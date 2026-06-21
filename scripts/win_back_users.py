@@ -61,7 +61,7 @@ def get_all_users():
     """Все пользователи из БД ( except those who blocked the bot)."""
     return execute_query(
         "SELECT tg_id, first_name, subscription_until, test_vless_activated, "
-        "test_awg_activated, test_softether_activated, created_at "
+        "test_awg_activated, created_at "
         "FROM users WHERE bot_blocked = 0",
         fetch='all',
     ) or []
@@ -133,7 +133,7 @@ def _get_client_name_to_tg_id():
 
 
 def get_traffic_from_panel(xui):
-    """Получить трафик ВСЕХ клиентов: VLESS + Hysteria2 (3x-ui) + AWG + SoftEther. Возвращает {tg_id: {upload, download, enabled}}."""
+    """Получить трафик ВСЕХ клиентов: VLESS + Hysteria2 (3x-ui) + AWG. Возвращает {tg_id: {upload, download, enabled}}."""
     traffic = {}
 
     # ── VLESS + Hysteria2 (3x-ui) ──
@@ -185,21 +185,6 @@ def get_traffic_from_panel(xui):
                     _add_traffic(traffic, tg_id, rx_bytes, tx_bytes, last_online=last_online_ms)
     except Exception as e:
         log.warning(f"AWG traffic error: {e}")
-
-    # ── SoftEther (vpncmd UserGet) ──
-    try:
-        from bot_xui.softether import list_users as se_list_users
-        name_to_tg = name_to_tg if 'name_to_tg' in dir() else _get_client_name_to_tg_id()
-
-        for user in se_list_users():
-            username = user.get('username', '')
-            tg_id = name_to_tg.get(username)
-            if tg_id and user.get('transfer_bytes', 0) > 0:
-                # SoftEther reports total bytes (combined up+down), split evenly
-                total = user['transfer_bytes']
-                _add_traffic(traffic, tg_id, total // 2, total // 2)
-    except Exception as e:
-        log.warning(f"SoftEther traffic error: {e}")
 
     return traffic
 
@@ -319,8 +304,7 @@ def classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids=N
         # Сценарий: Зарегистрировался, тест не активировал, ключей нет
         test_used = (
             user.get('test_vless_activated') or
-            user.get('test_awg_activated') or
-            user.get('test_softether_activated')
+            user.get('test_awg_activated')
         )
         # Сценарий: Активировал промокод, но не купил (check before key-gated continues)
         if tg_id in unused_promo_by_tg:

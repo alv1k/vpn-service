@@ -103,16 +103,6 @@ else
     FAILED=1
 fi
 
-# Test 7: SoftEther VPN server on port 5555
-if ss -tlnp | grep -q ':5555'; then
-    log "✅ SoftEther listening on 5555"
-    RESULTS+="✅ SoftEther port 5555: OK\n"
-else
-    log "❌ SoftEther NOT listening on 5555"
-    RESULTS+="❌ SoftEther port 5555: DOWN\n"
-    FAILED=1
-fi
-
 
 # Test 9: x-ui container status
 # if docker ps --format '{{.Names}} {{.Status}}' | grep -q "^x-ui Up"; then

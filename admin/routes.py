@@ -230,7 +230,7 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
 
 
 def _get_online_users() -> tuple[list[dict], set]:
-    """Parse xray access log + awg handshakes + softether to find who's online now.
+    """Parse xray access log + awg handshakes to find who's online now.
     Returns merged list of users (all protocols united by tg_id/user_id) and identity set."""
     # Collect raw protocol entries: list of {name, type, ip_count, last_seen, speed_mbps}
     raw_entries = []
@@ -322,21 +322,6 @@ def _get_online_users() -> tuple[list[dict], set]:
                 })
     except Exception as e:
         logger.warning(f"AWG online parse error: {e}")
-
-    # SoftEther: active sessions
-    try:
-        from bot_xui.softether import list_sessions
-        for s in list_sessions():
-            speed = _calc_speed(s["username"], "softether", s.get("transfer_bytes", 0))
-            raw_entries.append({
-                "name": s["username"],
-                "ip_count": 1,
-                "type": "softether",
-                "last_seen": "connected",
-                "speed_mbps": _speed_mbps(speed),
-            })
-    except Exception as e:
-        logger.warning(f"SoftEther online parse error: {e}")
 
     # Resolve all client names to user info
     all_names = [e["name"] for e in raw_entries]
@@ -548,22 +533,6 @@ async def offline_users():
     except Exception as e:
         logger.warning(f"Offline AWG error: {e}")
 
-    # ── SoftEther: all users minus active sessions ──
-    try:
-        from bot_xui.softether import list_users as se_list_users
-        for u in se_list_users():
-            uname = u.get("username", "")
-            if not uname or ("softether", uname) in online_identities:
-                continue
-            raw_entries.append({
-                "name": uname,
-                "type": "softether",
-                "last_seen": "",
-                "last_seen_ts": 0,
-            })
-    except Exception as e:
-        logger.warning(f"Offline SoftEther error: {e}")
-
     # Resolve all client names to user info
     all_names = [e["name"] for e in raw_entries]
     user_info = _resolve_names_to_users(all_names)
@@ -660,7 +629,7 @@ async def speed_users(
         LEFT JOIN users u ON (s.tg_id != 0 AND s.tg_id = u.tg_id)
                           OR (s.user_id IS NOT NULL AND s.user_id = u.id)
         WHERE s.snapshot_at >= %s {proto_filter} {search_filter}
-        GROUP BY s.client_name, s.vpn_type, s.tg_id, s.user_id, first_name
+        GROUP BY s.client_name, s.vpn_type, s.tg_id, s.user_id, u.first_name, u.old_first_name
         ORDER BY total_bytes_sum DESC
     """, tuple(params))
 
@@ -836,16 +805,6 @@ async def dashboard():
     discount_stats = admin_db.permanent_discount_summary()
     autopay_stats = admin_db.autopay_summary()
 
-    # SoftEther stats
-    se_users = []
-    se_running = False
-    try:
-        from bot_xui.softether import list_users as se_list_users
-        se_users = se_list_users()
-        se_running = True
-    except Exception as e:
-        logger.warning(f"SoftEther stats error: {e}")
-
     # MTProto Proxy stats
     proxy_metrics = _parse_mtg_metrics()
 
@@ -873,10 +832,6 @@ async def dashboard():
             "clients_total": len(awg_clients),
             "clients_enabled": awg_enabled,
             "interface_up": awg_up,
-        },
-        "softether": {
-            "users_total": len(se_users),
-            "running": se_running,
         },
         "proxy": {
             "connections": proxy_metrics["client_connections"],
@@ -1079,189 +1034,7 @@ async def xui_inbound_clients(inbound_id: int):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-# ── SoftEther ─────────────────────────────────────────────────────────────────
 
-@router.get("/softether/users")
-async def softether_users():
-    try:
-        from bot_xui.softether import list_users
-        users = list_users()
-        # Merge stored configs from vpn_keys
-        try:
-            conn = awg_db._get_conn()
-            cur = conn.cursor(dictionary=True)
-            cur.execute(
-                "SELECT client_name, vless_link, vpn_file, tg_id, expires_at, created_at "
-                "FROM vpn_keys WHERE vpn_type = 'softether'"
-            )
-            rows = cur.fetchall()
-            cur.close()
-            conn.close()
-            # Build lookup by client_name (latest entry wins)
-            configs = {}
-            for row in rows:
-                name = row["client_name"]
-                if name not in configs or (row["created_at"] and configs[name]["created_at"] and row["created_at"] > configs[name]["created_at"]):
-                    cfg = {}
-                    if row.get("vless_link"):
-                        try:
-                            cfg = json.loads(row["vless_link"])
-                        except Exception:
-                            cfg = {"raw": row["vless_link"]}
-                    configs[name] = {
-                        "config": cfg,
-                        "vpn_file": bool(row.get("vpn_file")),
-                        "tg_id": row.get("tg_id"),
-                        "db_expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
-                        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
-                    }
-            for u in users:
-                db = configs.get(u["username"], {})
-                u["config"] = db.get("config")
-                u["has_vpn_file"] = db.get("vpn_file", False)
-                u["tg_id"] = db.get("tg_id")
-                u["created_at"] = db.get("created_at")
-        except Exception as e:
-            logger.warning(f"Failed to merge SE configs from DB: {e}")
-        return users
-    except Exception as e:
-        logger.error(f"SoftEther users error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.delete("/softether/users/{username}")
-async def softether_delete_user(username: str):
-    try:
-        from bot_xui.softether import delete_user
-        ok = delete_user(username)
-        if ok:
-            return {"status": "deleted"}
-        return JSONResponse({"error": "Failed to delete"}, status_code=500)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.post("/softether/users/{username}/disable")
-async def softether_disable_user(username: str):
-    try:
-        from bot_xui.softether import disable_user
-        ok = disable_user(username)
-        if ok:
-            return {"status": "disabled"}
-        return JSONResponse({"error": "Failed to disable"}, status_code=500)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.get("/softether/users/{username}/config")
-async def softether_user_config(username: str):
-    """Get stored connection config for a SoftEther user from vpn_keys."""
-    try:
-        conn = awg_db._get_conn()
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            "SELECT vless_link, vpn_file FROM vpn_keys "
-            "WHERE client_name = %s AND vpn_type = 'softether' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (username,),
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if not row:
-            return JSONResponse({"error": "No stored config for this user"}, status_code=404)
-        config_json = row.get("vless_link")  # stores JSON {host, port, hub, username, password}
-        vpn_file = row.get("vpn_file")
-        config = {}
-        if config_json:
-            try:
-                config = json.loads(config_json)
-            except Exception:
-                config = {"raw": config_json}
-        return {"config": config, "vpn_file": vpn_file}
-    except Exception as e:
-        logger.error(f"SoftEther config lookup error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.post("/softether/users")
-async def softether_create_user(request: Request):
-    try:
-        body = await request.json()
-        username = body.get("username", "").strip()
-        password = body.get("password", "").strip()
-        expiry = body.get("expiry", "").strip()  # YYYY/MM/DD
-        if not username or not password:
-            return JSONResponse({"error": "username and password required"}, status_code=400)
-        from bot_xui.softether import create_user, set_user_expiry
-        ok = create_user(username, password)
-        if not ok:
-            return JSONResponse({"error": "Failed to create user"}, status_code=500)
-        if expiry:
-            set_user_expiry(username, expiry)
-        return {"status": "created", "username": username}
-    except Exception as e:
-        logger.error(f"SoftEther create error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.patch("/softether/users/{username}/password")
-async def softether_set_password(username: str, request: Request):
-    try:
-        body = await request.json()
-        password = body.get("password", "").strip()
-        if not password:
-            return JSONResponse({"error": "password required"}, status_code=400)
-        from bot_xui.softether import _run
-        _run("UserPasswordSet", username, f"/PASSWORD:{password}")
-        # Sync password to DB (vpn_keys.vless_link JSON + regenerate vpn_file)
-        try:
-            conn = awg_db._get_conn()
-            cur = conn.cursor(dictionary=True)
-            cur.execute(
-                "SELECT id, vless_link FROM vpn_keys "
-                "WHERE client_name = %s AND vpn_type = 'softether'",
-                (username,),
-            )
-            for row in cur.fetchall():
-                if row.get("vless_link"):
-                    cfg = json.loads(row["vless_link"])
-                    cfg["password"] = password
-                    new_link = json.dumps(cfg)
-                    # Regenerate .vpn file from scratch instead of string replace
-                    from bot_xui.vpn_factory import _make_softether_vpn_file
-                    vpn_file = _make_softether_vpn_file(username, password).getvalue().decode("utf-8")
-                    cur.execute(
-                        "UPDATE vpn_keys SET vless_link = %s, vpn_file = %s WHERE id = %s",
-                        (new_link, vpn_file, row["id"]),
-                    )
-            conn.commit()
-            cur.close()
-            conn.close()
-        except Exception as e:
-            logger.warning(f"Failed to sync SE password to DB: {e}")
-        return {"status": "password_updated"}
-    except Exception as e:
-        return JSONResponse({"error": "Failed to update password"}, status_code=500)
-
-
-@router.patch("/softether/users/{username}/expiry")
-async def softether_set_expiry(username: str, request: Request):
-    try:
-        body = await request.json()
-        expiry = body.get("expiry", "").strip()  # YYYY/MM/DD or "none"
-        if not expiry:
-            return JSONResponse({"error": "expiry required (YYYY/MM/DD or 'none')"}, status_code=400)
-        from bot_xui.softether import set_user_expiry
-        ok = set_user_expiry(username, expiry if expiry != "none" else "none")
-        if ok:
-            return {"status": "expiry_updated"}
-        return JSONResponse({"error": "Failed to set expiry"}, status_code=500)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-def _ping_telegram_dc() -> float | None:
     """Ping Telegram DC2 and return latency in ms."""
     try:
         r = subprocess.run(

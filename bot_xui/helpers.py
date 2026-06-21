@@ -5,7 +5,9 @@ import io
 import logging
 import sqlite3
 import json
+import qrcode
 from datetime import datetime, timedelta
+from io import BytesIO
 from urllib.parse import quote
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET, BOT_USERNAME, REFERRAL_REWARD_DAYS, XUI_SUB_PATH
@@ -118,6 +120,20 @@ def convert_to_local(dt: datetime, offset_hours: int = 9) -> str:
 
 
 PUBLIC_BASE_URL = "https://344988.snk.wtf"
+WEB_BASE_URL = "https://344988.snk.wtf"
+
+
+def make_qr_bytes(data: str, box_size: int = 10, border: int = 5) -> BytesIO:
+    """Генерирует PNG QR-код и возвращает BytesIO. Единая функция для всего проекта."""
+    qr = qrcode.QRCode(version=1, box_size=box_size, border=border)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    bio = BytesIO()
+    bio.name = "qr.png"
+    img.save(bio, "PNG")
+    bio.seek(0)
+    return bio
 
 
 def get_user_sub_url(tg_id: int, users_id: int) -> str:
@@ -299,7 +315,6 @@ async def safe_edit_text(query, text: str, reply_markup=None, parse_mode: str = 
 
     if query.message.photo or query.message.video or query.message.document:
         try:
-            # Удаляем сообщение с медиа и отправляем чистый текст
             await query.message.delete()
             await query.message.chat.send_message(text, reply_markup=reply_markup, parse_mode=parse_mode)
             return True
@@ -313,3 +328,48 @@ async def safe_edit_text(query, text: str, reply_markup=None, parse_mode: str = 
     except Exception as e:
         logger.warning(f"safe_edit_text edit failed: {e}")
         return False
+
+
+async def safe_edit_text_logged(query, text: str, scenario: str, reply_markup=None,
+                                 parse_mode: str = "HTML") -> bool:
+    """safe_edit_text + log to message_log."""
+    result = await safe_edit_text(query, text, reply_markup=reply_markup, parse_mode=parse_mode)
+    if result:
+        tg_id = _get_tg_id(query)
+        if tg_id:
+            await _log_message(tg_id, "bot_menu", scenario, text)
+    return result
+
+
+async def reply_text_logged(chat, text: str, scenario: str, reply_markup=None,
+                             parse_mode: str = "HTML", **kwargs):
+    """chat.send_message + log to message_log."""
+    result = await chat.send_message(text, reply_markup=reply_markup, parse_mode=parse_mode, **kwargs)
+    tg_id = chat.id if hasattr(chat, 'id') else None
+    if tg_id:
+        await _log_message(tg_id, "bot_menu", scenario, text)
+    return result
+
+
+async def reply_photo_logged(chat, photo, scenario: str, caption: str = None,
+                              reply_markup=None, parse_mode: str = "HTML", **kwargs):
+    """chat.send_photo + log to message_log."""
+    result = await chat.send_photo(photo, caption=caption, reply_markup=reply_markup,
+                                   parse_mode=parse_mode, **kwargs)
+    tg_id = chat.id if hasattr(chat, 'id') else None
+    if tg_id:
+        log_text = f"sent photo: {caption[:100]}" if caption else "sent photo"
+        await _log_message(tg_id, "bot_menu", scenario, log_text)
+    return result
+
+
+async def reply_document_logged(chat, document, scenario: str, caption: str = None,
+                                 reply_markup=None, parse_mode: str = "HTML", **kwargs):
+    """chat.send_document + log to message_log."""
+    result = await chat.send_document(document, caption=caption, reply_markup=reply_markup,
+                                      parse_mode=parse_mode, **kwargs)
+    tg_id = chat.id if hasattr(chat, 'id') else None
+    if tg_id:
+        log_text = f"sent document: {caption[:100]}" if caption else "sent document"
+        await _log_message(tg_id, "bot_menu", scenario, log_text)
+    return result

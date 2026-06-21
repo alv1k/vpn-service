@@ -129,15 +129,16 @@ class TestShowTariffs:
         mock_build.assert_called_once_with(100, mode="buy")
 
     @pytest.mark.asyncio
+    @patch("bot_xui.views.reply_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views._build_tariff_text_and_keyboard")
-    async def test_show_renew_tariffs(self, mock_build):
+    async def test_show_renew_tariffs(self, mock_build, mock_reply):
         """show_renew_tariffs saves context and uses mode=renew."""
         from bot_xui.views import show_renew_tariffs
 
         mock_build.return_value = ("text", MagicMock())
         query = MagicMock()
         query.from_user.id = 100
-        query.message.reply_text = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
 
         context = MagicMock()
         context.user_data = {}
@@ -226,7 +227,7 @@ class TestRefreshVlessLinks:
 class TestShowConfigs:
 
     @pytest.mark.asyncio
-    @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
+    @patch("bot_xui.views.safe_edit_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @patch("bot_xui.views._refresh_vless_links")
     async def test_with_active_keys(self, mock_refresh, mock_keys, mock_edit):
@@ -265,11 +266,11 @@ class TestShowConfigs:
         mock_no_configs.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
+    @patch("bot_xui.views.safe_edit_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @patch("bot_xui.views._refresh_vless_links")
     async def test_extra_protocol_buttons(self, mock_refresh, mock_keys, mock_edit):
-        """Active VLESS-only user gets +AWG and +SoftEther buttons."""
+        """Active VLESS-only user gets +AWG button."""
         from bot_xui.views import show_configs
 
         mock_keys.return_value = [
@@ -286,7 +287,6 @@ class TestShowConfigs:
         markup = mock_edit.call_args[1]["reply_markup"]
         all_callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row if btn.callback_data]
         assert "get_awg_config" in all_callbacks
-        assert "get_softether_config" in all_callbacks
 
 
 # ═════════════════════════════════════════════
@@ -319,6 +319,7 @@ class TestShowNoConfigs:
 class TestShowSingleConfigVless:
 
     @pytest.mark.asyncio
+    @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
     @patch("bot_xui.views.get_web_token", return_value="tok123")
     @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
@@ -327,7 +328,7 @@ class TestShowSingleConfigVless:
     @patch("bot_xui.views.qrcode.QRCode")
     @patch("bot_xui.views.get_keys_by_tg_id")
     async def test_vless_caption_has_instruction_link(self, mock_keys, mock_qr_cls, mock_payment,
-                                                       mock_user_tg, mock_user_web, mock_token, mock_sub_url):
+                                                        mock_user_tg, mock_user_web, mock_token, mock_sub_url, mock_reply_photo):
         """VLESS single config caption includes instruction link."""
         from bot_xui.views import show_single_config
 
@@ -349,12 +350,13 @@ class TestShowSingleConfigVless:
 
         await show_single_config(query, "tiin_100", MagicMock())
 
-        query.message.chat.send_photo.assert_called_once()
-        caption = query.message.chat.send_photo.call_args[1]["caption"]
+        mock_reply_photo.assert_called_once()
+        caption = mock_reply_photo.call_args[1]["caption"]
         assert "Инструкция" in caption
         assert "344988.snk.wtf/my/tok123" in caption
 
     @pytest.mark.asyncio
+    @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
     @patch("bot_xui.views.get_web_token", return_value="tok123")
     @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
@@ -363,7 +365,7 @@ class TestShowSingleConfigVless:
     @patch("bot_xui.views.qrcode.QRCode")
     @patch("bot_xui.views.get_keys_by_tg_id")
     async def test_vless_keyboard_has_instruction_button(self, mock_keys, mock_qr_cls, mock_payment,
-                                                         mock_user_tg, mock_user_web, mock_token, mock_sub_url):
+                                                          mock_user_tg, mock_user_web, mock_token, mock_sub_url, mock_reply_photo):
         """VLESS single config keyboard includes '📖 Инструкция' URL button."""
         from bot_xui.views import show_single_config
 
@@ -385,11 +387,12 @@ class TestShowSingleConfigVless:
 
         await show_single_config(query, "tiin_100", MagicMock())
 
-        markup = query.message.chat.send_photo.call_args[1]["reply_markup"]
+        markup = mock_reply_photo.call_args[1]["reply_markup"]
         all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
         assert any("344988.snk.wtf/my/tok123" in u for u in all_urls)
 
     @pytest.mark.asyncio
+    @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
     @patch("bot_xui.views.get_web_token", return_value="")
     @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
@@ -398,7 +401,7 @@ class TestShowSingleConfigVless:
     @patch("bot_xui.views.qrcode.QRCode")
     @patch("bot_xui.views.get_keys_by_tg_id")
     async def test_vless_empty_token_caption_has_no_instruction_link(self, mock_keys, mock_qr_cls, mock_payment,
-                                                                      mock_user_tg, mock_user_web, mock_token, mock_sub_url):
+                                                                       mock_user_tg, mock_user_web, mock_token, mock_sub_url, mock_reply_photo):
         """With empty web_token, caption instruction link is absent but button is still present."""
         from bot_xui.views import show_single_config
 
@@ -420,10 +423,10 @@ class TestShowSingleConfigVless:
 
         await show_single_config(query, "tiin_100", MagicMock())
 
-        caption = query.message.chat.send_photo.call_args[1]["caption"]
+        caption = mock_reply_photo.call_args[1]["caption"]
         assert "344988.snk.wtf/my/" not in caption
         # No instruction button without token
-        markup = query.message.chat.send_photo.call_args[1]["reply_markup"]
+        markup = mock_reply_photo.call_args[1]["reply_markup"]
         all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
         assert not any("344988.snk.wtf/my/" in u for u in all_urls)
 
@@ -464,14 +467,6 @@ class TestPrettyConfigLabel:
         _, label_short = _pretty_config_label(key, short=True)
         # short uses period "7 дней", long uses full name "Неделя — 7 дней"
         assert "7" in label_short
-
-    def test_softether_protocol(self):
-        """SoftEther vpn_type returns hardware emoji."""
-        from bot_xui.views import _pretty_config_label
-        key = {"vpn_type": "softether", "client_name": "se_1", "payment_id": None}
-        emoji, label = _pretty_config_label(key)
-        assert emoji == "🖥"
-        assert "SoftEther" in label
 
     def test_awg_protocol(self):
         """AWG vpn_type returns mobile emoji."""

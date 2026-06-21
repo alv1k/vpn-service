@@ -16,6 +16,7 @@ from config import (
     YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY,
     YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
     ADMIN_TG_ID, SERVER_LOCATION,
+    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM,
 )
 from bot_xui.tariffs import TARIFFS
 from api.db import execute_query, get_user_by_web_token, get_keys_by_tg_id
@@ -570,6 +571,51 @@ class LogMessageRequest(BaseModel):
     source: str = "external"
     scenario: str = "unknown"
     text: str | None = None
+
+
+@web_api_router.post("/contact")
+async def contact_form(req: Request):
+    """Handle contact form submission from portfolio site."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart as MIMEMultipartCls
+
+    body = await req.json()
+    name = (body.get("name") or "").strip()
+    email = (body.get("email") or "").strip()
+    message = (body.get("message") or "").strip()
+
+    if not name or not email or not message:
+        raise HTTPException(400, "All fields are required")
+    if len(message) > 5000:
+        raise HTTPException(400, "Message too long")
+
+    subject = f"Portfolio contact: {name}"
+    text = f"Name: {name}\nEmail: {email}\n\nMessage:\n{message}"
+
+    msg = MIMEMultipartCls("alternative")
+    msg["Subject"] = subject
+    msg["From"] = SMTP_FROM or SMTP_USER
+    msg["To"] = "alekseevaalena442@gmail.com"
+    msg["Reply-To"] = email
+    msg.attach(MIMEText(text, "plain", "utf-8"))
+
+    try:
+        port = int(SMTP_PORT or 587)
+        if port == 465:
+            with smtplib.SMTP_SSL(SMTP_HOST, port) as server:
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM or SMTP_USER, "alekseevaalena442@gmail.com", msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST, port) as server:
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM or SMTP_USER, "alekseevaalena442@gmail.com", msg.as_string())
+        logger.info(f"Contact form: from {email}, name={name}")
+        return {"ok": True}
+    except Exception as e:
+        logger.exception(f"Contact form failed: {e}")
+        raise HTTPException(500, "Failed to send message")
 
 
 @web_api_router.post("/log-message")
