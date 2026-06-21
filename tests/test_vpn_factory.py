@@ -15,7 +15,7 @@ sys.modules.setdefault("yookassa", MagicMock())
 
 def test_make_qr_bytes_returns_png():
     """QR code generation returns a valid PNG BytesIO."""
-    from bot_xui.vpn_factory import make_qr_bytes
+    from bot_xui.helpers import make_qr_bytes
     bio = make_qr_bytes("https://example.com")
     assert isinstance(bio, BytesIO)
     header = bio.read(4)
@@ -271,7 +271,7 @@ class TestHandleTestVless:
     @patch("bot_xui.vpn_factory.sync_expiry")
     @patch("bot_xui.vpn_factory.set_vless_test_activated")
     @patch("bot_xui.vpn_factory.upsert_vpn_key")
-    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.helpers.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_success(self, mock_is_act, mock_create, mock_qr,
@@ -395,51 +395,7 @@ class TestHandleTestAwg:
         assert "Ошибка" in query.message.reply_text.call_args[0][0]
 
 
-# ═════════════════════════════════════════════
-#  create_softether_config
-# ═════════════════════════════════════════════
 
-class TestCreateSoftEtherConfig:
-
-    @patch("bot_xui.vpn_factory.softether")
-    def test_success(self, mock_se):
-        """Creates SoftEther user and returns config dict."""
-        from bot_xui.vpn_factory import create_softether_config
-
-        mock_se.create_user.return_value = True
-        mock_se.set_user_expiry.return_value = True
-
-        result = create_softether_config(tg_id=600, days=30)
-
-        assert result["username"].startswith("se_600_")
-        assert len(result["password"]) == 16  # hex(8)
-        assert "host" in result["config"]
-        assert result["vpn_file"]  # non-empty
-        mock_se.create_user.assert_called_once()
-        mock_se.set_user_expiry.assert_called_once()
-
-    @patch("bot_xui.vpn_factory.softether")
-    def test_create_fails_raises(self, mock_se):
-        """Raises RuntimeError if SoftEther user creation fails."""
-        from bot_xui.vpn_factory import create_softether_config
-
-        mock_se.create_user.return_value = False
-
-        with pytest.raises(RuntimeError, match="Failed to create"):
-            create_softether_config(tg_id=700)
-
-    @patch("bot_xui.vpn_factory.softether")
-    def test_expiry_fails_cleans_up(self, mock_se):
-        """If expiry setting fails, user is deleted and error raised."""
-        from bot_xui.vpn_factory import create_softether_config
-
-        mock_se.create_user.return_value = True
-        mock_se.set_user_expiry.return_value = False
-
-        with pytest.raises(RuntimeError, match="Failed to set"):
-            create_softether_config(tg_id=800)
-
-        mock_se.delete_user.assert_called_once()
 
 
 # ═════════════════════════════════════════════
@@ -540,8 +496,8 @@ class TestActivateTestPeriod:
         assert "активная подписка" in text
 
     @pytest.mark.asyncio
-    @patch("api.db.get_web_token", return_value="tok123")
-    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.vpn_factory.get_web_token", return_value="tok123")
+    @patch("bot_xui.helpers.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.ensure_test_subscription")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
@@ -569,12 +525,12 @@ class TestActivateTestPeriod:
         query.message.reply_photo.assert_called_once()
         caption = query.message.reply_photo.call_args[1]["caption"]
         assert "Тестовый период активирован" in caption
-        assert "Ссылка подписки" in caption
-        assert "https://sub/111" in caption
+        assert "личный кабинет" in caption
+        assert "344988.snk.wtf/my/" in caption
 
     @pytest.mark.asyncio
-    @patch("api.db.get_web_token", return_value="tok123")
-    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.vpn_factory.get_web_token", return_value="tok123")
+    @patch("bot_xui.helpers.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.ensure_test_subscription")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
@@ -657,7 +613,7 @@ class TestAutoGrantTestAndNotify:
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.get_web_token", return_value="tok")
-    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.helpers.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.ensure_test_subscription")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)

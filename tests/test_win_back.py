@@ -23,7 +23,6 @@ def _make_user(tg_id=100, first_name="Test", sub_until=None,
         "subscription_until": sub_until,
         "test_vless_activated": test_vless,
         "test_awg_activated": test_awg,
-        "test_softether_activated": test_se,
         "created_at": created_at,
     }
 

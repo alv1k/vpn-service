@@ -333,7 +333,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         bio = None
         sub_url = None
         user_sub_url = None
-        se_data = {}
         hysteria_link = None
 
         # ===== 5. Создание конфига в зависимости от типа VPN =====
@@ -379,14 +378,21 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 import time as _time
                 now_ms = int(_time.time() * 1000)
                 duration_ms = duration_days * 86400 * 1000
-                success = bool(xui.extend_client_expiry(
+                ext_success = bool(xui.extend_client_expiry(
                     existing['inbound_id'],
                     existing['client'],
                     duration_ms,
                 ))
-                if not success:
-                    raise RuntimeError("Failed to extend client expiry")
-            else:
+                if not ext_success:
+                    logger.warning(f"extend_client_expiry failed for {client_name}, deleting old client and creating new one")
+                    try:
+                        xui.delete_client(existing['inbound_id'], existing['client']['email'])
+                    except Exception:
+                        pass
+                    existing = None
+                    # Fall through to create new client below
+
+            if not existing:
                 logger.info(f"Creating new client {client_name} in inbounds {inbound_id}, {hysteria_inbound_id}")
                 result = xui.create_client(
                     email=client_name,
@@ -397,7 +403,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 )
                 if not result.get("success"):
                     raise RuntimeError(f"create_client failed: {result.get('msg')}")
-                success = True
                 sub_id = result.get("subId")
                 if result.get("uuid"):
                     client_id = result["uuid"]
@@ -469,18 +474,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             img.save(bio, 'PNG')
             bio.seek(0)            
             
-        elif vpn_type == "softether":
-            # ========== SoftEther ==========
-            logger.info("🖥 Creating SoftEther config")
-            from bot_xui.vpn_factory import create_softether_config
-            se_data = create_softether_config(tg_id, days=TARIFFS[tariff_key].get('days', 30))
-            client_id = se_data["username"]
-            client_name = se_data["username"]
-            client_config = se_data["config"]
-            sub_url = None
-            user_sub_url = None
-            bio = None
-
         else:
             # ========== AmneziaWG ==========
             logger.info("🔵 Creating AmneziaWG config")
@@ -599,7 +592,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             expires_at=subscription_until,
             vpn_type=vpn_type,
             subscription_link=sub_url,
-            vpn_file=se_data.get("vpn_file") if vpn_type == "softether" else None,
+            vpn_file=None,
             user_id=web_user_id,
         )
 
@@ -666,21 +659,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 await send_telegram_notification(tg_id, message, buttons,
                     source="webhook", scenario="payment_success_vless")
 
-
-            elif vpn_type == "softether":
-                # Отправляем SoftEther как текст с данными подключения
-                from bot_xui.vpn_factory import _softether_credentials_text
-                message = (
-                    f"✅ <b>Оплата прошла успешно!</b>\n\n"
-                    f"⏱ <b>{tariff_name}</b> · {TARIFFS[tariff_key].get('period', '30 дней')}\n\n"
-                    + _softether_credentials_text(se_data["username"], se_data["password"])
-                )
-                se_buttons = []
-                if portal_url:
-                    se_buttons.append([{"text": "🪄 Гид по подключению", "url": portal_url}])
-                se_buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
-                await send_telegram_notification(tg_id, message, se_buttons,
-                    source="webhook", scenario="payment_success_softether")
 
             else:
                 # Отправляем AmneziaWG как файл
@@ -1074,6 +1052,11 @@ async def yookassa_webhook(request: Request):
             if promo:
                 use_promocode(promo["id"], int(tg_id or 0))
                 logger.info(f"Promo '{promo_code_str}' consumed for payment {payment_id}")
+
+        # Idempotency: skip if VPN was already issued for this payment
+        if payment_data.get("vpn_issued"):
+            logger.info(f"⏭️ VPN already issued for payment {payment_id}, skipping")
+            return Response(status_code=200)
 
         success = await process_successful_payment(payment_id, payment_data, vpn_type)
 

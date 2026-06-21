@@ -248,21 +248,6 @@ def is_vless_test_activated(tg_id: int) -> bool:
     return bool(row['test_vless_activated']) if row else False
 
 
-def set_softether_test_activated(tg_id: int, activated: bool = True):
-    execute_query(
-        "UPDATE users SET test_softether_activated = %s WHERE tg_id = %s",
-        (1 if activated else 0, tg_id)
-    )
-
-
-def is_softether_test_activated(tg_id: int) -> bool:
-    row = execute_query(
-        "SELECT test_softether_activated FROM users WHERE tg_id = %s",
-        (tg_id,), fetch='one'
-    )
-    return bool(row['test_softether_activated']) if row else False
-
-
 def is_vless_test_activated_by_id(user_id: int) -> bool:
     row = execute_query(
         "SELECT test_vless_activated FROM users WHERE id = %s",

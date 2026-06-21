@@ -108,7 +108,7 @@ class TestButtonHandler:
 
     @pytest.mark.asyncio
     async def test_test_protocol_choose_shows_options(self):
-        """test_protocol_choose shows VLESS + SoftEther buttons."""
+        """test_protocol_choose shows VLESS button."""
         from bot_xui.bot import button_handler
         update, query = _make_update("test_protocol_choose")
         context = MagicMock()
@@ -118,7 +118,6 @@ class TestButtonHandler:
         call_kwargs = query.edit_message_text.call_args
         text = call_kwargs[0][0]
         assert "VLESS" in text
-        assert "SoftEther" in text
 
     @pytest.mark.asyncio
     @patch("bot_xui.bot.handle_test_vless", new_callable=AsyncMock)
@@ -136,17 +135,6 @@ class TestButtonHandler:
     async def test_test_awg(self, mock_handler):
         from bot_xui.bot import button_handler
         update, query = _make_update("test_awg")
-        context = MagicMock()
-
-        await button_handler(update, context)
-
-        mock_handler.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch("bot_xui.bot.handle_test_softether", new_callable=AsyncMock)
-    async def test_test_softether(self, mock_handler):
-        from bot_xui.bot import button_handler
-        update, query = _make_update("test_softether")
         context = MagicMock()
 
         await button_handler(update, context)
@@ -178,17 +166,6 @@ class TestButtonHandler:
         mock_handler.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("bot_xui.bot.handle_get_softether_config", new_callable=AsyncMock)
-    async def test_get_softether_config(self, mock_handler):
-        from bot_xui.bot import button_handler
-        update, query = _make_update("get_softether_config")
-        context = MagicMock()
-
-        await button_handler(update, context)
-
-        mock_handler.assert_called_once()
-
-    @pytest.mark.asyncio
     @patch("bot_xui.bot.safe_edit_text", new_callable=AsyncMock)
     async def test_rate_limited(self, mock_safe_edit):
         """Rate-limited user gets throttle message."""
@@ -210,7 +187,7 @@ class TestButtonHandler:
         update, query = _make_update("split_tunneling")
         context = MagicMock()
 
-        with patch("bot_xui.bot.safe_edit_text", new_callable=AsyncMock) as mock_edit:
+        with patch("bot_xui.bot.safe_edit_text_logged", new_callable=AsyncMock) as mock_edit:
             await button_handler(update, context)
             text = mock_edit.call_args[0][1]
             assert "Split tunneling" in text or "Happ" in text

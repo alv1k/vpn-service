@@ -15,6 +15,7 @@ from config import (
 )
 from bot_xui.tariffs import TARIFFS
 from bot_xui.test_mode import is_test_mode
+from bot_xui.helpers import _log_message
 from api.db import create_payment, get_permanent_discount
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,7 @@ async def process_payment(
             ]),
             parse_mode="HTML",
         )
+        await _log_message(user_id, "bot_menu", "buy_tariff", text)
 
     except Exception as e:
         logger.error(f"Payment creation error: {e}")

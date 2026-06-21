@@ -2,7 +2,6 @@
 """
 Fetch Russian IP ranges and configure split tunneling:
 - AmneziaWG: compute complement of RU CIDRs for AllowedIPs
-- SoftEther: push RU CIDRs as static routes (bypass VPN)
 
 Run via cron weekly or manually.
 """
@@ -28,23 +27,12 @@ RU_CIDRS_FILE = os.path.join(DATA_DIR, "ru_cidrs.txt")
 IPDENY_URL = "https://www.ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone"
 RIPE_URL = "https://stat.ripe.net/data/country-resource-list/data.json?resource=RU"
 
-VPNCMD = "/opt/softether/vpncmd"
-SE_PASSWORD = None  # loaded from .env
-SE_HUB = "VPN"
-
 # Aggregation levels
 AWG_PREFIX_LEVEL = 16   # /16 aggregation for AmneziaWG (manageable config size)
-SE_PREFIX_LEVEL = 8     # /8 aggregation for SoftEther (max 64 entries)
-SE_MAX_ROUTES = 64
 
 
 def load_env():
-    global SE_PASSWORD
-    with open(os.path.join(PROJECT_DIR, ".env")) as f:
-        for line in f:
-            m = re.match(r"^SOFTETHER_SERVER_PASSWORD=(.+)$", line.strip())
-            if m:
-                SE_PASSWORD = m.group(1)
+    pass
 
 
 def fetch_ru_cidrs() -> list[ipaddress.IPv4Network]:
@@ -192,68 +180,6 @@ def update_amneziawg(ru_networks: list[ipaddress.IPv4Network]):
     log.info("Restarted awg-api service with new AllowedIPs")
 
 
-def update_softether(ru_networks: list[ipaddress.IPv4Network]):
-    """Push RU routes to SoftEther DHCP (bypass VPN for RU IPs)."""
-    aggregated = aggregate_to_prefix(ru_networks, SE_PREFIX_LEVEL)
-    log.info(f"SoftEther: {len(ru_networks)} RU CIDRs -> {len(aggregated)} after /{SE_PREFIX_LEVEL} aggregation")
-
-    if len(aggregated) > SE_MAX_ROUTES:
-        log.warning(f"SoftEther: {len(aggregated)} routes exceeds {SE_MAX_ROUTES} limit, truncating")
-        aggregated = aggregated[:SE_MAX_ROUTES]
-
-    # Format: network/subnetmask/gateway — gateway 0.0.0.0 = client's original gateway
-    route_entries = []
-    for net in aggregated:
-        route_entries.append(f"{net.network_address}/{net.netmask}/0.0.0.0")
-    push_route = ",".join(route_entries)
-
-    cmd_base = [
-        VPNCMD, "127.0.0.1:5555", "/SERVER",
-        f"/PASSWORD:{SE_PASSWORD}",
-        f"/HUB:{SE_HUB}",
-        "/CMD",
-    ]
-
-    # Get current DHCP settings to preserve them
-    result = subprocess.run(cmd_base + ["DhcpGet"], capture_output=True, text=True, timeout=10)
-    if result.returncode != 0:
-        raise RuntimeError(f"DhcpGet failed: {result.stderr or result.stdout}")
-
-    # Parse current values
-    dhcp = {}
-    for line in result.stdout.splitlines():
-        if "|" in line:
-            key, val = line.split("|", 1)
-            dhcp[key.strip()] = val.strip()
-
-    start = dhcp.get("Start Distribution Address Band", "192.168.30.10")
-    end = dhcp.get("End Distribution Address Band", "192.168.30.200")
-    mask = dhcp.get("Subnet Mask", "255.255.255.0")
-    expire = dhcp.get("Lease Limit (Seconds)", "7200")
-    gw = dhcp.get("Default Gateway Address", "192.168.30.1")
-    dns1 = dhcp.get("DNS Server Address 1", "192.168.30.1")
-    dns2 = dhcp.get("DNS Server Address 2", "None")
-    domain = dhcp.get("Domain Name", "")
-    savelog = dhcp.get("Save NAT and DHCP Operation Log", "Yes")
-
-    if dns2 == "None":
-        dns2 = "none"
-
-    dhcp_cmd = [
-        "DhcpSet",
-        f"/START:{start}", f"/END:{end}", f"/MASK:{mask}",
-        f"/EXPIRE:{expire}", f"/GW:{gw}",
-        f"/DNS:{dns1}", f"/DNS2:{dns2}",
-        f"/DOMAIN:{domain}", f"/LOG:{savelog.lower()}",
-        f"/PUSHROUTE:{push_route}",
-    ]
-
-    result = subprocess.run(cmd_base + dhcp_cmd, capture_output=True, text=True, timeout=10)
-    if result.returncode != 0:
-        raise RuntimeError(f"DhcpSet failed: {result.stderr or result.stdout}")
-    log.info(f"SoftEther: pushed {len(aggregated)} RU routes via DHCP")
-
-
 def send_telegram(message: str):
     """Send notification to admin via Telegram."""
     with open(os.path.join(PROJECT_DIR, ".env")) as f:
@@ -310,18 +236,12 @@ def main():
         log.error(f"AmneziaWG update failed: {e}")
         errors.append(f"AmneziaWG: {e}")
 
-    try:
-        update_softether(ru_networks)
-    except Exception as e:
-        log.error(f"SoftEther update failed: {e}")
-        errors.append(f"SoftEther: {e}")
-
     log.info("=== RU Routes Update End ===")
 
     if errors:
         send_telegram(f"⚠️ <b>RU Routes Update — partial failure</b>\n" + "\n".join(errors))
     else:
-        send_telegram("✅ <b>RU Routes Updated</b>\nSplit tunneling refreshed for AmneziaWG + SoftEther + VLESS/Hysteria")
+        send_telegram("✅ <b>RU Routes Updated</b>\nSplit tunneling refreshed for AmneziaWG + VLESS/Hysteria")
 
 
 if __name__ == "__main__":
