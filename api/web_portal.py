@@ -219,7 +219,8 @@ async def personal_page(token: str):
 
     # Используем собственный прокси-эндпоинт, который переписывает remark
     # в человекочитаемый формат (🐿 TIIN — осталось N дней)
-    sub_url = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
+    sub_url = f"https://344988.snk.wtf:2096/sub/{token}" if active_vless else ""
+    print(f"[DEBUG] sub_url = {sub_url}")
     qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
 
     # sub_url = get_user_sub_url(tg_id, users_id) if active_vless else ""
@@ -486,6 +487,7 @@ margin-top:.8rem;transition:all .15s}}
 
 <script>
 const SUB_URL = {json_mod.dumps(sub_url)};
+console.log("SUB_URL =", SUB_URL);
 
 function copyLink() {{
     navigator.clipboard.writeText(SUB_URL).then(function(){{

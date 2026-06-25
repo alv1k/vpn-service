@@ -489,7 +489,11 @@ async def show_single_config(query, client_name: str, xui):
 
     from config import SERVER_LOCATION
     my_url = f"https://344988.snk.wtf/my/{web_token}" if web_token else ""
+    user_data = get_user_by_tg_id(tg_id)
+    sub_url = get_user_sub_url(tg_id, user_data.get('id', 0)) if user_data else ""
     sub_link_text = f"📎 <b>Личный кабинет с инструкциями:</b>\n<code>{my_url}</code>"
+    if sub_url:
+        sub_link_text += f"\n\n📎 <b>Ссылка на подписку:</b>\n<code>{sub_url}</code>"
 
     caption = (
         f"{sub_info}\n\n"
