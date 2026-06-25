@@ -387,25 +387,25 @@ def aggregate_daily():
              rx_speed_max_bps, tx_speed_max_bps, rx_speed_avg_bps, tx_speed_avg_bps,
              snapshots_count)
         SELECT
-            DATE(snapshot_at) as day,
-            user_key, tg_id, user_id, client_name, vpn_type, protocol,
+            day, user_key, tg_id, user_id, client_name, vpn_type, protocol,
             MAX(ip_count) as ip_count_max,
-            (SELECT GROUP_CONCAT(DISTINCT ip) FROM (
-                SELECT DISTINCT JSON_EXTRACT(ips_json, CONCAT('$[', idx, ']')) as ip
-                FROM user_traffic_snapshots s2
-                CROSS JOIN (SELECT 0 idx UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4) nums
-                WHERE s2.user_key = user_traffic_snapshots.user_key
-                  AND DATE(s2.snapshot_at) = DATE(user_traffic_snapshots.snapshot_at)
-                  AND s2.ips_json IS NOT NULL
-                  AND JSON_EXTRACT(s2.ips_json, CONCAT('$[', idx, ']')) IS NOT NULL
-            ) ips_sub) as ips_all,
+            GROUP_CONCAT(DISTINCT ips_ip) as ips_all,
             SUM(rx_bytes), SUM(tx_bytes), SUM(total_bytes),
             MAX(rx_speed_bps), MAX(tx_speed_bps),
             AVG(rx_speed_bps), AVG(tx_speed_bps),
             COUNT(*) as snapshots_count
-        FROM user_traffic_snapshots
-        WHERE DATE(snapshot_at) = %s
-        GROUP BY DATE(snapshot_at), user_key, tg_id, user_id, client_name, vpn_type, protocol
+        FROM (
+            SELECT
+                DATE(s.snapshot_at) as day,
+                s.user_key, s.tg_id, s.user_id, s.client_name, s.vpn_type, s.protocol,
+                s.ip_count, s.rx_bytes, s.tx_bytes, s.total_bytes,
+                s.rx_speed_bps, s.tx_speed_bps,
+                JSON_EXTRACT(s.ips_json, CONCAT('$[', n.idx, ']')) as ips_ip
+            FROM user_traffic_snapshots s
+            CROSS JOIN (SELECT 0 idx UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4) n
+            WHERE DATE(s.snapshot_at) = %s
+        ) expanded
+        GROUP BY day, user_key, tg_id, user_id, client_name, vpn_type, protocol
         ON DUPLICATE KEY UPDATE
             ip_count_max=VALUES(ip_count_max), ips_all=VALUES(ips_all),
             rx_bytes_total=VALUES(rx_bytes_total), tx_bytes_total=VALUES(tx_bytes_total),
