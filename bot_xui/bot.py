@@ -912,7 +912,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             from api.db import log_message_sent
             log_message_sent(tg_id=query.from_user.id, source="bot_menu",
-                             scenario="referral_qr", status='sent')
+                             scenario="referral_qr", message_text=text, status='sent')
         except Exception:
             pass
 
@@ -1114,7 +1114,7 @@ async def notify_expiring_subscriptions(bot):
                 try:
                     from api.db import log_message_sent
                     log_message_sent(tg_id=tg_id, source="cron_expiry",
-                                     scenario=f"expiry_{days}d", status='sent')
+                                     scenario=f"expiry_{days}d", message_text=msg, status='sent')
                 except Exception:
                     pass
             except Exception as e:
@@ -1130,7 +1130,7 @@ async def notify_expiring_subscriptions(bot):
                 try:
                     from api.db import log_message_sent
                     log_message_sent(tg_id=tg_id, source="cron_expiry",
-                                     scenario=f"expiry_{days}d",
+                                     scenario=f"expiry_{days}d", message_text=msg,
                                      status='blocked' if is_block else 'failed',
                                      error_text=str(e)[:255])
                 except Exception:
@@ -1173,7 +1173,9 @@ async def notify_expiring_subscriptions(bot):
             try:
                 from api.db import log_message_sent
                 log_message_sent(tg_id=tg_id, source="cron_expiry",
-                                 scenario="expiry_0d", status='sent')
+                                 scenario="expiry_0d",
+                                 message_text="❌ Подписка истекла\n\nVPN больше не работает. Продлите подписку, чтобы вернуть доступ.",
+                                 status='sent')
             except Exception:
                 pass
         except Exception as e:
@@ -1189,6 +1191,7 @@ async def notify_expiring_subscriptions(bot):
                 from api.db import log_message_sent
                 log_message_sent(tg_id=tg_id, source="cron_expiry",
                                  scenario="expiry_0d",
+                                 message_text="❌ Подписка истекла\n\nVPN больше не работает. Продлите подписку, чтобы вернуть доступ.",
                                  status='blocked' if is_block else 'failed',
                                  error_text=str(e)[:255])
             except Exception:

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
@@ -93,6 +94,22 @@ def _get_xui():
         from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
         _xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
     return _xui
+
+
+def _ping_telegram_dc() -> Optional[int]:
+    """Ping a Telegram DC server, return RTT in ms or None."""
+    import subprocess, re
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "1", "-W", "2", "telegram.org"],
+            capture_output=True, text=True, timeout=5
+        )
+        m = re.search(r"time=(\d+\.?\d*)", result.stdout)
+        if m:
+            return round(float(m.group(1)))
+    except Exception:
+        pass
+    return None
 
 
 def _fmt_bytes(b: int) -> str:

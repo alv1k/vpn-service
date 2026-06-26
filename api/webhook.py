@@ -55,6 +55,7 @@ RATE_LIMITS = {
     "/api/auth/send-code": (5, 300),      # 5 requests per 5 min
     "/api/auth/verify": (10, 300),        # 10 per 5 min — prevent brute-force on 6-digit codes
     "/api/web/order/send-code": (5, 300),
+
     "/api/web/activate-test": (3, 3600),   # 3 per hour
     "/api/web/support/send-code": (5, 300),
     "/api/web/order": (10, 300),           # 10 per 5 min
@@ -903,7 +904,7 @@ async def yookassa_webhook(request: Request):
     tg_id = metadata.get("tg_id")
     tariff = metadata.get("tariff", "default")
     vpn_type = metadata.get("vpn_type")
-    is_web_order = metadata.get("source") == "web"
+    is_web_order = metadata.get("source") in ("web", "web_test")
     web_email = metadata.get("email", "")
     web_token = metadata.get("web_token", "")
     
@@ -987,19 +988,21 @@ async def yookassa_webhook(request: Request):
             update_payment_status(payment_id, "pending")  # revert claim
             return Response(status_code=400)
 
-        # Для веб-заказов: привязать tg_id и user_id из users если есть
-        if is_web_order and web_token:
-            web_user = get_user_by_web_token(web_token) if web_token else None
+        # Для веб-заказов: привязать tg_id и user_id если есть
+        web_user_id_from_db = payment_data.get("_web_user_id")
+        if web_user_id_from_db and not tg_id:
+            from api.db import get_user_by_id as _get_user_by_id
+            web_user = _get_user_by_id(web_user_id_from_db)
             if web_user:
                 tg_id = int(web_user.get('tg_id') or 0)
-                payment_data = {**payment_data, 'tg_id': tg_id, '_web_user_id': web_user['id']}
+                payment_data = {**payment_data, 'tg_id': tg_id, '_web_user_id': web_user_id_from_db}
 
                 # Process web referral if present
                 ref_token = metadata.get("ref")
                 if ref_token:
                     from api.db import process_web_referral
-                    if process_web_referral(web_user['id'], ref_token):
-                        logger.info(f"Web referral applied on payment: user_id={web_user['id']}, ref={ref_token}")
+                    if process_web_referral(web_user_id_from_db, ref_token):
+                        logger.info(f"Web referral applied on payment: user_id={web_user_id_from_db}, ref={ref_token}")
 
         # Save payment method for autopay if available
         pm = obj.get("payment_method", {})
