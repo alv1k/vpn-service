@@ -1147,6 +1147,10 @@
       }
     }
 
+    let xuiBackupsData = [];
+    let xuiBackupsPage = 0;
+    const xuiBackupsPerPage = 3;
+
     async function xuiLoadBackups() {
       const el = document.getElementById('xui-backup-list');
       if (!el) return;
@@ -1158,22 +1162,43 @@
           el.innerHTML = '<span style="color:var(--muted)">No backups yet</span>';
           return;
         }
-        el.innerHTML = backups.map(b => `
-          <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
-            <span style="flex:1;color:var(--text)" title="${b.id}">
-              📁 <b>${b.label}</b>
-              <span style="color:var(--muted);margin-left:8px">${b.size_fmt}</span>
-            </span>
-            <button onclick="xuiShowRestoreHint('${b.id}')"
-              style="padding:4px 10px;background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;font-size:11px"
-              title="Show manual restore commands">
-              💡
-            </button>
-          </div>
-        `).join('');
+        xuiBackupsData = backups;
+        xuiBackupsPage = 0;
+        xuiRenderBackupsPage();
       } catch (e) {
         el.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
       }
+    }
+
+    function xuiRenderBackupsPage() {
+      const el = document.getElementById('xui-backup-list');
+      if (!el || !xuiBackupsData.length) return;
+      const totalPages = Math.ceil(xuiBackupsData.length / xuiBackupsPerPage);
+      if (xuiBackupsPage >= totalPages) xuiBackupsPage = totalPages - 1;
+      if (xuiBackupsPage < 0) xuiBackupsPage = 0;
+      const start = xuiBackupsPage * xuiBackupsPerPage;
+      const slice = xuiBackupsData.slice(start, start + xuiBackupsPerPage);
+      let html = slice.map(b => `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span style="flex:1;color:var(--text)" title="${b.id}">
+            📁 <b>${b.label}</b>
+            <span style="color:var(--muted);margin-left:8px">${b.size_fmt}</span>
+          </span>
+          <button onclick="xuiShowRestoreHint('${b.id}')"
+            style="padding:4px 10px;background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;font-size:11px"
+            title="Show manual restore commands">
+            💡
+          </button>
+        </div>
+      `).join('');
+      if (totalPages > 1) {
+        html += `<div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-top:10px">`;
+        html += `<button onclick="xuiBackupsPage--;xuiRenderBackupsPage()" ${xuiBackupsPage === 0 ? 'disabled' : ''} style="padding:4px 10px;background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;font-size:11px">‹ Prev</button>`;
+        html += `<span style="color:var(--muted);font-size:11px">${xuiBackupsPage + 1} / ${totalPages}</span>`;
+        html += `<button onclick="xuiBackupsPage++;xuiRenderBackupsPage()" ${xuiBackupsPage >= totalPages - 1 ? 'disabled' : ''} style="padding:4px 10px;background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;font-size:11px">Next ›</button>`;
+        html += `</div>`;
+      }
+      el.innerHTML = html;
     }
 
     function xuiShowRestoreHint(id) {

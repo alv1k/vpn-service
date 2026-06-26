@@ -6,7 +6,7 @@ import logging
 import secrets
 import uuid
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -17,9 +17,12 @@ from config import (
     YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
     ADMIN_TG_ID, SERVER_LOCATION,
     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM,
+    VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
+    VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+    XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
 )
 from bot_xui.tariffs import TARIFFS
-from api.db import execute_query, get_user_by_web_token, get_keys_by_tg_id
+from api.db import execute_query, get_user_by_web_token, get_keys_by_tg_id, get_db
 
 logger = logging.getLogger(__name__)
 web_api_router = APIRouter(prefix="/api/web")
@@ -284,6 +287,239 @@ async def check_status(payment_id: str):
 
 
 # ─────────────────────────────────────────────
+#  Test subscription (free, no payment)
+# ─────────────────────────────────────────────
+
+class TestCheckEmailRequest(BaseModel):
+    email: EmailStr
+
+
+class TestCheckResponse(BaseModel):
+    exists: bool
+    test_activated: bool
+    web_token: str | None = None
+
+
+class TestActivateRequest(BaseModel):
+    email: EmailStr
+    code: str | None = None
+
+
+class TestActivateResponse(BaseModel):
+    ok: bool
+    already_activated: bool = False
+    web_token: str | None = None
+    vless_link: str | None = None
+    message: str | None = None
+
+
+class TestExtendRequest(BaseModel):
+    email: EmailStr
+    web_token: str | None = None
+
+
+@web_api_router.post("/test/check-email", response_model=TestCheckResponse)
+async def test_check_email(req: TestCheckEmailRequest):
+    """Check if user exists and if test is already activated."""
+    email = req.email.lower().strip()
+    row = execute_query(
+        "SELECT id, web_token, test_vless_activated FROM users WHERE email = %s",
+        (email,), fetch='one',
+    )
+    if row:
+        return TestCheckResponse(
+            exists=True,
+            test_activated=bool(row.get("test_vless_activated")),
+            web_token=row.get("web_token"),
+        )
+    return TestCheckResponse(exists=False, test_activated=False)
+
+
+@web_api_router.post("/test/activate", response_model=TestActivateResponse)
+async def test_activate(req: TestActivateRequest):
+    """Activate free test subscription for user."""
+    from api.notifications import verify_code
+    from api.db import get_db
+
+    email = req.email.lower().strip()
+
+    # Find or create user
+    user = _get_or_create_web_user(email)
+    user_id = user["id"]
+
+    # If user exists and test already activated — reject
+    if user.get("test_vless_activated"):
+        return TestActivateResponse(
+            ok=False,
+            already_activated=True,
+            message="Тестовая подписка уже активирована",
+        )
+
+    # Verify code for existing users (security)
+    if req.code:
+        if not verify_code(email, req.code):
+            raise HTTPException(400, "Неверный или истёкший код")
+
+    # Activate test (same logic as activate-test endpoint)
+    result = await _do_activate_test(user_id, email)
+    return TestActivateResponse(
+        ok=True,
+        already_activated=False,
+        web_token=user["web_token"],
+        vless_link=result.get("vless_link"),
+        message="Тестовая подписка активирована на 3 дня",
+    )
+
+
+@web_api_router.post("/test/extend", response_model=TestActivateResponse)
+async def test_extend(req: TestExtendRequest):
+    """Extend test subscription by 1 day."""
+    from datetime import datetime, timedelta, timezone
+
+    email = req.email.lower().strip()
+
+    # Find user
+    if req.web_token:
+        user = get_user_by_web_token(req.web_token)
+    else:
+        row = execute_query(
+            "SELECT id, web_token, subscription_until, test_vless_activated FROM users WHERE email = %s",
+            (email,), fetch='one',
+        )
+        if not row:
+            raise HTTPException(404, "Пользователь не найден")
+        user = row
+
+    if not user.get("test_vless_activated"):
+        return TestActivateResponse(
+            ok=False,
+            message="Тестовая подписка не была активирована",
+        )
+
+    # Extend by 1 day
+    current_until = user.get("subscription_until")
+    if current_until and current_until > datetime.now(timezone.utc):
+        new_until = current_until + timedelta(days=1)
+    else:
+        new_until = datetime.now(timezone.utc) + timedelta(days=1)
+
+    from api.db import update_user_subscription_by_id
+    update_user_subscription_by_id(user["id"], new_until)
+
+    # Update XUI client expiry time
+    client_email = f"tiin_web_{user['id']}"
+    try:
+        from bot_xui.utils import XUIClient
+        from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
+        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        existing = xui.get_client_by_email(client_email)
+        if existing and existing.get('inbound_id'):
+            new_expiry_ms = int(new_until.timestamp() * 1000)
+            xui.update_client_expiry(existing['inbound_id'], existing['client'], new_expiry_ms)
+            logger.info(f"Updated XUI expiry for {client_email}: {new_until}")
+    except Exception as e:
+        logger.warning(f"Failed to update XUI expiry: {e}")
+
+    # Update vpn_keys expires_at
+    from api.db import execute_query
+    execute_query(
+        "UPDATE vpn_keys SET expires_at = %s WHERE user_id = %s AND vpn_type = 'vless'",
+        (new_until, user["id"]),
+    )
+
+    # Send email notification
+    from api.notifications import send_test_extended_email
+    portal_url = f"https://344988.snk.wtf/my/{user.get('web_token', '')}"
+    send_test_extended_email(to=email, portal_url=portal_url, new_until=new_until)
+
+    return TestActivateResponse(
+        ok=True,
+        web_token=user.get("web_token"),
+        message="Подписка продлена на 1 день",
+    )
+
+
+async def _do_activate_test(user_id: int, email: str) -> dict:
+    """Core test activation logic: create VPN, save to DB, send email."""
+    from api.db import (
+        create_vpn_key, update_user_subscription_by_id,
+        get_user_by_id,
+    )
+    from bot_xui.utils import XUIClient, generate_vless_link
+
+    _db = get_db()
+    _cur = _db.cursor()
+    try:
+        _cur.execute(
+            "UPDATE users SET test_vless_activated = 1 "
+            "WHERE id = %s AND test_vless_activated = 0",
+            (user_id,),
+        )
+        _db.commit()
+        if _cur.rowcount == 0:
+            return {"error": "already_activated"}
+    finally:
+        _cur.close()
+        _db.close()
+
+    tz_tokyo = timezone(timedelta(hours=9))
+    test_hours = TARIFFS["test_24h"]["hours"]
+    raw_end = datetime.now(timezone.utc) + timedelta(hours=test_hours)
+    end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
+    expiry_ms = int(end_tokyo.timestamp() * 1000)
+    expires_at = end_tokyo.astimezone(timezone.utc)
+
+    client_email = f"tiin_web_{user_id}"
+    client_uuid = str(uuid.uuid4())
+
+    xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+
+    result = xui.create_client(
+        email=client_email,
+        tg_id=0,
+        expiry_time=expiry_ms,
+        limit_ip=TARIFFS["test_24h"]["device_limit"],
+        inbound_ids=[int(VLESS_INBOUND_ID)],
+    )
+
+    if not result.get("success"):
+        raise RuntimeError(f"XUI create_client failed: {result.get('msg')}")
+
+    vless_link = generate_vless_link(
+        client_id=client_uuid,
+        domain=VLESS_DOMAIN,
+        port=VLESS_PORT,
+        path=VLESS_PATH,
+        client_name=client_email,
+        pbk=VLESS_PBK,
+        sid=VLESS_SID,
+        sni=VLESS_SNI,
+        fp="chrome",
+        spx="/",
+        remark=f"🐿 TIIN | VLESS",
+    )
+
+    create_vpn_key(
+        tg_id=0, payment_id=None,
+        client_id=client_uuid, client_name=client_email,
+        client_ip=None, client_public_key=None,
+        vless_link=vless_link, expires_at=expires_at, vpn_type="vless",
+        subscription_link=None,
+        user_id=user_id,
+    )
+
+    sub_until = expires_at.replace(tzinfo=None)
+    update_user_subscription_by_id(user_id, sub_until)
+
+    from api.notifications import send_test_success_email
+    portal_url = f"https://344988.snk.wtf/my/{get_user_by_id(user_id).get('web_token', '')}"
+    send_test_success_email(to=email, portal_url=portal_url)
+
+    logger.info(f"Test activated: user_id={user_id}, email={email}")
+    return {"vless_link": vless_link}
+
+
+# ─────────────────────────────────────────────
 #  Free test activation (web users)
 # ─────────────────────────────────────────────
 
@@ -349,6 +585,12 @@ async def activate_test(req: TestActivateRequest):
     try:
         xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
 
+        # Delete existing client with same name (re-activation case)
+        existing = xui.get_client_by_email(client_email)
+        if existing and existing.get('inbound_id'):
+            xui.delete_client(existing['inbound_id'], existing['client'].get('email', client_email))
+            logger.info(f"Deleted existing XUI client: {client_email}")
+
         hysteria_inbound_id = xui.get_hysteria_inbound_id()
         result = xui.create_client(
             email=client_email,
@@ -391,7 +633,11 @@ async def activate_test(req: TestActivateRequest):
         remark=f"🇩🇪 {SERVER_LOCATION} | VLESS",
     )
 
-    sub_url = xui.get_client_subscription_url(tg_id=0) or ""
+    from config import XUI_SUB_PATH
+    sub_id = result.get("subId") or result.get("obj", {}).get("subId") if isinstance(result.get("obj"), dict) else None
+    sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}" if sub_id else ""
+    if not sub_url:
+        sub_url = xui.get_client_subscription_url(tg_id=0) or ""
 
     create_vpn_key(
         tg_id=0, payment_id=None,
@@ -454,7 +700,7 @@ async def activate_trial_by_email(req: TestActivateByEmailRequest):
 #  Site analytics
 # ─────────────────────────────────────────────
 
-ALLOWED_EVENTS = {"visit", "click_proxy", "click_connect"}
+ALLOWED_EVENTS = {"visit", "click_proxy", "click_connect", "click_test_sub", "click_tg_bot"}
 ALLOWED_ORIGINS = {"https://alekscko.beget.tech", "https://344988.snk.wtf", "https://tiinservice.online", "https://www.tiinservice.online"}
 
 

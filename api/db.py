@@ -508,10 +508,10 @@ def process_web_referral(newcomer_id: int, referrer_web_token: str) -> bool:
 #  Payments
 # ─────────────────────────────────────────────
 
-def create_payment(payment_id: str, tg_id: int, tariff: str, amount, status: str = "pending", is_test: bool = False):
+def create_payment(payment_id: str, tg_id: int, tariff: str, amount, status: str = "pending", is_test: bool = False, web_user_id: int = None):
     execute_query(
-        "INSERT INTO payments (payment_id, tg_id, tariff, amount, status, is_test) VALUES (%s, %s, %s, %s, %s, %s)",
-        (payment_id, tg_id, tariff, amount, status, int(is_test))
+        "INSERT INTO payments (payment_id, tg_id, web_user_id, tariff, amount, status, is_test) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (payment_id, tg_id, web_user_id, tariff, amount, status, int(is_test))
     )
 
 

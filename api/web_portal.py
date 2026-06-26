@@ -12,7 +12,7 @@ from datetime import datetime
 from io import BytesIO
 
 
-import qrcode
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 from pydantic import BaseModel
@@ -98,13 +98,7 @@ def _conf_to_vpn_link(conf_text: str) -> str:
     return f"vpn://{encoded}"
 
 
-def _generate_qr_base64(data: str) -> str:
-    bio = BytesIO()
-    qr = qrcode.QRCode(version=1, box_size=8, border=4)
-    qr.add_data(data)
-    qr.make(fit=True)
-    qr.make_image(fill_color="black", back_color="white").save(bio, "PNG")
-    return base64.b64encode(bio.getvalue()).decode()
+
 
 
 def _format_date(dt):
@@ -219,12 +213,9 @@ async def personal_page(token: str):
 
     # Используем собственный прокси-эндпоинт, который переписывает remark
     # в человекочитаемый формат (🐿 TIIN — осталось N дней)
-    sub_url = f"https://344988.snk.wtf:2096/sub/{token}" if active_vless else ""
-    print(f"[DEBUG] sub_url = {sub_url}")
-    qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
+    sub_url = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
 
-    # sub_url = get_user_sub_url(tg_id, users_id) if active_vless else ""
-    # qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
+
 
     test_used = is_vless_test_activated_by_id(user['id'])
 
@@ -241,7 +232,6 @@ async def personal_page(token: str):
         is_active=is_active,
         sub_until=_format_date(sub_until),
         sub_url=sub_url,
-        qr_b64=qr_b64,
         happ_routing_link=_happ_routing_deeplink(),
         email=html_mod.escape(user.get('email') or ''),
         web_token=token,
@@ -345,7 +335,7 @@ min-height:100vh;margin:0;background:#0a0a0a;color:#fff}
 </head><body><div class="c"><h1>404</h1><p>Страница не найдена</p></div></body></html>"""
 
 
-def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link="", email="", web_token="", test_used=False, awg_link="", awg_download_link=""):
+def _render_page(name, is_active, sub_until, sub_url, happ_routing_link="", email="", web_token="", test_used=False, awg_link="", awg_download_link=""):
     status_color = "#22c55e" if is_active else "#ef4444"
     status_text = "Активна" if is_active else "Неактивна"
     status_dot = "&#9679;"
@@ -372,8 +362,7 @@ min-height:100vh;padding:1rem;-webkit-font-smoothing:antialiased}}
 .status .dot{{color:{status_color};font-size:1.4rem;line-height:1}}
 .status .text{{color:{status_color};font-weight:600}}
 .expiry{{color:#888;font-size:.85rem;margin-top:.4rem}}
-.qr-wrap{{text-align:center;padding:1rem 0}}
-.qr-wrap img{{width:200px;height:200px;border-radius:8px;background:#fff;padding:8px}}
+
 .sub-link{{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:.7rem;
 font-size:.7rem;word-break:break-all;color:#a78bfa;font-family:monospace;cursor:pointer;
 position:relative;text-align:center}}
@@ -425,11 +414,16 @@ margin-top:.8rem;transition:all .15s}}
 
     # Wizard или кнопка активации теста
     if sub_url or test_used:
-        html += _render_wizard(sub_url, qr_b64, happ_routing_link, awg_link, awg_download_link)
-        if test_used and not sub_url:
+        html += _render_wizard(sub_url, happ_routing_link, awg_link, awg_download_link)
+        if test_used and sub_url:
             html += '''
 <div class="card" style="margin-top:1rem;background:#1e1b2e;text-align:center;border-color:#fbbf24">
     <p style="color:#fbbf24;font-size:.85rem">⚠️ У вас тестовый период. После его окончания оформите подписку.</p>
+</div>'''
+        if test_used and not sub_url:
+            html += '''
+<div class="card" style="margin-top:1rem;background:#1e1b2e;text-align:center;border-color:#ef4444">
+    <p style="color:#ef4444;font-size:.85rem">🔴 Тестовый период закончился.</p>
 </div>'''
     else:
         html += _render_no_sub(web_token, test_used)
@@ -445,7 +439,7 @@ margin-top:.8rem;transition:all .15s}}
     <div class="expiry">до {sub_until or '—'}</div>
     <a href="https://t.me/tiin_service_bot?start=renew" class="connect-btn primary"
        style="margin-top:1rem;text-align:center;display:block;text-decoration:none">
-        🔄 Продлить подписку
+         Оформить/продлить
     </a>
 </div>
 
@@ -616,7 +610,7 @@ showStep(1);
       element_text: el ? (el.textContent || '').trim().substring(0, 200) : null,
       extra_data: extra || null
     }};
-    navigator.sendBeacon(API, JSON.stringify(payload));
+    navigator.sendBeacon(API, new Blob([JSON.stringify(payload)], {{ type: 'application/json' }}));
   }}
 
   // Track all clicks on interactive elements
@@ -750,7 +744,7 @@ def _render_no_sub(web_token="", test_used=False):
 </div>"""
 
 
-def _render_wizard(sub_url, qr_b64, happ_routing_link="", awg_link="", awg_download_link=""):
+def _render_wizard(sub_url, happ_routing_link="", awg_link="", awg_download_link=""):
     return f"""
 <h2 style="text-align:center;color:#e2e8f0;margin:1.5rem 0 .5rem">🛠 Мастер настройки</h2>
 
@@ -805,11 +799,6 @@ def _render_wizard(sub_url, qr_b64, happ_routing_link="", awg_link="", awg_downl
     <div id="vlessExtras">
         <p class="note" style="margin-top:1.2rem">Или добавьте вручную — скопируйте ссылку:</p>
         <div class="sub-link" onclick="copyLink()">{html_mod.escape(sub_url)}</div>
-
-        <div class="qr-wrap">
-            <img src="data:image/png;base64,{qr_b64}" alt="QR">
-        </div>
-        <p class="note">Отсканируйте QR-код камерой или из приложения</p>
     </div>
 
     <!-- AmneziaVPN-only manual import -->

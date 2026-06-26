@@ -8,7 +8,7 @@ Subscription-based VPN service with Telegram bot, web portal, admin panel, multi
 |----------|-----------|-------------|----------|
 | **VLESS Reality** | TCP/443 | Reality (XTLS) | Primary, best for bypassing DPI |
 | **AmneziaWG 2.0** | UDP/51888 | Junk packets + header masking | Fast, native WireGuard-based |
-| **SoftEther** | TCP/443 | VPN Azure relay | Legacy clients (Windows XP/7), L2TP/IPsec |
+
 | **MTProto Proxy** | TCP | Telegram protocol | Telegram access without VPN |
 
 ## Features
@@ -16,7 +16,7 @@ Subscription-based VPN service with Telegram bot, web portal, admin panel, multi
 ### Telegram Bot
 
 - **Registration** via `/start` with optional referral deep link
-- **Free trial** — 3-day test period per protocol (VLESS, AWG, SoftEther)
+- **Free trial** — 3-day test period per protocol (VLESS, AWG)
 - **Tariff selection** with per-diem cost display and popular/best-value badges
 - **Config delivery** with QR codes, copy-to-clipboard, and app deep links
 - **Subscription reminders** at 3 days, 1 day, same day, and 1 day after expiry (Telegram + email)
@@ -87,7 +87,7 @@ Per-code and per-user usage limits, expiry dates, admin CRUD via bot commands.
 
 - **Dashboard** — total users, active subscribers, revenue, new users today
 - **Live monitoring** — real-time online users via SSE, per-client traffic/speed (Mbit/s)
-- **Client management** — AWG, VLESS (with global traffic stats), SoftEther tabs
+- **Client management** — AWG, VLESS (with global traffic stats)
 - **User search** — by name, tg_id, referral; per-user keys, payments, referral network
 - **Finance** — monthly revenue breakdown, test vs. production, failed/pending payments
 - **Promo codes** — active codes list, usage stats
@@ -154,10 +154,8 @@ Per-code and per-user usage limits, expiry dates, admin CRUD via bot commands.
 │  └──────────────┘  │ + phpMyAdmin   │  └──────────────────┘  │
 │                    │   :8080 (local)│                         │
 │  Native:           └───────────────┘                         │
-│  ┌──────────────┐                                            │
-│  │ SoftEther    │                                            │
-│  │ vpnserver    │                                            │
-│  └──────────────┘                                            │
+
+
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -169,7 +167,7 @@ vpn-service/
 │   ├── bot.py             #   Entry point, handlers, scheduler
 │   ├── payment.py         #   YooKassa payment creation
 │   ├── vpn_factory.py     #   VPN config creation (AWG, VLESS)
-│   ├── softether.py       #   SoftEther vpncmd wrapper
+
 │   ├── tariffs.py         #   Tariff definitions
 │   ├── helpers.py         #   Shared utilities
 │   ├── test_mode.py       #   Test payment mode logic
@@ -236,7 +234,7 @@ All settings loaded from `.env` via `config.py`:
 | `XUI_HOST` / `XUI_USERNAME` / `XUI_PASSWORD` | 3x-UI panel access |
 | `VLESS_DOMAIN` / `VLESS_PBK` / `VLESS_SID` / `VLESS_SNI` | VLESS Reality params |
 | `AMNEZIA_WG_API_URL` / `AMNEZIA_WG_API_PASSWORD` | AWG API access |
-| `SOFTETHER_SERVER_PASSWORD` / `SOFTETHER_HUB` | SoftEther VPN server |
+
 | `REFERRAL_REWARD_DAYS` / `REFERRAL_NEWCOMER_DAYS` | Referral bonus days |
 | `ADMIN_TG_ID` | Admin Telegram user ID |
 
@@ -304,17 +302,7 @@ sudo modprobe amneziawg
 
 Create AWG interface config at `/etc/amnezia/amneziawg/awg0.conf` with server keys and obfuscation parameters (Jc, Jmin, Jmax, H1-H4, S1, S2).
 
-### 6. SoftEther VPN (Optional)
-
-```bash
-# Install SoftEther to /opt/softether/
-# Download and compile from https://www.softether-download.com
-cd /opt/softether
-sudo ./vpnserver start
-./vpncmd  # Configure server password and VPN hub
-```
-
-### 7. SSL Certificates
+### 6. SSL Certificates
 
 ```bash
 sudo certbot --nginx -d yourdomain.com
@@ -438,8 +426,7 @@ sudo ufw allow 80/tcp       # HTTP (redirect to HTTPS)
 sudo ufw allow 443/tcp      # HTTPS
 sudo ufw allow 51888/udp    # AmneziaWG
 sudo ufw allow 2053/tcp    # X-UI panel
-sudo ufw allow 992/tcp      # SoftEther main
-sudo ufw allow 5556/tcp     # SoftEther alternate
+
 sudo ufw allow 500/udp      # IPsec IKE
 sudo ufw allow 4500/udp     # IPsec NAT-T
 sudo ufw allow 1701/udp     # L2TP
@@ -504,8 +491,7 @@ journalctl -u bot -f
 | 22 | TCP | SSH | Public |
 | 80 | TCP | HTTP (redirect) | Public |
 | 443 | TCP | HTTPS (Nginx) | Public |
-| 992 | TCP | SoftEther | Public |
-| 5556 | TCP | SoftEther alt | Public |
+
 | 500/4500 | UDP | IPsec | Public |
 | 1701 | UDP | L2TP | Public |
 | 8443 | TCP | MTProto proxy | Public |
@@ -557,7 +543,7 @@ bash ~/scripts/backup.sh
 
 - **Python 3.11+**, FastAPI, Uvicorn, python-telegram-bot 20.7
 - **MySQL 8.0**, Docker Compose
-- **3x-UI** (VLESS/Xray), **AmneziaWG** (WireGuard fork), **SoftEther VPN**
+- **3x-UI** (VLESS/Xray), **AmneziaWG** (WireGuard fork)
 - **YooKassa** payment gateway
 - **APScheduler** for recurring tasks (expiry checks, autopay, winback)
 - **Brevo** SMTP for email notifications

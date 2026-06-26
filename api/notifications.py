@@ -309,6 +309,80 @@ def send_expiry_warning_email(to: str, days_left: int, expiry_date: str) -> bool
     return _send_html_email(to, subject, text, html)
 
 
+def send_test_success_email(to: str, portal_url: str) -> bool:
+    """Send test activation success email."""
+    subject = "TIIN — Тестовая подписка активирована"
+
+    text = (
+        "Тестовая подписка активирована!\n\n"
+        "Вам доступен бесплатный доступ на 3 дня.\n\n"
+        f"Перейдите в личный кабинет для подключения:\n{portal_url}\n\n"
+        "Сохраните эту ссылку — она понадобится для доступа к конфигу."
+    )
+
+    body = f"""\
+    <div style="background: #161616; border: 1px solid #262626; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+      <div style="text-align: center; font-size: 2rem; margin-bottom: .5rem;">&#127881;</div>
+      <h2 style="color: #22c55e; text-align: center; font-size: 1.2rem; margin: 0;">Тестовая подписка активирована!</h2>
+      <p style="color: #888; text-align: center; font-size: .9rem; margin-top: .5rem;">
+        Вам доступен бесплатный доступ на <b style="color: #ccc;">3 дня</b>
+      </p>
+    </div>
+
+    <div style="text-align: center; margin: 1.5rem 0;">
+      <a href="{portal_url}"
+         style="display: inline-block; padding: 14px 32px; background: #7c3aed; color: #fff;
+                border-radius: 10px; font-size: 1rem; font-weight: 600; text-decoration: none;">
+        Перейти к подключению
+      </a>
+    </div>
+
+    <div style="background: #1c1507; border: 1px solid #854d0e; border-radius: 10px;
+                padding: 1rem; margin-top: 1rem;">
+      <div style="font-weight: 600; color: #facc15; font-size: .9rem;">&#9888;&#65039; Сохраните ссылку!</div>
+      <p style="color: #a3a3a3; font-size: .8rem; margin-top: .4rem; line-height: 1.4;">
+        Добавьте страницу в закладки. Это ваш единственный способ доступа к конфигу VPN.
+      </p>
+    </div>"""
+
+    html = _branded_html(body)
+    return _send_html_email(to, subject, text, html)
+
+
+def send_test_extended_email(to: str, portal_url: str, new_until) -> bool:
+    """Send test extension email."""
+    from datetime import datetime
+    expiry_str = new_until.strftime("%d.%m.%Y") if isinstance(new_until, datetime) else str(new_until)
+
+    subject = "TIIN — Тестовая подписка продлена"
+
+    text = (
+        "Тестовая подписка продлена на 1 день!\n\n"
+        f"Новая дата окончания: {expiry_str}\n\n"
+        f"Личный кабинет: {portal_url}\n"
+    )
+
+    body = f"""\
+    <div style="background: #161616; border: 1px solid #262626; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+      <div style="text-align: center; font-size: 2rem; margin-bottom: .5rem;">&#128230;</div>
+      <h2 style="color: #22c55e; text-align: center; font-size: 1.2rem; margin: 0;">Подписка продлена!</h2>
+      <p style="color: #888; text-align: center; font-size: .9rem; margin-top: .5rem;">
+        Новая дата окончания: <b style="color: #ccc;">{expiry_str}</b>
+      </p>
+    </div>
+
+    <div style="text-align: center; margin: 1.5rem 0;">
+      <a href="{portal_url}"
+         style="display: inline-block; padding: 14px 32px; background: #7c3aed; color: #fff;
+                border-radius: 10px; font-size: 1rem; font-weight: 600; text-decoration: none;">
+        Перейти в личный кабинет
+      </a>
+    </div>"""
+
+    html = _branded_html(body)
+    return _send_html_email(to, subject, text, html)
+
+
 def send_support_autoreply(to: str) -> bool:
     """Send auto-reply confirmation when user contacts support."""
     subject = "TIIN — Мы получили ваше обращение"

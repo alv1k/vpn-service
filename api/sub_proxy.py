@@ -19,7 +19,6 @@ from api.db import (
     get_user_by_web_token,
     get_keys_by_tg_id,
     get_keys_by_user_id,
-    get_hysteria_link_by_tg_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,25 +111,35 @@ async def proxy_subscription(token: str):
         async with _CACHE_LOCK:
             _CACHE[token] = (now, raw_body, headers)
 
-        # Склейка с Hysteria
+        # Склейка с Hysteria — уже включена в подписку от x-ui, не дублируем
         try:
             decoded_sub = base64.b64decode(raw_body).decode('utf-8')
         except:
             decoded_sub = raw_body.decode('utf-8')
 
-        h_link = get_hysteria_link_by_tg_id(user['tg_id'])
-        if h_link:
-            decoded_sub += "\n" + h_link
+        # h_link = get_hysteria_link_by_tg_id(user['tg_id'])
+        # if h_link:
+        #     decoded_sub += "\n" + h_link
         
         # Переписываем remark'и
         now_dt = datetime.utcnow()
-        status = "✅Active" if expires_at and expires_at > now_dt else "❌Ended"
-        remark = f"🐿️ TIIN vpn | {status}"
-        
+        days_left = (expires_at - now_dt).days if expires_at and expires_at > now_dt else 0
+
+        if days_left > 7:
+            status_emoji = "✅"
+        elif days_left >= 1:
+            status_emoji = "⚠️"
+        else:
+            status_emoji = "❌"
+
         new_lines = []
         for line in decoded_sub.splitlines():
             if '#' in line:
                 parts = line.split('#')
+                if line.startswith("hysteria2://"):
+                    remark = f"🌀 Hysteria2 {status_emoji} {days_left}д"
+                else:
+                    remark = f"⚡  VLESS {status_emoji} {days_left}д"
                 new_lines.append(f"{'#'.join(parts[:-1])}#{remark}")
             else:
                 new_lines.append(line)

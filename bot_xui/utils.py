@@ -359,6 +359,30 @@ class XUIClient:
             logger.error(f"Error deleting client: {e}")
             return False
 
+    def update_client_expiry(self, inbound_id: int, client: dict, expiry_ms: int) -> bool:
+        """Обновить время истечения клиента"""
+        try:
+            payload = {
+                "id": client.get("id"),
+                "inboundId": inbound_id,
+                "email": client.get("email"),
+                "enable": client.get("enable", True),
+                "expiryTime": expiry_ms,
+                "totalGB": client.get("totalGB", 0),
+                "limitIp": client.get("limitIp", 0),
+                "reset": client.get("reset", 0),
+            }
+            response = self._request(
+                "POST",
+                f"{self.host}/panel/api/clients/update/{client.get('email')}",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            return response.json().get("success", False)
+        except Exception as e:
+            logger.error(f"Error updating client expiry: {e}")
+            return False
+
     def reset_client_traffic(self, inbound_id, client_email):
         """Сбросить трафик клиента"""
         try:
