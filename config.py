@@ -63,8 +63,27 @@ HYSTERIA_PORT = int(os.getenv("HYSTERIA_PORT", "54321"))
 HYSTERIA_SNI = os.getenv("HYSTERIA_SNI") or VLESS_SNI or VLESS_DOMAIN
 HYSTERIA_INBOUND_ID = int(os.getenv("HYSTERIA_INBOUND_ID", "4"))
 
+# VLESS XHTTP inbound (дополнительный на Reality)
+VLESS_HTTP_PORT = int(os.getenv("VLESS_HTTP_PORT", "47447"))
+VLESS_XHTTP_PBK = os.getenv("VLESS_XHTTP_PBK")
+_VLESS_XHTTP_SID_RAW = os.getenv("VLESS_XHTTP_SID", "")
+VLESS_XHTTP_SID_LIST = [s.strip() for s in _VLESS_XHTTP_SID_RAW.split(",") if s.strip()]
+VLESS_XHTTP_SID = VLESS_XHTTP_SID_LIST[0] if VLESS_XHTTP_SID_LIST else (VLESS_SID_LIST[0] if VLESS_SID_LIST else "")
+VLESS_HTTP_INBOUND_ID = int(os.getenv("VLESS_HTTP_INBOUND_ID", "2"))
+VLESS_WS_INBOUND_ID = int(os.getenv("VLESS_WS_INBOUND_ID", "9"))
+VLESS_REALITY_V1_INBOUND_ID = int(os.getenv("VLESS_REALITY_V1_INBOUND_ID", "10"))
+
+# Centralized active inbound IDs list for client provisioning
+_DEFAULT_ACTIVE_INBOUNDS = "1,2,4,10,14"
+_RAW_ACTIVE_INBOUNDS = os.getenv("ACTIVE_INBOUND_IDS", _DEFAULT_ACTIVE_INBOUNDS)
+ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_ACTIVE_INBOUNDS.split(",") if x.strip().isdigit()]
+
 # Server location (for display in client apps)
 SERVER_LOCATION = os.getenv("SERVER_LOCATION", "Germany")
+
+# Winback Campaign Constants
+WINBACK_DISCOUNT_PERCENT = int(os.getenv("WINBACK_DISCOUNT_PERCENT", "20"))
+WINBACK_GIFT_DAYS = int(os.getenv("WINBACK_GIFT_DAYS", "3"))
 
 # AmneziaWG
 AMNEZIA_CONTAINER = os.getenv("AMNEZIA_CONTAINER")
@@ -94,6 +113,11 @@ if not _admin_tg_raw:
     raise RuntimeError("ADMIN_TG_ID must be set in .env")
 ADMIN_TG_ID = int(_admin_tg_raw)
 
+# Finance API
+FINANCE_API_URL = os.getenv("FINANCE_API_URL", "http://127.0.0.1:3000")
+FINANCE_BOT_USER = os.getenv("FINANCE_BOT_USER", "receipt_bot")
+FINANCE_BOT_PASS = os.getenv("FINANCE_BOT_PASS", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 logger = logging.getLogger(__name__)
 

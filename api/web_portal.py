@@ -16,11 +16,13 @@ from io import BytesIO
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 from pydantic import BaseModel
-from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET
+from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET, TELEGRAM_BOT_TOKEN, ADMIN_TG_ID
 from awg_api.config import SERVER_ENDPOINT as AWG_SERVER_HOST, LISTEN_PORT as AWG_LISTEN_PORT
+import urllib.request
 
-from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id, is_vless_test_activated_by_id, execute_query
+from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id, is_vless_test_activated_by_id, execute_query, log_message_sent
 from bot_xui.helpers import get_user_sub_url
+
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,109 @@ async def track_webpage_event(token: str, req: WebEventRequest, request: Request
         user_agent=request.headers.get("user-agent"),
     )
     return JSONResponse({"ok": True})
+
+
+class WebFeedbackRequest(BaseModel):
+    message: str
+
+
+@web_router.get("/my/{token}/ticket-status")
+async def get_ticket_status(token: str):
+    user = get_user_by_web_token(token)
+    if not user:
+        return JSONResponse({"error": "User not found"}, status_code=404)
+    ticket = execute_query(
+        "SELECT id, user_message, status, admin_reply, replied_at, created_at "
+        "FROM web_support_tickets WHERE web_token = %s ORDER BY id DESC LIMIT 1",
+        (token,), fetch='one'
+    )
+    if not ticket:
+        return JSONResponse({"has_ticket": False})
+    return JSONResponse({
+        "has_ticket": True,
+        "id": ticket["id"],
+        "user_message": ticket["user_message"],
+        "status": ticket["status"],
+        "admin_reply": ticket["admin_reply"],
+        "replied_at": ticket["replied_at"].strftime("%d.%m.%Y %H:%M") if ticket["replied_at"] else None,
+        "created_at": ticket["created_at"].strftime("%d.%m.%Y %H:%M") if ticket["created_at"] else None,
+    })
+
+
+@web_router.post("/my/{token}/feedback")
+async def send_web_feedback(token: str, req: WebFeedbackRequest, request: Request):
+    user = get_user_by_web_token(token)
+    if not user:
+        return JSONResponse({"error": "User not found"}, status_code=404)
+
+    msg_text = (req.message or "").strip()
+    if not msg_text:
+        return JSONResponse({"error": "Сообщение не может быть пустым"}, status_code=400)
+    if len(msg_text) > 2000:
+        return JSONResponse({"error": "Сообщение слишком длинное (максимум 2000 символов)"}, status_code=400)
+
+    user_id = user.get("id")
+    tg_id = user.get("tg_id")
+    first_name = user.get("first_name") or "Пользователь"
+    username = user.get("username")
+    email = user.get("email") or "не указан"
+    sub_until = _format_date(user.get("subscription_until"))
+
+    ticket_id = execute_query(
+        "INSERT INTO web_support_tickets (web_token, user_id, tg_id, user_message, status) "
+        "VALUES (%s, %s, %s, %s, 'open')",
+        (token, user_id, tg_id, msg_text)
+    )
+
+    _log_webpage_event(
+        web_token=token,
+        event_type="submit_support_ticket",
+        element_id="supportTicketForm",
+        element_text=msg_text[:100],
+        extra_data={"ticket_id": ticket_id},
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+
+    if tg_id:
+        log_message_sent(
+            tg_id=tg_id,
+            source="web_support",
+            scenario="ticket_created",
+            message_text=msg_text,
+            status="sent",
+        )
+
+    # Отправка уведомления администратору в Telegram
+    try:
+        tg_mention = f"@{username}" if username else "нет"
+        admin_text = (
+            f"🎫 <b>Новый тикет #{ticket_id} с веб-портала</b>\n\n"
+            f"👤 <b>Пользователь:</b> {html_mod.escape(first_name)} (ID: <code>{user_id or '?'}</code>, TG: <code>{tg_id or 'нет'}</code>, {tg_mention})\n"
+            f"📧 <b>Email:</b> <code>{html_mod.escape(email)}</code>\n"
+            f"📅 <b>Подписка:</b> {sub_until}\n"
+            f"🔗 <b>Токен:</b> <code>{token[:10]}...</code>\n\n"
+            f"💬 <b>Сообщение:</b>\n{html_mod.escape(msg_text)}\n\n"
+            f"<i>👉 Ответьте на это сообщение (Reply), чтобы отправить ответ пользователю на веб-страницу.</i>"
+        )
+        payload = json_mod.dumps({
+            "chat_id": ADMIN_TG_ID,
+            "text": admin_text,
+            "parse_mode": "HTML"
+        }).encode("utf-8")
+        tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        req_tg = urllib.request.Request(tg_url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req_tg, timeout=5) as resp:
+            pass
+    except Exception as e:
+        logger.error(f"Failed to send admin TG alert for ticket #{ticket_id}: {e}")
+
+    return JSONResponse({
+        "ok": True,
+        "ticket_id": ticket_id,
+        "message": "Сообщение успешно отправлено администратору"
+    })
+
 
 
 def _parse_awg_conf(conf_text: str) -> dict:
@@ -415,13 +520,14 @@ margin-top:.8rem;transition:all .15s}}
     # Wizard или кнопка активации теста
     if sub_url or test_used:
         html += _render_wizard(sub_url, happ_routing_link, awg_link, awg_download_link)
-        if test_used and sub_url:
-            html += '''
+        if test_used and not is_active:
+            if sub_url:
+                html += '''
 <div class="card" style="margin-top:1rem;background:#1e1b2e;text-align:center;border-color:#fbbf24">
     <p style="color:#fbbf24;font-size:.85rem">⚠️ У вас тестовый период. После его окончания оформите подписку.</p>
 </div>'''
-        if test_used and not sub_url:
-            html += '''
+            else:
+                html += '''
 <div class="card" style="margin-top:1rem;background:#1e1b2e;text-align:center;border-color:#ef4444">
     <p style="color:#ef4444;font-size:.85rem">🔴 Тестовый период закончился.</p>
 </div>'''
@@ -460,15 +566,38 @@ margin-top:.8rem;transition:all .15s}}
 </div>
 
 <!-- Support -->
-<div class="card">
+<div class="card" id="supportCard">
     <h2>✉️ Поддержка</h2>
     <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
-        Напишите нам в Telegram — мы ответим в ближайшее время.
+        Напишите нам в Telegram или оставьте обращение прямо здесь, если VPN не подключается.
     </p>
     <a href="https://t.me/tiin_service_bot" class="connect-btn primary"
        style="text-decoration:none;text-align:center;display:block">
-        💬 Написать в поддержку
+        💬 Написать в Telegram-бота
     </a>
+
+    <div style="margin: 1.2rem 0 .6rem; border-top: 1px solid #262626; padding-top: 1rem;">
+        <div style="font-weight: 600; font-size: .9rem; color: #eee; margin-bottom: .4rem;">
+            ✍️ Не работает Telegram?
+        </div>
+        <p style="color:#888;font-size:.8rem;line-height:1.4;margin-bottom:.8rem">
+            Опишите проблему — сообщение сразу поступит администратору, а ответ появится на этой странице:
+        </p>
+
+        <!-- Блок отображения статуса тикета / ответа админа -->
+        <div id="ticketAlertBox" style="display:none; margin-bottom: .8rem;"></div>
+
+        <div id="ticketFormWrap">
+            <textarea id="ticketMsgInput" rows="3" placeholder="Опишите проблему (например: не подключается VPN, ошибка в приложении)..."
+                style="width:100%; box-sizing:border-box; background:#141414; border:1px solid #333; border-radius:8px; color:#fff; padding:.75rem; font-size:.9rem; font-family:inherit; resize:vertical; outline:none;"></textarea>
+            
+            <button type="button" id="ticketSubmitBtn" class="connect-btn secondary" onclick="submitSupportTicket()"
+                style="margin-top:.6rem; background:#2e1065; border-color:#7c3aed; color:#fff;">
+                📤 Отправить обращение администратору
+            </button>
+            <div id="ticketStatusErr" style="color:#ef4444; font-size:.8rem; margin-top:.4rem; text-align:center; display:none;"></div>
+        </div>
+    </div>
 </div>
 
 <div class="back-link">
@@ -478,6 +607,10 @@ margin-top:.8rem;transition:all .15s}}
 </div>
 
 <div class="copied" id="copiedToast">Скопировано!</div>
+<div class="copied" id="supportToast" style="background:#065f46; border:1px solid #10b981; color:#fff;">
+    ✅ Сообщение отправлено администратору!
+</div>
+
 
 <script>
 const SUB_URL = {json_mod.dumps(sub_url)};
@@ -500,33 +633,36 @@ const AWG_DOWNLOAD_LINK = {json_mod.dumps(awg_download_link)};
 
 const APPS = {{
     android: [
-        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://play.google.com/store/apps/details?id=com.happproxy&hl=ru', scheme: 'happ://add/' }},
-        {{ name: 'Hiddify', desc: 'Популярный, много функций', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
-        {{ name: 'v2rayNG', desc: 'Проверенный временем', icon: '🔶', store: 'https://play.google.com/store/apps/details?id=com.v2ray.ang', scheme: 'v2rayng://import/' }},
-        {{ name: 'Karing', desc: 'Современный и удобный', icon: '🔵', store: 'https://play.google.com/store/apps/details?id=io.nekohasekai.sagernet', scheme: 'karing://import/' }},
+        {{ name: 'Happ', desc: '⚡ Простой и быстрый (Рекомендуется)', icon: '⚡', store: 'https://play.google.com/store/apps/details?id=com.happproxy&hl=ru', scheme: 'happ://add/' }},
+        {{ name: 'Hiddify', desc: '🔷 Популярный, много функций', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
+        {{ name: 'v2rayNG', desc: '🔶 Проверенный временем', icon: '🔶', store: 'https://play.google.com/store/apps/details?id=com.v2ray.ang', scheme: 'v2rayng://import/' }},
+        {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://play.google.com/store/apps/details?id=io.nekohasekai.sagernet', scheme: 'karing://import/' }},
     ],
     ios: [
-        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://apps.apple.com/app/happ-proxy-utility/id6504287215', scheme: 'happ://add/' }},
-        {{ name: 'Streisand', desc: 'Надёжный для iOS', icon: '🟣', store: 'https://apps.apple.com/app/streisand/id6450534064', scheme: 'streisand://import/' }},
+        {{ name: 'Hiddify', desc: '🔷 Бесплатный, много функций', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
+        {{ name: 'Shadowrocket', desc: '🚀 Популярный, платный (249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},
+        {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://apps.apple.com/app/karing/id6472431552', scheme: 'karing://import/' }},
     ],
     windows: [
-        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
-        {{ name: 'Hiddify', desc: 'Для Windows и macOS', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
+        {{ name: 'Happ', desc: '⚡ Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
+        {{ name: 'Hiddify', desc: '🔷 Для Windows и macOS', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
     ],
     macos: [
-        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
-        {{ name: 'Hiddify', desc: 'Для macOS и Windows', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
+        {{ name: 'Happ', desc: '⚡ Скачать с сайта', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
+        {{ name: 'Hiddify', desc: '🔷 Бесплатно в App Store', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
+        {{ name: 'Shadowrocket', desc: '🚀 Популярный, App Store (249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},
+        {{ name: 'Karing', desc: '🔵 Бесплатно в App Store', icon: '🔵', store: 'https://apps.apple.com/app/karing/id6472431552', scheme: 'karing://import/' }},
     ],
     tv: [
-        {{ name: 'VPN4TV', desc: 'Для Android TV', icon: '📺', store: 'https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify', scheme: 'hiddify://import/' }},
-        {{ name: 'Hiddify', desc: 'Универсальный', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
+        {{ name: 'VPN4TV', desc: '📺 Для Android TV', icon: '📺', store: 'https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify', scheme: 'hiddify://import/' }},
+        {{ name: 'Hiddify', desc: '🔷 Универсальный', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
     ]
 }};
 
 if (AWG_LINK) {{
     var amneziaApp = {{
         name: 'AmneziaVPN',
-        desc: 'Обходит DPI-блокировки',
+        desc: '🛡 Обходит DPI-блокировки',
         icon: '🛡',
         store: 'https://amnezia.org/downloads',
         useAwgLink: true
@@ -566,7 +702,11 @@ function selectApp(index) {{
         awgExtras.style.display = 'block';
         routingBtn.style.display = 'none';
     }} else {{
-        document.getElementById('autoConnectBtn').href = selectedApp.scheme + SUB_URL;
+        if (selectedApp.name === 'Shadowrocket') {{
+            document.getElementById('autoConnectBtn').href = 'shadowrocket://add/sub://' + btoa(unescape(encodeURIComponent(SUB_URL)));
+        }} else {{
+            document.getElementById('autoConnectBtn').href = selectedApp.scheme + SUB_URL;
+        }}
         vlessExtras.style.display = 'block';
         awgExtras.style.display = 'none';
         routingBtn.style.display = 'block';
@@ -583,7 +723,8 @@ const HAPP_ROUTING_LINK = {json_mod.dumps(happ_routing_link)};
 const ROUTING_GUIDES = {{
     'Happ': '<p class=\"note\" style=\"margin-top:.8rem\">Нажмите для автоматической настройки:</p><a href=\"' + HAPP_ROUTING_LINK + '\" class=\"connect-btn primary\">Настроить маршруты в Happ</a>',
     'Hiddify': '<p class=\"note\">Настройки → Конфигурация → Правила маршрутизации → добавьте <b>geosite:category-ru</b> и <b>geoip:ru</b> в прямое подключение.</p>',
-    'Streisand': '<p class=\"note\">Настройки → Маршрутизация → режим обхода → добавьте <b>.ru, .su, .рф</b></p>',
+    'Shadowrocket': '<p class=\"note\">Настройки → Конфигурация → Правила → добавьте <b>geoip:ru</b> и <b>domain-suffix:ru</b> → Direct.</p>',
+    'Karing': '<p class=\"note\">Настройки → Маршрутизация → добавьте <b>.ru, .su, .рф</b> в прямое подключение.</p>',
 }};
 
 function showStep(n) {{
@@ -612,6 +753,9 @@ showStep(1);
     }};
     navigator.sendBeacon(API, new Blob([JSON.stringify(payload)], {{ type: 'application/json' }}));
   }}
+
+  // Track page load
+  track('page_view', null, {{ url: window.location.pathname }});
 
   // Track all clicks on interactive elements
   document.addEventListener('click', function(e) {{
@@ -674,7 +818,92 @@ showStep(1);
     track('copy', null, {{ selection: window.getSelection().toString().substring(0, 100) }});
   }});
 }})();
+
+// ── Web Support Ticket Functions ──
+var WEB_TOKEN = {json_mod.dumps(web_token)};
+
+function showSupportToast(msg) {{
+    var toast = document.getElementById('supportToast');
+    if (msg) toast.innerText = msg;
+    toast.classList.add('show');
+    setTimeout(function() {{ toast.classList.remove('show'); }}, 3000);
+}}
+
+function submitSupportTicket() {{
+    var input = document.getElementById('ticketMsgInput');
+    var btn = document.getElementById('ticketSubmitBtn');
+    var err = document.getElementById('ticketStatusErr');
+    var text = (input.value || '').trim();
+    if (!text) {{
+        err.innerText = 'Пожалуйста, напишите ваше сообщение';
+        err.style.display = 'block';
+        return;
+    }}
+    err.style.display = 'none';
+    btn.disabled = true;
+    btn.innerText = '⏳ Отправка...';
+
+    fetch('/my/' + WEB_TOKEN + '/feedback', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ message: text }})
+    }})
+    .then(function(res) {{ return res.json(); }})
+    .then(function(data) {{
+        btn.disabled = false;
+        btn.innerText = '📤 Отправить обращение администратору';
+        if (data.ok) {{
+            input.value = '';
+            showSupportToast('✅ Сообщение отправлено администратору!');
+            checkSupportTicketStatus();
+        }} else {{
+            err.innerText = data.error || 'Ошибка отправки';
+            err.style.display = 'block';
+        }}
+    }})
+    .catch(function() {{
+        btn.disabled = false;
+        btn.innerText = '📤 Отправить обращение администратору';
+        err.innerText = 'Ошибка сети. Попробуйте еще раз.';
+        err.style.display = 'block';
+    }});
+}}
+
+function checkSupportTicketStatus() {{
+    fetch('/my/' + WEB_TOKEN + '/ticket-status')
+    .then(function(res) {{ return res.json(); }})
+    .then(function(data) {{
+        var box = document.getElementById('ticketAlertBox');
+        if (!box) return;
+        if (!data.has_ticket) {{
+            box.style.display = 'none';
+            return;
+        }}
+        box.style.display = 'block';
+        if (data.status === 'open') {{
+            box.innerHTML = '<div style="background:#27272a; border-left:4px solid #eab308; padding:.75rem 1rem; border-radius:6px; font-size:.85rem; color:#fef08a;">' +
+                '<div style="font-weight:600; margin-bottom:.2rem;">⏳ Ваше обращение на рассмотрении (от ' + (data.created_at || '') + ')</div>' +
+                '<div style="color:#d4d4d8;">«' + (data.user_message || '').replace(/</g, "&lt;") + '»</div>' +
+                '<div style="margin-top:.4rem; font-size:.75rem; color:#a1a1aa;">Администратор ответит прямо здесь в ближайшее время.</div>' +
+            '</div>';
+        }} else if (data.status === 'answered' && data.admin_reply) {{
+            box.innerHTML = '<div style="background:#064e3b; border-left:4px solid #10b981; padding:.85rem 1rem; border-radius:6px; font-size:.85rem; color:#ecfdf5;">' +
+                '<div style="font-weight:700; color:#34d399; margin-bottom:.3rem;">💬 Ответ администратора' + (data.replied_at ? ' (' + data.replied_at + ')' : '') + ':</div>' +
+                '<div style="color:#fff; font-size:.9rem; line-height:1.4; white-space:pre-wrap;">' + (data.admin_reply || '').replace(/</g, "&lt;") + '</div>' +
+                '<div style="margin-top:.6rem; padding-top:.4rem; border-top:1px solid #065f46; font-size:.75rem; color:#a7f3d0;">' +
+                    'Ваш вопрос: «' + (data.user_message || '').replace(/</g, "&lt;") + '»' +
+                '</div>' +
+            '</div>';
+        }}
+    }})
+    .catch(function() {{}});
+}}
+
+// Initial status check & periodic poll every 15s
+checkSupportTicketStatus();
+setInterval(checkSupportTicketStatus, 15000);
 </script>
+
 </body>
 </html>"""
 

@@ -19,6 +19,7 @@ from config import (
     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM,
     VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
     VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+    HYSTERIA_INBOUND_ID, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID,
     XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
 )
 from bot_xui.tariffs import TARIFFS
@@ -446,6 +447,13 @@ async def _do_activate_test(user_id: int, email: str) -> dict:
         get_user_by_id,
     )
     from bot_xui.utils import XUIClient, generate_vless_link
+    from config import (
+        VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
+        VLESS_PBK, VLESS_SID, VLESS_SNI,
+        VLESS_INBOUND_ID, HYSTERIA_INBOUND_ID, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID,
+        ACTIVE_INBOUND_IDS,
+        XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_SUB_PATH,
+    )
 
     _db = get_db()
     _cur = _db.cursor()
@@ -474,16 +482,25 @@ async def _do_activate_test(user_id: int, email: str) -> dict:
 
     xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
 
+    # Delete existing client to avoid duplicates
+    existing = xui.get_client_by_email(client_email)
+    if existing and existing.get('inbound_id'):
+        xui.delete_client(existing['inbound_id'], existing['client'].get('email', client_email))
+        logger.info(f"_do_activate_test: deleted existing XUI client: {client_email}")
+
     result = xui.create_client(
         email=client_email,
         tg_id=0,
         expiry_time=expiry_ms,
         limit_ip=TARIFFS["test_24h"]["device_limit"],
-        inbound_ids=[int(VLESS_INBOUND_ID)],
+        inbound_ids=ACTIVE_INBOUND_IDS,
     )
 
     if not result.get("success"):
         raise RuntimeError(f"XUI create_client failed: {result.get('msg')}")
+
+    if result.get("uuid"):
+        client_uuid = result["uuid"]
 
     vless_link = generate_vless_link(
         client_id=client_uuid,
@@ -499,12 +516,18 @@ async def _do_activate_test(user_id: int, email: str) -> dict:
         remark=f"🐿 TIIN | VLESS",
     )
 
+    # Get subscription URL by email (web users all have tg_id=0)
+    sub_id = result.get("subId")
+    sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}" if sub_id else ""
+    if not sub_url:
+        sub_url = xui.get_client_subscription_url_by_email(client_email) or ""
+
     create_vpn_key(
         tg_id=0, payment_id=None,
         client_id=client_uuid, client_name=client_email,
         client_ip=None, client_public_key=None,
         vless_link=vless_link, expires_at=expires_at, vpn_type="vless",
-        subscription_link=None,
+        subscription_link=sub_url or None,
         user_id=user_id,
     )
 
@@ -515,7 +538,7 @@ async def _do_activate_test(user_id: int, email: str) -> dict:
     portal_url = f"https://344988.snk.wtf/my/{get_user_by_id(user_id).get('web_token', '')}"
     send_test_success_email(to=email, portal_url=portal_url)
 
-    logger.info(f"Test activated: user_id={user_id}, email={email}")
+    logger.info(f"Test activated: user_id={user_id}, email={email}, sub_url={sub_url}")
     return {"vless_link": vless_link}
 
 
@@ -545,6 +568,7 @@ async def activate_test(req: TestActivateRequest):
     from config import (
         VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
         VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+        VLESS_HTTP_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID, ACTIVE_INBOUND_IDS,
         XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
     )
 
@@ -597,12 +621,13 @@ async def activate_test(req: TestActivateRequest):
             tg_id=0,
             expiry_time=expiry_ms,
             limit_ip=TARIFFS["test_24h"]["device_limit"],
-            inbound_ids=[int(VLESS_INBOUND_ID), hysteria_inbound_id],
+            inbound_ids=ACTIVE_INBOUND_IDS,
         )
         if not result.get("success"):
             raise RuntimeError(f"create_client failed: {result.get('msg')}")
         if result.get("uuid"):
             client_uuid = result["uuid"]
+
 
     except Exception as e:
         logger.error(f"Failed to create VPN clients: {e}")
@@ -634,10 +659,10 @@ async def activate_test(req: TestActivateRequest):
     )
 
     from config import XUI_SUB_PATH
-    sub_id = result.get("subId") or result.get("obj", {}).get("subId") if isinstance(result.get("obj"), dict) else None
+    sub_id = result.get("subId")
     sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}" if sub_id else ""
     if not sub_url:
-        sub_url = xui.get_client_subscription_url(tg_id=0) or ""
+        sub_url = xui.get_client_subscription_url_by_email(client_email) or ""
 
     create_vpn_key(
         tg_id=0, payment_id=None,
@@ -880,3 +905,129 @@ async def log_message(req: LogMessageRequest):
     except Exception as e:
         logger.error(f"log-message failed: {e}")
         return {"ok": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────
+#  Portfolio Analytics
+# ─────────────────────────────────────────────
+
+class PortfolioVisitRequest(BaseModel):
+    session_id: str
+    visitor_id: str
+    page_url: str
+    path: str = "/"
+    referrer: str | None = None
+    user_agent: str | None = None
+    device_type: str | None = None
+    screen_width: int | None = None
+    screen_height: int | None = None
+    language: str | None = None
+
+
+class PortfolioScrollRequest(BaseModel):
+    session_id: str
+    scroll_percent: int
+    scroll_px: int = 0
+    duration_seconds: int = 0
+
+
+class PortfolioClickRequest(BaseModel):
+    session_id: str
+    visitor_id: str | None = None
+    element_tag: str | None = None
+    element_id: str | None = None
+    element_classes: str | None = None
+    element_text: str | None = None
+    target_url: str | None = None
+    scroll_depth_percent: int = 0
+    x_coord: int | None = None
+    y_coord: int | None = None
+
+
+@web_api_router.post("/portfolio/visit")
+async def track_portfolio_visit(req: PortfolioVisitRequest, request: Request):
+    """Record a page visit on the portfolio site."""
+    from api.portfolio_analytics import record_visit
+    ip = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for") or (request.client.host if request.client else None)
+    if ip and "," in ip:
+        ip = ip.split(",")[0].strip()
+
+    data = req.model_dump()
+    data["ip_address"] = ip
+    if not data.get("user_agent"):
+        data["user_agent"] = request.headers.get("user-agent")
+
+    ok = record_visit(data)
+    return {"ok": ok}
+
+
+@web_api_router.post("/portfolio/scroll")
+async def track_portfolio_scroll(req: PortfolioScrollRequest):
+    """Update scroll depth and duration for a portfolio visit."""
+    from api.portfolio_analytics import update_scroll
+    ok = update_scroll(
+        session_id=req.session_id,
+        scroll_percent=req.scroll_percent,
+        scroll_px=req.scroll_px,
+        duration_sec=req.duration_seconds,
+    )
+    return {"ok": ok}
+
+
+@web_api_router.post("/portfolio/click")
+async def track_portfolio_click(req: PortfolioClickRequest):
+    """Record a click or interaction on the portfolio site."""
+    from api.portfolio_analytics import record_click
+    ok = record_click(req.model_dump())
+    return {"ok": ok}
+
+
+@web_api_router.post("/portfolio/beacon")
+async def track_portfolio_beacon(request: Request):
+    """Handle beacon payloads from navigator.sendBeacon upon page unload."""
+    from api.portfolio_analytics import update_scroll
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "error": "Invalid payload"}
+
+    session_id = data.get("session_id")
+    if not session_id:
+        return {"ok": False, "error": "Missing session_id"}
+
+    scroll_percent = int(data.get("scroll_percent", 0))
+    scroll_px = int(data.get("scroll_px", 0))
+    duration_seconds = int(data.get("duration_seconds", 0))
+
+    ok = update_scroll(session_id, scroll_percent, scroll_px, duration_seconds)
+    return {"ok": ok}
+
+
+@web_api_router.get("/portfolio/admin/summary")
+async def get_portfolio_summary():
+    """Get aggregated analytics summary for portfolio."""
+    from api.portfolio_analytics import get_summary
+    return get_summary()
+
+
+@web_api_router.get("/portfolio/admin/visits")
+async def get_portfolio_visits(page: int = 1, limit: int = 50, search: str = None, device: str = None):
+    """Get paginated visits for portfolio."""
+    from api.portfolio_analytics import get_visits
+    return get_visits(page=page, limit=min(limit, 200), search=search, device=device)
+
+
+@web_api_router.get("/portfolio/admin/clicks")
+async def get_portfolio_clicks(page: int = 1, limit: int = 50, session_id: str = None, search: str = None):
+    """Get paginated clicks for portfolio."""
+    from api.portfolio_analytics import get_clicks
+    return get_clicks(page=page, limit=min(limit, 200), session_id=session_id, search=search)
+
+
+@web_api_router.get("/portfolio/admin/session/{session_id}")
+async def get_portfolio_session(session_id: str):
+    """Get full session trace including visit info and click events."""
+    from api.portfolio_analytics import get_session_details
+    return get_session_details(session_id)
+
+

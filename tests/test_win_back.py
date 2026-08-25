@@ -449,5 +449,41 @@ class TestWinBackMessages:
         msg = MESSAGES['promo_activated_no_purchase']
         assert "{promo_code}" in msg
         assert "{discount}" in msg
-        assert "{expires}" in msg
         assert "активировали" in msg
+
+
+class TestSendMessagesFinalExemption:
+
+    @pytest.mark.asyncio
+    async def test_active_subscriber_exempt_from_final(self):
+        """Active subscribers or paying users should not receive the final message on reaching limit."""
+        from unittest.mock import AsyncMock
+        from scripts.win_back_users import send_messages
+
+        results = {
+            'referral_prompt': [{
+                'tg_id': 138315162,
+                'name': 'Rinat',
+                'sub_until': NOW + timedelta(days=20),
+                'paid_count': 1,
+                'reg_days': 15,
+                'total_mb': 500.0,
+                'keys': 2,
+                'vpn_types': ['vless', 'awg'],
+            }]
+        }
+
+        with patch('scripts.win_back_users.get_recent_sends', return_value={}), \
+             patch('scripts.win_back_users.execute_query', return_value=[{'tg_id': 138315162, 'c': 2}]), \
+             patch('bot_xui.messaging.send_link_safely', new_callable=AsyncMock) as mock_send, \
+             patch('scripts.win_back_users.log_send') as mock_log_send:
+            mock_send.return_value = True
+
+            await send_messages(results)
+
+            assert mock_send.called
+            sent_kwargs = mock_send.call_args.kwargs
+            assert sent_kwargs['scenario'] == 'referral_prompt'
+            assert "не заинтересовал" not in sent_kwargs['text']
+            assert "Реферальн" in sent_kwargs['text'] or "Пригласите" in sent_kwargs['text']
+

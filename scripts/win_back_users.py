@@ -437,7 +437,7 @@ MESSAGES = {
         "📱 <b>Быстрый старт:</b>\n"
         "1️⃣ Нажмите <b>Мои конфиги</b>\n"
         "2️⃣ Скопируйте ссылку подписки\n"
-        "3️⃣ Вставьте в приложение (Happ, Hiddify, Streisand)\n\n"
+        "3️⃣ Вставьте в приложение (Shadowrocket, Happ, Hiddify)\n\n"
         "Если что-то не получается — напишите нам 💬"
     ),
     'low_traffic': (
@@ -446,15 +446,14 @@ MESSAGES = {
         "Мы можем помочь!\n\n"
         "Попробуйте:\n"
         "• Обновите ссылку подписки (Мои конфиги → скопируйте заново)\n"
-        "• Используйте приложение <b>Happ</b> или <b>Hiddify</b>\n"
+        "• Используйте приложение <b>Shadowrocket</b>, <b>Happ</b> или <b>Hiddify</b>\n"
         "• Включите/выключите VPN заново\n\n"
         "Если не помогло — напишите в поддержку, разберёмся 💬"
     ),
     'expired_fresh': (
         "⏰ Ваша подписка недавно истекла.\n\n"
         "Продлите сейчас и получите бесперебойный доступ к VPN!\n\n"
-        "🎁 <b>Персональный промокод:</b> <b>{promo_code}</b> — скидка 10% на любой тариф!\n"
-        "Действует 7 дней, только для вас.\n\n"
+        "🎁 <b>Промокод:</b> <b>{promo_code}</b> — скидка 10% на любой тариф!\n\n"
         "💡 <b>Как активировать:</b>\n"
         "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
         "<code>/promo {promo_code}</code>"
@@ -463,8 +462,7 @@ MESSAGES = {
         "👋 Давно не виделись!\n\n"
         "Мы обновили сервис — стало быстрее и стабильнее.\n\n"
         "🎁 <b>Подарок для возвращения:</b>\n"
-        "Промокод <b>{promo_code}</b> — скидка 20% на любой тариф!\n"
-        "Действует 14 дней, только для вас.\n\n"
+        "Промокод <b>{promo_code}</b> — скидка 20% на любой тариф!\n\n"
         "💡 <b>Как активировать:</b>\n"
         "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
         "<code>/promo {promo_code}</code>"
@@ -473,8 +471,7 @@ MESSAGES = {
         "👋 Вы пробовали наш тестовый период.\n\n"
         "Готовы к полному доступу?\n\n"
         "🎁 <b>Специальное предложение:</b>\n"
-        "Промокод <b>{promo_code}</b> — скидка 15% на первый тариф!\n"
-        "Действует 7 дней, только для вас.\n\n"
+        "Промокод <b>{promo_code}</b> — скидка 15% на первый тариф!\n\n"
         "💡 <b>Как активировать:</b>\n"
         "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
         "<code>/promo {promo_code}</code>\n\n"
@@ -484,15 +481,14 @@ MESSAGES = {
         "👋 Вы активировали тестовый период, но так и не подключились.\n\n"
         "Мы продлили вам доступ на <b>1 день</b> — попробуйте прямо сейчас!\n\n"
         "🎁 <b>Бонус за возвращение:</b>\n"
-        "Промокод <b>{promo_code}</b> — скидка 15% на первый тариф!\n"
-        "Действует 7 дней.\n\n"
+        "Промокод <b>{promo_code}</b> — скидка 15% на первый тариф!\n\n"
         "💡 <b>Как активировать:</b>\n"
         "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
         "<code>/promo {promo_code}</code>\n\n"
         "📱 <b>Быстрый старт:</b>\n"
         "1️⃣ Нажмите <b>Мои конфиги</b>\n"
         "2️⃣ Скопируйте ссылку подписки\n"
-        "3️⃣ Вставьте в приложение (Happ, Hiddify, Streisand)\n\n"
+        "3️⃣ Вставьте в приложение (Shadowrocket, Happ, Hiddify)\n\n"
         "Если что-то не получается — напишите нам, поможем! 💬"
     ),
     'payment_no_config': (
@@ -538,8 +534,7 @@ MESSAGES = {
         "⏰ Напоминаем: ваша подписка истекла {days_expired} дней назад.\n\n"
         "Продлите сейчас, чтобы вернуть доступ к VPN!\n\n"
         "💡 <b>Специальное предложение для вас:</b>\n"
-        "Промокод <b>{promo_code}</b> — скидка 20% на любой тариф!\n"
-        "Действует 14 дней, только для вас.\n\n"
+        "Промокод <b>{promo_code}</b> — скидка 20% на любой тариф!\n\n"
         "💡 <b>Как активировать:</b>\n"
         "Нажмите на промокод выше, чтобы скопировать, затем отправьте боту:\n"
         "<code>/promo {promo_code}</code>"
@@ -548,7 +543,6 @@ MESSAGES = {
         "👋 Привет!\n\n"
         "Вы активировали промокод <b>{promo_code}</b> со скидкой <b>{discount}%</b>, "
         "но ещё не воспользовались им.\n\n"
-        "⏰ Промокод действует до {expires}.\n\n"
         "Выберите тариф и получите скидку!"
     ),
     'hysteria_inactive': (
@@ -783,8 +777,12 @@ async def send_messages(results):
                 skipped += 1
                 continue
 
-            # Prepare final message if limit reached
-            is_final = (current_count + 1 == MAX_MESSAGES)
+            # Prepare final message if limit reached (only for inactive/non-subscribers)
+            is_active_sub = u.get('sub_until') and u['sub_until'] > NOW
+            has_paid = u.get('paid_count', 0) > 0
+            exempt_from_final = is_active_sub or has_paid or scenario in ('referral_prompt',)
+
+            is_final = (current_count + 1 == MAX_MESSAGES) and not exempt_from_final
             if is_final:
                 msg = (
                     "👋 Привет!\n\n"
@@ -794,6 +792,9 @@ async def send_messages(results):
                 )
                 buttons = []
             else:
+                if (current_count + 1 == MAX_MESSAGES) and exempt_from_final:
+                    # User reached cap but is exempt from 'final' goodbye message
+                    pass
                 msg_template = MESSAGES.get(scenario)
                 if not msg_template: continue
                 msg = msg_template
@@ -847,6 +848,167 @@ async def send_messages(results):
 
 
 # ─────────────────────────────────────────────
+#  Новая Кампания Лояльности (10d gift -> 3d survey -> 4d expiry)
+# ─────────────────────────────────────────────
+
+async def run_loyalty_winback_flow(send_mode: bool = False):
+    """
+    Кампания лояльности:
+    1. Через 10 дней после конца подписки -> Продление на +3 дня + подарок (День 0)
+    2. За 12 часов до конца подарка (День 3) -> Опрос с кнопками Good/Normal/Bad
+    3. После конца подарка (День 4) -> Прощание с сохранением скидки 20%
+    """
+    log.info("Запуск Кампании Лояльности...")
+    from api.subscriptions import activate_subscription
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    # ===== 1. День 0: Подарок +3 дня через 10 дней после конца подписки =====
+    gift_candidates = execute_query(
+        """SELECT u.tg_id, u.first_name, u.subscription_until
+           FROM users u
+           LEFT JOIN winback_log wl ON u.tg_id = wl.tg_id AND wl.scenario = 'wb_10d_gift'
+           WHERE u.bot_blocked = 0
+             AND u.tg_id IS NOT NULL AND u.tg_id > 0
+             AND u.subscription_until <= NOW() - INTERVAL 10 DAY
+             AND wl.id IS NULL""",
+        fetch='all'
+    ) or []
+
+    log.info(f"[LOYALTY] Кандидатов на подарок (+3 дня): {len(gift_candidates)}")
+    for u in gift_candidates:
+        tg_id = u['tg_id']
+        name = u.get('first_name') or 'Пользователь'
+        if not send_mode:
+            log.info(f"[DRY-RUN] Подарок +3d пользователю tg:{tg_id} ({name})")
+            continue
+
+        try:
+            # Продлить подписку на +3 дня с округлением до 23:59:59 YST
+            activate_subscription(tg_id, days=3)
+            
+            gift_text = (
+                f"🎁 <b>Вам подарок от TIIN Service!</b>\n\n"
+                f"Мы лояльны к своим пользователям, даже к тем, кто по каким-то причинам "
+                f"не может продолжать оставаться с нами! В связи с этим дарим вам "
+                f"<b>3 дня бесплатного пользования сервисом</b>.\n\n"
+                f"<i>С уважением, Команда TIIN Service</i>"
+            )
+            ok = await send_link_safely(
+                tg_id=tg_id,
+                text=gift_text,
+                parse_mode="HTML",
+                source="cron_loyalty",
+                scenario="wb_10d_gift"
+            )
+            if ok:
+                log_send(tg_id, "wb_10d_gift")
+                log.info(f"✅ [LOYALTY] Подарок +3d отправлен tg:{tg_id}")
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            log.error(f"❌ [LOYALTY] Ошибка подарка tg:{tg_id}: {e}")
+
+    # ===== 2. День 3: Опрос качества (за 12 часов до отключения подарка) =====
+    survey_candidates = execute_query(
+        """SELECT u.tg_id, u.first_name, wl_gift.sent_at as gift_at
+           FROM users u
+           JOIN winback_log wl_gift ON u.tg_id = wl_gift.tg_id AND wl_gift.scenario = 'wb_10d_gift'
+           LEFT JOIN winback_log wl_surv ON u.tg_id = wl_surv.tg_id AND wl_surv.scenario = 'wb_3d_survey'
+           WHERE u.bot_blocked = 0
+             AND u.tg_id IS NOT NULL AND u.tg_id > 0
+             AND wl_gift.sent_at <= NOW() - INTERVAL 60 HOUR
+             AND u.subscription_until > NOW()
+             AND wl_surv.id IS NULL""",
+        fetch='all'
+    ) or []
+
+    log.info(f"[LOYALTY] Кандидатов на опрос (День 3): {len(survey_candidates)}")
+    for u in survey_candidates:
+        tg_id = u['tg_id']
+        if not send_mode:
+            log.info(f"[DRY-RUN] Опрос (День 3) пользователю tg:{tg_id}")
+            continue
+
+        try:
+            survey_text = (
+                f"👋 <b>Сегодня последний день подарка!</b>\n\n"
+                f"Как вы оцениваете качество работы нашего сервиса?"
+            )
+            buttons = [
+                [
+                    InlineKeyboardButton("👍 Отлично", callback_data="wb_rate:good"),
+                    InlineKeyboardButton("😐 Нормально", callback_data="wb_rate:normal"),
+                    InlineKeyboardButton("👎 Плохо", callback_data="wb_rate:bad"),
+                ],
+                [
+                    InlineKeyboardButton("💬 Поддержка", url="https://t.me/tiinsupport"),
+                ]
+            ]
+            ok = await send_link_safely(
+                tg_id=tg_id,
+                text=survey_text,
+                parse_mode="HTML",
+                buttons=buttons,
+                source="cron_loyalty",
+                scenario="wb_3d_survey"
+            )
+            if ok:
+                log_send(tg_id, "wb_3d_survey")
+                log.info(f"✅ [LOYALTY] Опрос (День 3) отправлен tg:{tg_id}")
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            log.error(f"❌ [LOYALTY] Ошибка опроса tg:{tg_id}: {e}")
+
+    # ===== 3. День 4: Завершение подарка + сохранение скидки 20% =====
+    expiry_candidates = execute_query(
+        """SELECT u.tg_id, u.first_name
+           FROM users u
+           JOIN winback_log wl_surv ON u.tg_id = wl_surv.tg_id AND wl_surv.scenario = 'wb_3d_survey'
+           LEFT JOIN winback_log wl_end ON u.tg_id = wl_end.tg_id AND wl_end.scenario = 'wb_4d_expiry'
+           WHERE u.bot_blocked = 0
+             AND u.tg_id IS NOT NULL AND u.tg_id > 0
+             AND u.subscription_until <= NOW()
+             AND wl_end.id IS NULL""",
+        fetch='all'
+    ) or []
+
+    log.info(f"[LOYALTY] Кандидатов на прощание (День 4): {len(expiry_candidates)}")
+    for u in expiry_candidates:
+        tg_id = u['tg_id']
+        if not send_mode:
+            log.info(f"[DRY-RUN] Завершение (День 4) пользователю tg:{tg_id}")
+            continue
+
+        try:
+            # Активируем скидку 20% на первую покупку
+            from api.db import set_winback_discount
+            set_winback_discount(tg_id, True)
+
+            end_text = (
+                f"🔒 <b>Подарочный период завершён.</b>\n\n"
+                f"Ваш ключ сохранён за вами. Мы закрепили за вами персональную скидку <b>20%</b> "
+                f"на первое продление любого тарифа в меню!\n\n"
+                f"<i>Вы можете продлить доступ в любой момент через главное меню бота.</i>"
+            )
+            buttons = [
+                [InlineKeyboardButton("💎 Тарифы со скидкой 20%", callback_data="tariffs")]
+            ]
+            ok = await send_link_safely(
+                tg_id=tg_id,
+                text=end_text,
+                parse_mode="HTML",
+                buttons=buttons,
+                source="cron_loyalty",
+                scenario="wb_4d_expiry"
+            )
+            if ok:
+                log_send(tg_id, "wb_4d_expiry")
+                log.info(f"✅ [LOYALTY] Прощание (День 4) отправлено tg:{tg_id}")
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            log.error(f"❌ [LOYALTY] Ошибка завершения tg:{tg_id}: {e}")
+
+
+# ─────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────
 
@@ -864,11 +1026,15 @@ def main():
 
     log.info(f"Пользователей: {len(users)}, с ключами: {len(keys_by_tg)}, с трафиком: {len(traffic)}, с hysteria2: {len(hysteria_tg_ids)}, с неиспользованными промо: {len(unused_promos)}")
 
+    # 1. Сбор стандартного отчета
     results = classify_users(users, keys_by_tg, payments_by_tg, traffic, hysteria_tg_ids, unused_promos)
     print_report(results)
 
+    # 2. Запуск Кампании Лояльности (10d -> 3d survey -> 4d expiry)
+    asyncio.run(run_loyalty_winback_flow(send_mode=send_mode))
+
     if send_mode:
-        print("⚠️  Режим отправки. Отправляю сообщения...")
+        print("⚠️  Режим отправки. Отправляю классические сообщения...")
         asyncio.run(send_messages(results))
     else:
         print("ℹ️  Режим просмотра. Для отправки: python3 scripts/win_back_users.py --send")
@@ -876,3 +1042,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

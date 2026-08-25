@@ -18,7 +18,8 @@ from config import (
     TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI,
     AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD,
     SERVER_LOCATION, VLESS_INBOUND_ID,
-    HYSTERIA_PORT, HYSTERIA_SNI,
+    HYSTERIA_PORT, HYSTERIA_SNI, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID,
+    ACTIVE_INBOUND_IDS,
 )
 from api.subscriptions import activate_subscription
 from api.db import (
@@ -28,8 +29,10 @@ from api.db import (
     get_payment_status,
     get_payment_by_id,
     get_or_create_user,
+    create_payment,
     create_vpn_key,
     upsert_vpn_key,
+    mark_vpn_issued,
     get_subscription_until,
     get_user_email,
     deactivate_key_by_payment,
@@ -369,8 +372,10 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             existing = None
             if tg_id and tg_id != 0:
                 existing = xui.get_client_by_tg_id(tg_id)
-            else:
+            if not existing:
                 existing = xui.get_client_by_email(client_name)
+            if not existing and tg_id and tg_id != 0:
+                existing = xui.get_client_by_email(f"tiin_{tg_id}")
 
             if existing:
                 client_id = existing['client']['id']
@@ -400,7 +405,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     tg_id=tg_id if tg_id else 0,
                     expiry_time=expiry_time,
                     limit_ip=TARIFFS[tariff_key].get('device_limit', 10),
-                    inbound_ids=[inbound_id, hysteria_inbound_id],
+                    inbound_ids=ACTIVE_INBOUND_IDS,
                 )
                 if not result.get("success"):
                     raise RuntimeError(f"create_client failed: {result.get('msg')}")
@@ -431,10 +436,9 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 sub_id = secrets.token_hex(8)
                 logger.warning(f"subId still missing for {client_name}, using random fallback: {sub_id}")
 
-            # Формируем правильную ссылку для пользователя (через Nginx, без порта)
-            user_sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}"
-            sub_url = user_sub_url
-            
+            # Формируем прямую ссылку XUI для сохранения в vpn_keys (источник для прокси)
+            sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}"
+
             # Генерируем VLESS ссылку
             client_config = generate_vless_link(
                 client_id=client_id,
@@ -449,21 +453,15 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 spx="/",
                 remark=f"🐿 TIIN | VLESS",
             )
-            
-            # Получаем subscription URL (XUI) — храним в БД как источник для прокси
-            # if tg_id and tg_id != 0:
-            #     sub_url = xui.get_client_subscription_url(tg_id)
-            # else:
-            #     sub_url = xui.get_subscription_url_by_uuid(client_id)
 
-            # Пользователю показываем прокси-URL, который переписывает remark
-            # from api.db import get_web_token
-            # if tg_id and tg_id != 0:
-            #     _wt = get_web_token(tg_id)
-            #     user_sub_url = f"https://344988.snk.wtf/sub/{_wt}" if _wt else sub_url
-            # else:
-                # для веб-заказов web_token добавим позже при отдаче email-писем
-                # user_sub_url = sub_url
+            # Пользователю показываем прокси-URL с web_token, который переписывает remark
+            from api.db import get_web_token, get_user_by_id
+            _wt = get_web_token(tg_id) if tg_id and tg_id != 0 else None
+            if not _wt and web_user_id:
+                _u = get_user_by_id(web_user_id)
+                _wt = _u.get('web_token') if _u else None
+
+            user_sub_url = f"https://344988.snk.wtf/sub/{_wt}" if _wt else sub_url
 
             # Создаем QR код из прокси-URL
             qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -568,9 +566,10 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                         "totalGB": existing_xui['client'].get('totalGB', 0),
                         "expiryTime": sub_until_ms,
                         "tgId": existing_xui['client'].get('tgId', 0),
-                        "enable": existing_xui['client'].get('enable', True),
+                        "enable": True,
                         "limitIp": existing_xui['client'].get('limitIp', 0),
                         "reset": existing_xui['client'].get('reset', 0),
+                        "flow": existing_xui['client'].get('flow') or 'xtls-rprx-vision',
                     }
                     xui._request(
                         "POST",
@@ -589,6 +588,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             client_ip=client_ip,
             client_public_key=client_public_key,
             vless_link=client_config,
+            xhttp_link=None,
             hysteria_link=hysteria_link,
             expires_at=subscription_until,
             vpn_type=vpn_type,
@@ -626,6 +626,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                         period=tariff_info.get('period', ''),
                         portal_url=portal_url,
                     )
+            mark_vpn_issued(payment_id)
             return True
 
         try:
@@ -650,12 +651,14 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 message = (
                     f"❗ <b>Скопируйте вашу ссылку:</b>\n\n"
                     f"➡️➡️➡️ <code>{user_sub_url or sub_url}</code> ⬅️\n\n"
-                    f"📱 И вставьте в приложение ⬇️"
+                    f"📱 И вставьте в приложение ⬇️\n\n"
+                    f"💡 <i>Если после добавления не открываются российские сайты (Сбер, Госуслуги), переключите в приложении режим маршрутизации на «Правила / Bypass RU».</i>"
                 )
                 buttons = []
                 if portal_url:
                     buttons.append([{"text": "🪄 Гид по подключению", "url": portal_url}])
                 buttons.append([{"text": "📲 Happ: настроить маршрутизацию", "url": "https://344988.snk.wtf/happ-routing"}])
+                buttons.append([{"text": "🚀 Shadowrocket: открыть подписку", "url": f"https://344988.snk.wtf/go-shadowrocket/{_wt}"}])
                 buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
                 await send_telegram_notification(tg_id, message, buttons,
                     source="webhook", scenario="payment_success_vless")
@@ -699,6 +702,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         except Exception:
             logger.exception("⚠️ Failed to send config to Telegram")
 
+        mark_vpn_issued(payment_id)
         return True
 
     except Exception:
@@ -912,7 +916,8 @@ async def yookassa_webhook(request: Request):
         logger.warning("⚠️ No payment_id in webhook")
         return Response(status_code=200)
     
-    logger.info(f"📋 Payment ID: {payment_id}, Status: {status_raw}, Event: {event}")
+    amount = obj.get("amount", {}).get("value", 0)
+    logger.info(f"📋 Webhook: {event} | ID: {payment_id} | Status: {status_raw} | Amount: {amount} RUB")
 
 
     # ===== 3.5 ОБРАБОТКА ВОЗВРАТА =====
@@ -940,14 +945,71 @@ async def yookassa_webhook(request: Request):
                 f"Если это ошибка — нажмите «Написать нам» в меню бота",
                 source="webhook", scenario="refund",
             )
+
+        # Уведомляем администратора
+        from config import ADMIN_TG_ID
+        client_name = get_user_email(tg_id, payment_id=payment_id) if tg_id else None
+        await send_telegram_notification(
+            ADMIN_TG_ID,
+            f"💸 <b>Возврат средств (Webhook)</b>\n\n"
+            f"Пользователь: <code>{tg_id or 'Web/Unknown'}</code>" + (f" ({client_name})" if client_name else "") + f"\n"
+            f"Платёж: <code>{payment_id}</code>\n"
+            f"Сумма: {amount_value} {amount_currency}\n"
+            f"Статус деактивации: {'✅ Успешно' if success else '⚠️ Ошибка деактивации'}\n\n"
+            f"⚠️ <i>Проверьте конфиги пользователя (3x-ui / AWG).</i>",
+            source="webhook", scenario="admin_refund_alert",
+        )
         
         return Response(status_code=200)
     
     # ===== 4. Проверка существования платежа =====
     current_status = get_payment_status(payment_id)
     if not current_status:
-        logger.warning(f"⚠️ Unknown payment_id: {payment_id}")
-        return {"status": "ignored"}
+        if status_raw in ("canceled", "failed"):
+            amount = obj.get("amount", {}).get("value", 0)
+            cancellation = obj.get("cancellation_details", {})
+            logger.info(
+                f"Race condition — creating canceled record for {payment_id}, "
+                f"reason={cancellation.get('reason')}"
+            )
+            try:
+                create_payment(
+                    payment_id=payment_id,
+                    tg_id=int(tg_id) if tg_id else 0,
+                    tariff=tariff,
+                    amount=amount,
+                    status="canceled",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to insert canceled payment {payment_id}: {e}")
+            if tg_id:
+                await send_telegram_notification(
+                    int(tg_id),
+                    f"❌ Платёж не прошёл\n\n"
+                    f"💳 ID платежа: {payment_id}\n"
+                    f"📦 Тариф: {tariff}\n\n"
+                    f"Попробуйте ещё раз или обратитесь в поддержку.",
+                    source="webhook", scenario="payment_canceled",
+                )
+            return {"status": "ignored"}
+        elif status_raw == "succeeded" and tariff in TARIFFS:
+            amount = obj.get("amount", {}).get("value", 0)
+            logger.info(f"Race condition — creating pending record for succeeded payment {payment_id}")
+            try:
+                create_payment(
+                    payment_id=payment_id,
+                    tg_id=int(tg_id) if tg_id else 0,
+                    tariff=tariff,
+                    amount=amount,
+                    status="pending",
+                )
+                current_status = "pending"
+            except Exception as e:
+                logger.warning(f"Failed to insert pending payment {payment_id}: {e}")
+                return {"status": "ignored"}
+        else:
+            logger.warning(f"⚠️ Unknown payment_id: {payment_id} (status={status_raw})")
+            return {"status": "ignored"}
     
     # ===== 5. Проверка на дубликат =====
     if current_status in ("paid", "canceled"):
@@ -1056,6 +1118,14 @@ async def yookassa_webhook(request: Request):
                 use_promocode(promo["id"], int(tg_id or 0))
                 logger.info(f"Promo '{promo_code_str}' consumed for payment {payment_id}")
 
+        # Clear winback discount after paid purchase
+        if tg_id:
+            try:
+                from api.db import set_winback_discount
+                set_winback_discount(int(tg_id), False)
+            except Exception:
+                pass
+
         # Idempotency: skip if VPN was already issued for this payment
         if payment_data.get("vpn_issued"):
             logger.info(f"⏭️ VPN already issued for payment {payment_id}, skipping")
@@ -1112,6 +1182,12 @@ async def yookassa_webhook(request: Request):
 
         logger.info(f"💾 Payment claimed and processed: {payment_id} -> paid")
     elif new_status == "canceled":
+        cancellation = obj.get("cancellation_details", {})
+        logger.info(
+            f"Payment {payment_id} canceled: "
+            f"party={cancellation.get('party')}, "
+            f"reason={cancellation.get('reason')}"
+        )
         # ===== 10. Обновление статуса отмены =====
         update_payment_status(payment_id, new_status)
         logger.info(f"💾 Payment status updated: {payment_id} -> {new_status}")

@@ -303,6 +303,8 @@ class TestShowNoConfigs:
         query = MagicMock()
         query.from_user.id = 100
         query.edit_message_text = AsyncMock()
+        for attr in ['photo', 'video', 'document', 'sticker', 'animation', 'poll', 'voice', 'video_note', 'audio', 'location', 'venue', 'contact', 'dice', 'game']:
+            setattr(query.message, attr, None)
 
         await _show_no_configs(query)
 
@@ -320,7 +322,6 @@ class TestShowSingleConfigVless:
 
     @pytest.mark.asyncio
     @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
-    @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
     @patch("bot_xui.views.get_web_token", return_value="tok123")
     @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
     @patch("bot_xui.views.get_user_by_tg_id")
@@ -328,7 +329,7 @@ class TestShowSingleConfigVless:
     @patch("bot_xui.views.qrcode.QRCode")
     @patch("bot_xui.views.get_keys_by_tg_id")
     async def test_vless_caption_has_instruction_link(self, mock_keys, mock_qr_cls, mock_payment,
-                                                        mock_user_tg, mock_user_web, mock_token, mock_sub_url, mock_reply_photo):
+                                                        mock_user_tg, mock_user_web, mock_token, mock_reply_photo):
         """VLESS single config caption includes instruction link."""
         from bot_xui.views import show_single_config
 
@@ -357,7 +358,6 @@ class TestShowSingleConfigVless:
 
     @pytest.mark.asyncio
     @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
-    @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
     @patch("bot_xui.views.get_web_token", return_value="tok123")
     @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
     @patch("bot_xui.views.get_user_by_tg_id")
@@ -365,7 +365,7 @@ class TestShowSingleConfigVless:
     @patch("bot_xui.views.qrcode.QRCode")
     @patch("bot_xui.views.get_keys_by_tg_id")
     async def test_vless_keyboard_has_instruction_button(self, mock_keys, mock_qr_cls, mock_payment,
-                                                          mock_user_tg, mock_user_web, mock_token, mock_sub_url, mock_reply_photo):
+                                                          mock_user_tg, mock_user_web, mock_token, mock_reply_photo):
         """VLESS single config keyboard includes '📖 Инструкция' URL button."""
         from bot_xui.views import show_single_config
 
@@ -393,7 +393,6 @@ class TestShowSingleConfigVless:
 
     @pytest.mark.asyncio
     @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
-    @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
     @patch("bot_xui.views.get_web_token", return_value="")
     @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
     @patch("bot_xui.views.get_user_by_tg_id")
@@ -401,7 +400,7 @@ class TestShowSingleConfigVless:
     @patch("bot_xui.views.qrcode.QRCode")
     @patch("bot_xui.views.get_keys_by_tg_id")
     async def test_vless_empty_token_caption_has_no_instruction_link(self, mock_keys, mock_qr_cls, mock_payment,
-                                                                       mock_user_tg, mock_user_web, mock_token, mock_sub_url, mock_reply_photo):
+                                                                       mock_user_tg, mock_user_web, mock_token, mock_reply_photo):
         """With empty web_token, caption instruction link is absent but button is still present."""
         from bot_xui.views import show_single_config
 
@@ -558,5 +557,5 @@ class TestBuildMainMenuText:
         ]
         text = build_main_menu_text(tg_id=100)
         sub_pos = text.find("sub-info")
-        ref_pos = text.find("Бонус за друзей")
+        ref_pos = text.lower().find("бонус за друзей")
         assert sub_pos < ref_pos

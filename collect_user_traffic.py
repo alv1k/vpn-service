@@ -19,6 +19,7 @@ from awg_api.config import (
 )
 from config import (
     XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
+    ADMIN_TG_ID,
 )
 
 logging.basicConfig(
@@ -36,6 +37,116 @@ DAILY_RETENTION_DAYS = 90
 
 # Coalesce (snapshot interval) in seconds — snapshots within this window are merged
 COALESCE_WINDOW = 90
+
+# Speed drop alerting
+SPEED_HISTORY_SIZE = 10
+MIN_BASELINE_BPS = 5_000_000  # 5 Mbit/s — only alert if user had decent speed
+DROP_RATIO = 0.2              # current < 20% of baseline = dropped
+MIN_DROPPED_USERS = 2         # alert if N+ users drop simultaneously
+MASS_ALERT_COOLDOWN = 1800    # 30 min between mass alerts
+USER_ALERT_COOLDOWN = 3600    # 1h between per-user alerts
+
+TOKEN = None
+
+def _get_token():
+    global TOKEN
+    if TOKEN is None:
+        import dotenv
+        dotenv.load_dotenv("/home/alvik/vpn-service/.env")
+        TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    return TOKEN
+
+
+def _fmt_bps(bps: float) -> str:
+    if bps >= 1_000_000:
+        return f"{bps / 1_000_000:.1f} Mbit/s"
+    if bps >= 1_000:
+        return f"{bps / 1_000:.0f} kbit/s"
+    return f"{bps:.0f} bit/s"
+
+
+def _send_alert(text: str):
+    token = _get_token()
+    if not token:
+        logger.warning("TELEGRAM_BOT_TOKEN not set, skipping alert")
+        return
+    try:
+        import urllib.request
+        data = json.dumps({
+            "chat_id": ADMIN_TG_ID,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_notification": False,
+        }).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        logger.info(f"Alert sent: {resp.status}")
+    except Exception as e:
+        logger.warning(f"Alert send failed: {e}")
+
+
+def _check_speed_drops(prev: dict):
+    now = time.time()
+    dropped = []
+
+    for key, data in list(prev.items()):
+        if not isinstance(data, dict) or key.startswith("_"):
+            continue
+        history = data.get("speed_history", [])
+        if len(history) < 3:
+            continue
+        baseline = sum(history) / len(history)
+        data["avg_baseline_bps"] = baseline
+        current = data.get("speed_bps", 0)
+        if baseline > MIN_BASELINE_BPS and current < baseline * DROP_RATIO:
+            parts = key.split("::", 1)
+            client_name = parts[0] if parts else key
+            vpn_type = parts[1] if len(parts) > 1 else "?"
+            dropped.append({
+                "client_name": client_name,
+                "vpn_type": vpn_type,
+                "baseline": baseline,
+                "current": current,
+                "first_name": data.get("first_name", ""),
+            })
+
+    if len(dropped) < MIN_DROPPED_USERS:
+        return
+
+    last_alert = prev.get("_mass_alert_ts", 0)
+    if now - last_alert < MASS_ALERT_COOLDOWN:
+        return
+    prev["_mass_alert_ts"] = now
+
+    total_baseline = sum(d["baseline"] for d in dropped)
+    total_current = sum(d["current"] for d in dropped)
+    pct = int((1 - total_current / total_baseline) * 100) if total_baseline > 0 else 0
+
+    proto_counts: dict[str, int] = {}
+    for d in dropped:
+        proto_counts[d["vpn_type"]] = proto_counts.get(d["vpn_type"], 0) + 1
+    proto_line = ", ".join(f"{p} ({c})" for p, c in sorted(proto_counts.items()))
+
+    lines = [
+        f"⚠️ Массовая просадка скорости ({len(dropped)} users)",
+        f"Протоколы: {proto_line}",
+        f"Суммарная: {_fmt_bps(total_baseline)} → {_fmt_bps(total_current)} ({pct}%)",
+        "",
+    ]
+    for d in dropped[:5]:
+        lines.append(
+            f"• {d['first_name'] or d['client_name']} ({d['vpn_type']}): "
+            f"{_fmt_bps(d['baseline'])} → {_fmt_bps(d['current'])}"
+        )
+    if len(dropped) > 5:
+        lines.append(f"... и ещё {len(dropped) - 5}")
+
+    _send_alert("\n".join(lines))
+    logger.warning(f"Speed drop alert sent: {len(dropped)} users dropped, total {total_baseline/1e6:.0f}→{total_current/1e6:.0f} Mbit/s")
 
 
 def _get_mysql():
@@ -122,13 +233,16 @@ def _collect_vless_hysteria():
             tag = ib.get("tag", ib.get("id", ""))
             inbound_protocols[tag] = proto
 
-        # Collect per-client traffic from all inbounds
-        client_stats = {}  # email -> {up, down, enable, vpn_type}
+        # Collect per-client traffic from all inbounds and record user_inbound_activity
+        client_stats = {}  # email -> {up, down, vpn_type, rx, tx}
+        inbound_user_stats = []  # list of (email, inbound_id, remark, up, down)
         for ib in inbounds:
             proto = ib.get("protocol", "")
             if proto not in ("vless", "hysteria", "hysteria2"):
                 continue
             vpn_t = "hysteria" if ("hysteria" in proto) else "vless"
+            ib_id = ib.get("id", 0)
+            remark = ib.get("remark", f"Inbound-{ib_id}")
             clients = ib.get("clientStats", ib.get("clients", []))
             for cs in clients:
                 email = cs.get("email", "").strip()
@@ -136,10 +250,39 @@ def _collect_vless_hysteria():
                     continue
                 if not cs.get("enable", True):
                     continue
+                c_up = cs.get("up", 0)
+                c_down = cs.get("down", 0)
                 if email not in client_stats:
                     client_stats[email] = {"up": 0, "down": 0, "vpn_type": vpn_t, "rx": 0, "tx": 0}
-                client_stats[email]["up"] += cs.get("up", 0)
-                client_stats[email]["down"] += cs.get("down", 0)
+                client_stats[email]["up"] += c_up
+                client_stats[email]["down"] += c_down
+                if c_up > 0 or c_down > 0:
+                    inbound_user_stats.append((email, ib_id, remark, c_up, c_down))
+
+        # Update user_inbound_activity in MySQL
+        if inbound_user_stats:
+            try:
+                conn_ia = _get_mysql()
+                cur_ia = conn_ia.cursor()
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                for u_email, u_ib_id, u_remark, u_up, u_down in inbound_user_stats:
+                    u_tot = u_up + u_down
+                    cur_ia.execute("""
+                        INSERT INTO user_inbound_activity
+                        (email, inbound_id, inbound_remark, connections_count, up_bytes, down_bytes, total_bytes, first_connected_at, last_connected_at)
+                        VALUES (%s, %s, %s, 1, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            connections_count = IF(total_bytes < VALUES(total_bytes), connections_count + 1, connections_count),
+                            up_bytes = VALUES(up_bytes),
+                            down_bytes = VALUES(down_bytes),
+                            total_bytes = VALUES(total_bytes),
+                            last_connected_at = IF(total_bytes < VALUES(total_bytes), VALUES(last_connected_at), last_connected_at)
+                    """, (u_email, u_ib_id, u_remark, u_up, u_down, u_tot, now_str, now_str))
+                conn_ia.commit()
+                cur_ia.close()
+                conn_ia.close()
+            except Exception as ex_ia:
+                logger.warning(f"Error updating user_inbound_activity: {ex_ia}")
 
         # Parse access log for IPs
         log_ips = _parse_log_ips(ACCESS_LOG, ["vless", "hysteria"], seconds=300)
@@ -353,10 +496,23 @@ def collect():
         except Exception as e:
             logger.warning(f"Insert failed for {user_key}: {e}")
 
-        # Update prev
-        prev[user_key] = {"ts": now, "bytes": total}
+        # Update prev with speed history
+        if user_key not in prev:
+            prev[user_key] = {}
+        prev[user_key].update({"ts": now, "bytes": total, "speed_bps": speed})
+        prev[user_key]["first_name"] = info.get("first_name", "")
+        if speed > 100_000:  # > 1 Mbit/s — meaningful reading
+            if "speed_history" not in prev[user_key]:
+                prev[user_key]["speed_history"] = []
+            hist = prev[user_key]["speed_history"]
+            hist.append(speed)
+            if len(hist) > SPEED_HISTORY_SIZE:
+                hist.pop(0)
 
     conn.commit()
+
+    # Check for speed drops
+    _check_speed_drops(prev)
 
     # Cleanup old snapshots (older than 7 days)
     cutoff_snap = (datetime.now() - timedelta(days=SNAPSHOT_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")

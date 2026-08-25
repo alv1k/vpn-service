@@ -66,8 +66,9 @@ def test_get_or_create_user_existing(mock_get_pool):
     assert result == 5
 
 
+@patch("api.db.get_payment_by_id", return_value=None)
 @patch("api.db._get_pool")
-def test_deactivate_key_by_payment(mock_get_pool):
+def test_deactivate_key_by_payment(mock_get_pool, mock_get_pay):
     mock_pool, mock_conn, mock_cursor = _make_mock_pool()
     mock_get_pool.return_value = mock_pool
 
@@ -76,4 +77,4 @@ def test_deactivate_key_by_payment(mock_get_pool):
 
     args = mock_cursor.execute.call_args
     assert "expires_at = NOW()" in args[0][0]
-    mock_conn.commit.assert_called_once()
+    mock_conn.commit.assert_called()

@@ -1,8 +1,10 @@
 # test_xui.py
 import asyncio
+import pytest
 from bot_xui.utils import XUIClient
 from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
 
+@pytest.mark.asyncio
 async def test():
     client = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
     

@@ -95,8 +95,8 @@ def write_server_conf():
 PrivateKey = {private_key}
 Address = {SERVER_ADDRESS}
 ListenPort = {listen_port}
-PostUp = iptables -t nat -A POSTROUTING -s 10.10.0.0/24 -o ens3 -j MASQUERADE; iptables -A INPUT -p udp -m udp --dport {listen_port} -j ACCEPT; iptables -A FORWARD -i {AWG_INTERFACE} -j ACCEPT; iptables -A FORWARD -o {AWG_INTERFACE} -j ACCEPT;
-PostDown = iptables -t nat -D POSTROUTING -s 10.10.0.0/24 -o ens3 -j MASQUERADE; iptables -D INPUT -p udp -m udp --dport {listen_port} -j ACCEPT; iptables -D FORWARD -i {AWG_INTERFACE} -j ACCEPT; iptables -D FORWARD -o {AWG_INTERFACE} -j ACCEPT;
+PostUp = iptables -t nat -A POSTROUTING -s 10.10.0.0/24 -o ens3 -j MASQUERADE; iptables -A INPUT -p udp -m udp --dport {listen_port} -j ACCEPT; iptables -t nat -I PREROUTING 1 -p udp -m udp --dport 51820 -j REDIRECT --to-ports {listen_port}; iptables -I INPUT 1 -p udp -m udp --dport 51820 -j ACCEPT; iptables -I FORWARD 1 -i {AWG_INTERFACE} -j ACCEPT; iptables -I FORWARD 1 -o {AWG_INTERFACE} -j ACCEPT;
+PostDown = iptables -t nat -D POSTROUTING -s 10.10.0.0/24 -o ens3 -j MASQUERADE; iptables -D INPUT -p udp -m udp --dport {listen_port} -j ACCEPT; iptables -t nat -D PREROUTING -p udp -m udp --dport 51820 -j REDIRECT --to-ports {listen_port}; iptables -D INPUT -p udp -m udp --dport 51820 -j ACCEPT; iptables -D FORWARD -i {AWG_INTERFACE} -j ACCEPT; iptables -D FORWARD -o {AWG_INTERFACE} -j ACCEPT;
 {awg_params}
 """
 

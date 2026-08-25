@@ -193,6 +193,13 @@ async def webpage_events_stats(days: int = _Query(7)):
     return _clean(webpage_events_stats(days=days))
 
 
+@app.get("/api/admin/webpage-events/active-users")
+async def webpage_active_users():
+    from admin.db import webpage_active_users_last_24h
+    from admin.routes import _clean
+    return _clean(webpage_active_users_last_24h())
+
+
 @app.get("/api/admin/webpage-events/journey/{token}")
 async def webpage_visitor_journey(token: str):
     from admin.db import webpage_visitor_journey

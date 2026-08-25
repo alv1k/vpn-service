@@ -52,6 +52,23 @@ def main():
             awg_db.update_client_enabled(client_id, False)
             log.info("DISABLED %s (%s) — expired %s", key["client_name"], client_id, expires_at)
             changed = True
+            try:
+                import httpx
+                from config import TELEGRAM_BOT_TOKEN, ADMIN_TG_ID
+                alert_text = (
+                    f"⏰ <b>AWG подписка истекла (cron)</b>\n\n"
+                    f"Клиент: <code>{key['client_name']}</code> (ID: <code>{client_id}</code>)\n"
+                    f"Дата окончания: {expires_at}\n"
+                    f"Статус: 🔴 Отключен в AmneziaWG\n\n"
+                    f"⚠️ <i>Проверьте конфиги пользователя (3x-ui / AWG).</i>"
+                )
+                httpx.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": ADMIN_TG_ID, "text": alert_text, "parse_mode": "HTML"},
+                    timeout=5.0,
+                )
+            except Exception as e:
+                log.warning("Failed to notify admin about AWG expiry: %s", e)
 
         elif not is_expired and not is_enabled:
             # Включить обратно — подписка продлена

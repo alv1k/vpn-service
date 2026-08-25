@@ -313,14 +313,6 @@
       input[type=text],
       input[type=search] { max-width: 100%; min-height: 44px; }
 
-      /* Truncate online name column */
-      .col-online-name {
-        max-width: 90px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
       /* Hide less important columns */
       .col-ip, .col-uuid, .col-last-online, .col-limit,
       .col-expires-promo, .col-auth, .col-logins, .col-created { display: none; }
@@ -342,18 +334,20 @@
   <div class="container">
     <nav>
       <span class="title">TIIN VPN</span><a href="https://tiinservice.online" target="_blank" style="color:var(--muted);font-size:12px;margin-left:8px;text-decoration:none" title="tiinservice.online">🌐 tiinservice.online</a>
-      <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('91.132.161.112');this.textContent='copied!';setTimeout(()=>this.textContent='91.132.161.112',1000)" title="Click to copy">91.132.161.112</span>
+      <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('91.132.161.112');this.textContent='copied!';setTimeout(()=>this.textContent='91.132.161.112',1000)" title="Click to copy DE IP">91.132.161.112</span>
       <!-- https://344988.snk.wtf:5096/XhU5cXVfMCyHzAXlrT/panel/xray -->
-      <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('2.26.76.210');this.textContent='copied!';setTimeout(()=>this.textContent='2.26.76.210',1000)" title="Click to copy">2.26.76.210</span>
+      <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('2.26.76.210');this.textContent='copied!';setTimeout(()=>this.textContent='2.26.76.210',1000)" title="Click to copy NL IP">2.26.76.210</span>
       <!-- http://2.26.76.210:40649/q8gIb3co6oD2rHbtFc/panel/clients -->
+      <span style="color:#a78bfa;font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer;font-weight:600" onclick="navigator.clipboard.writeText('139.100.207.18');this.textContent='copied!';setTimeout(()=>this.textContent='139.100.207.18',1000)" title="Click to copy RU VPS IP">🇷🇺 139.100.207.18</span>
       <div class="nav-tabs">
         <button onclick="showTab('dashboard')" id="tab-dashboard" class="active">Dashboard</button>
+        <button onclick="showTab('monitoring')" id="tab-monitoring">📊 Monitoring</button>
+        <button onclick="showTab('inbounds')" id="tab-inbounds">⚡ Inbounds & SNI</button>
         <button onclick="showTab('awg')" id="tab-awg">AWG</button>
         <button onclick="showTab('vless')" id="tab-vless">VLESS</button>
         <button onclick="showTab('users')" id="tab-users">Users</button>
         <button onclick="showTab('proxy')" id="tab-proxy">MTProxy</button>
         <button onclick="showTab('testpay')" id="tab-testpay">Test Pay</button>
-        <button onclick="showTab('traffic')" id="tab-traffic">Traffic</button>
         <button onclick="showTab('messages')" id="tab-messages">Messages</button>
         <div class="nav-ext">
           <span class="nav-ext-label">External</span>
@@ -361,16 +355,23 @@
           <a href="https://344988.snk.wtf/phpmyadmin/" target="_blank">phpMyAdmin ↗</a>
           <a href="https://344988.snk.wtf/phpmyadmin-dev/" target="_blank">phpMyAdmin Dev ↗</a>
           <a href="http://2.26.76.210:40649/q8gIb3co6oD2rHbtFc/" target="_blank">3X-UI NL ↗</a>
+          <a href="http://139.100.207.18:2053/0ruabxwdsz96R7jSIN/panel/inbounds" target="_blank" style="color:#a78bfa;font-weight:600">3X-UI RU ↗</a>
         </div>
       </div>
     </nav>
 
+    <!-- Reset User bar -->
+    <div style="padding:12px;margin-bottom:16px;background:var(--card);border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span style="font-size:13px;font-weight:600;color:var(--red)">🗑 Reset User</span>
+      <input type="text" id="reset-tg-id" placeholder="TG ID" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:140px;font-family:monospace">
+      <button onclick="resetPreview()" style="padding:6px 14px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">Preview</button>
+      <span id="reset-status" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+
     <!-- Dashboard -->
     <div id="s-dashboard" class="section active">
       <div class="cards" id="dash-cards"></div>
-      <div class="cards" id="dash-extra-cards"></div>
-
-      <!-- Speed chart removed — see Traffic tab -->
+      <div class="cards" id="dash-extra-cards" style="display:none"></div>
 
       <h3 class="mb" style="color:var(--muted)">SERVICES</h3>
       <div class="cards" style="margin-bottom:16px">
@@ -393,9 +394,51 @@
       <h3 class="mb" style="color:var(--muted)">SITE ANALYTICS</h3>
       <div class="cards" id="dash-site-stats"></div>
 
-      <h3 class="mb" style="color:var(--muted)">WEB PORTAL EVENTS (7d)</h3>
+      <h3 class="mb" style="color:var(--muted)">WEB PORTAL EVENTS</h3>
       <div class="cards" id="dash-web-events"></div>
-      <div class="mb" id="dash-web-events-chart" style="margin-top:8px;max-height:200px;overflow:auto"></div>
+
+      <!-- Subscription Alerts Section -->
+      <details class="mb" open>
+        <summary style="color:var(--orange);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">
+          ⚠️ ПОДПИСКА СКОРО ЗАКАНЧИВАЕТСЯ (≤ 3 дн) <span id="expiring-soon-count" style="color:var(--orange)"></span>
+        </summary>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>TG ID</th>
+                <th>Имя</th>
+                <th>Подписка до</th>
+                <th>Осталось</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="dash-expiring-soon"></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="mb" open>
+        <summary style="color:var(--red);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">
+          🔴 НЕДАВНО ИСТЕКШИЕ ПОДПИСКИ (до 30 дн назад) <span id="recently-expired-count" style="color:var(--red)"></span>
+        </summary>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>TG ID</th>
+                <th>Имя</th>
+                <th>Истекла</th>
+                <th>Прошло</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="dash-recently-expired"></tbody>
+          </table>
+        </div>
+      </details>
+
+
 
 
       <h3 class="mb" style="color:var(--muted)">
@@ -403,17 +446,37 @@
       </h3>
       <div class="table-wrap mb">
         <table>
+           <thead>
+              <tr>
+                <th>Type</th>
+                <th>First Name</th>
+                <th>Names</th>
+                <th>Last Speed</th>
+               <th>Speed</th>
+               <th>IPs</th>
+               <th>Expires</th>
+               <th>Platform</th>
+             </tr>
+            </thead>
+            <tbody id="dash-online"></tbody>
+        </table>
+      </div>
+
+      <h3 class="mb" style="color:var(--muted)">
+        📴 OFFLINE <span id="offline-count" style="color:var(--orange)"></span>
+      </h3>
+      <div class="table-wrap mb">
+        <table>
           <thead>
             <tr>
-              <th>Type</th>
-              <th>First Name</th>
               <th>Name</th>
-              <th>Speed</th>
-              <th>IPs</th>
+              <th>Names</th>
+              <th>Protocols</th>
+              <th>Last Seen</th>
               <th>Expires</th>
             </tr>
           </thead>
-          <tbody id="dash-online"></tbody>
+          <tbody id="dash-offline"></tbody>
         </table>
       </div>
 
@@ -435,56 +498,25 @@
         </table>
       </div>
 
-      <h3 class="mb" style="color:var(--muted)">
-        OFFLINE <span id="dash-offline-count" style="color:var(--orange)"></span>
-      </h3>
-      <div class="table-wrap mb">
-        <table>
-          <thead>
-            <tr>
-              <th>Type</th>
-              <th>First Name</th>
-              <th>Name</th>
-              <th>Last Seen</th>
-              <th>Expires</th>
-            </tr>
-          </thead>
-          <tbody id="dash-offline"></tbody>
-        </table>
-      </div>
-
-      <h3 class="mb" style="color:var(--muted)">PROMOCODES</h3>
-      <div class="table-wrap mb">
-        <table>
-          <thead>
-            <tr>
-              <th>Code</th>
-              <th>Type</th>
-              <th>Value</th>
-              <th>Used</th>
-              <th class="col-limit">Limit</th>
-              <th class="col-expires-promo">Expires</th>
-              <th>Active</th>
-            </tr>
-          </thead>
-          <tbody id="dash-promos"></tbody>
-        </table>
-      </div>
-
-      <h3 class="mb" style="color:var(--muted)">WINBACK LOG</h3>
-      <div class="table-wrap mb">
-        <table>
-          <thead>
-            <tr>
-              <th>TG ID</th>
-              <th>Name</th>
-              <th>Scenario</th>
-              <th>Sent</th>
-            </tr>
-          </thead>
-          <tbody id="dash-winback"></tbody>
-        </table>
-      </div>
+        <details class="mb">
+        <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">PROMOCODES</summary>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Type</th>
+                <th>Value</th>
+                <th>Used</th>
+                <th class="col-limit">Limit</th>
+                <th class="col-expires-promo">Expires</th>
+                <th>Active</th>
+              </tr>
+            </thead>
+            <tbody id="dash-promos"></tbody>
+          </table>
+        </div>
+      </details>
 
       <details class="mb">
         <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">RECENT PAYMENTS</summary>
@@ -692,6 +724,100 @@
       </div>
     </div>
 
+    <!-- Monitoring Section -->
+    <div id="s-monitoring" class="section">
+      <div class="toolbar">
+        <b style="font-size:16px">📊 Traffic & Speed Monitoring</b>
+        <span style="flex:1"></span>
+        <button class="btn" onclick="loadMonitoring()">🔄 Refresh</button>
+      </div>
+
+      <h3 style="color:var(--muted);margin:16px 0 8px">CURRENT LIVE SPEEDS (REALTIME SNAPSHOT)</h3>
+      <div class="cards" id="mon-live-cards">
+        <div style="color:var(--muted);padding:16px">Loading live inbounds...</div>
+      </div>
+
+      <h3 style="color:var(--muted);margin:24px 0 8px">24-HOUR TRAFFIC & SPEED SUMMARY PER INBOUND</h3>
+      <div class="table-wrap mb">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Protocol / Name</th>
+              <th>Port</th>
+              <th>24h Snapshots</th>
+              <th>Avg Down (Mbps)</th>
+              <th>Max Down (Mbps)</th>
+              <th>Avg Up (Mbps)</th>
+              <th>Max Up (Mbps)</th>
+            </tr>
+          </thead>
+          <tbody id="mon-summary-body">
+            <tr><td colspan="8" style="text-align:center;padding:16px;color:var(--muted)">Loading 24h summary...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Inbounds & SNI Popularity -->
+    <div id="s-inbounds" class="section">
+      <div class="toolbar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <b style="font-size:16px">⚡ Inbounds & SNI Comparison</b>
+        <span style="color:var(--muted);font-size:13px" id="ib-period-title">(3 days)</span>
+        <span style="flex:1"></span>
+        <div style="display:flex;gap:4px;background:var(--card);padding:2px;border-radius:6px;border:1px solid var(--border)">
+          <button class="btn sm" id="ib-btn-1d" onclick="setInboundsPeriod(1)">24h</button>
+          <button class="btn sm primary" id="ib-btn-3d" onclick="setInboundsPeriod(3)">3 days</button>
+          <button class="btn sm" id="ib-btn-7d" onclick="setInboundsPeriod(7)">7 days</button>
+          <button class="btn sm" id="ib-btn-30d" onclick="setInboundsPeriod(30)">30 days</button>
+        </div>
+        <button class="btn" onclick="loadInboundsPopularity()">🔄 Refresh</button>
+      </div>
+
+      <div class="cards mb mt" id="ib-kpi-cards">
+        <div class="card"><div class="val" id="ib-kpi-total">—</div><div class="sub">Total Traffic</div></div>
+        <div class="card"><div class="val" id="ib-kpi-top-ib">—</div><div class="sub">Top Inbound</div></div>
+        <div class="card"><div class="val" id="ib-kpi-top-sni">—</div><div class="sub">Top SNI Mask</div></div>
+        <div class="card"><div class="val" id="ib-kpi-active-clients">—</div><div class="sub">Active Clients</div></div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+        <input type="search" id="ib-table-filter" placeholder="Filter by remark, SNI, protocol..." oninput="renderInboundsTable()" style="max-width:280px">
+        <select id="ib-proto-filter" onchange="renderInboundsTable()" style="background:var(--card);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:6px;font-size:13px">
+          <option value="">All Protocols</option>
+          <option value="vless">VLESS only</option>
+          <option value="hysteria">Hysteria only</option>
+          <option value="amneziawg">AmneziaWG only</option>
+        </select>
+        <span style="font-size:12px;color:var(--muted)" id="ib-rows-count"></span>
+      </div>
+
+      <div class="table-wrap mb">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:36px"></th>
+              <th style="cursor:pointer" onclick="sortInbounds('id')">ID ↕</th>
+              <th style="cursor:pointer" onclick="sortInbounds('remark')">Remark ↕</th>
+              <th>Protocol / Transport</th>
+              <th>Security / SNI & Target</th>
+              <th>Path / Mode / FP</th>
+              <th>Port</th>
+              <th style="cursor:pointer" onclick="sortInbounds('total_connections')">Sessions ↕</th>
+              <th style="cursor:pointer" onclick="sortInbounds('active_clients')">Clients (Act / Tot / 3d Online) ↕</th>
+              <th style="cursor:pointer" onclick="sortInbounds('period_down_bytes')">Down ↕</th>
+              <th style="cursor:pointer" onclick="sortInbounds('period_up_bytes')">Up ↕</th>
+              <th style="cursor:pointer" onclick="sortInbounds('period_total_bytes')">Total Traffic (Period) ↕</th>
+              <th style="width:140px;cursor:pointer" onclick="sortInbounds('period_share_pct')">Share % ↕</th>
+            </tr>
+          </thead>
+          <tbody id="ib-popularity-tbody">
+            <tr><td colspan="13" style="text-align:center;padding:20px;color:var(--muted)">Loading inbounds comparison...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Users -->
     <div id="s-users" class="section">
       <div class="toolbar">
@@ -714,50 +840,6 @@
             </tr>
           </thead>
           <tbody id="users-list"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Traffic -->
-    <div id="s-traffic" class="section">
-      <div class="toolbar">
-        <b>User Traffic Summary</b>
-        <label style="font-size:12px;color:var(--muted);margin-left:12px">Period:</label>
-        <select id="traffic-hours" onchange="loadTraffic()" style="background:var(--card);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-size:12px">
-          <option value="1">Last 1h</option>
-          <option value="6">Last 6h</option>
-          <option value="24" selected>Last 24h</option>
-          <option value="72">Last 3d</option>
-          <option value="168">Last 7d</option>
-        </select>
-        <label style="font-size:12px;color:var(--muted);margin-left:8px">Proto:</label>
-        <select id="traffic-proto" onchange="loadTraffic()" style="background:var(--card);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-size:12px">
-          <option value="all" selected>All</option>
-          <option value="vless">VLESS</option>
-          <option value="hysteria">Hysteria2</option>
-          <option value="awg">AWG</option>
-        </select>
-        <input type="search" id="traffic-search" placeholder="Search name or tg_id..." oninput="debounce(loadTraffic,400)()" style="max-width:200px;margin-left:8px">
-        <span style="flex:1"></span>
-        <span id="traffic-count" style="color:var(--muted);font-size:12px"></span>
-        <button class="btn" onclick="loadTraffic()">Refresh</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-           <thead>
-            <tr>
-              <th onclick="sortTraffic('name')" style="cursor:pointer">User <span id="sort-name"></span></th>
-              <th onclick="sortTraffic('protocol')" style="cursor:pointer">Protocol <span id="sort-protocol"></span></th>
-              <th onclick="sortTraffic('ip_count')" style="cursor:pointer">IPs <span id="sort-ip_count"></span></th>
-              <th onclick="sortTraffic('total_bytes')" style="cursor:pointer">Total Traffic <span id="sort-total_bytes"></span></th>
-              <th onclick="sortTraffic('rx_bytes')" style="cursor:pointer">RX <span id="sort-rx_bytes"></span></th>
-              <th onclick="sortTraffic('tx_bytes')" style="cursor:pointer">TX <span id="sort-tx_bytes"></span></th>
-              <th onclick="sortTraffic('rx_speed_max')" style="cursor:pointer">Speed ↓max <span id="sort-rx_speed_max"></span></th>
-              <th onclick="sortTraffic('tx_speed_max')" style="cursor:pointer">Speed ↑max <span id="sort-tx_speed_max"></span></th>
-              <th onclick="sortTraffic('snapshots')" style="cursor:pointer">Snapshots <span id="sort-snapshots"></span></th>
-            </tr>
-          </thead>
-          <tbody id="traffic-body"></tbody>
         </table>
       </div>
     </div>
@@ -859,6 +941,17 @@
       };
     }
 
+    function timeSince(ts) {
+      if (ts == null) return '?';
+      const sec = (Date.now() / 1000) - (typeof ts === 'number' ? ts : new Date(ts).getTime() / 1000);
+      if (sec < 60) return 'just now';
+      const min = Math.floor(sec / 60);
+      if (min < 60) return min + 'm ago';
+      const h = Math.floor(min / 60);
+      if (h < 24) return h + 'h ago';
+      return Math.floor(h / 24) + 'd ago';
+    }
+
     async function api(path, opts = {}) {
       if (!_cookie) {
         // Session cookie is set by the server when serving this page
@@ -886,14 +979,357 @@
       document.getElementById('s-' + id).classList.add('active');
       document.getElementById('tab-' + id).classList.add('active');
       if (id === 'dashboard') loadDashboard();
+      if (id === 'monitoring') loadMonitoring();
+      if (id === 'inbounds') loadInboundsPopularity();
       if (id === 'awg') loadAWG();
       if (id === 'vless') loadVLESS();
       if (id === 'proxy') loadProxy();
       if (id === 'testpay') { /* static UI, no load needed */ }
       if (id === 'messages') loadMsgLog(true);
       if (id === 'users') loadUsers();
-      if (id === 'traffic') loadTraffic();
     }
+
+    function _renderMonitoringData(d) {
+      if (!d) return;
+      // 1. Live Cards
+      const cardsEl = document.getElementById('mon-live-cards');
+      if (cardsEl && d.current_inbounds && d.current_inbounds.length > 0) {
+        cardsEl.innerHTML = d.current_inbounds.map(ib => {
+          const downMbps = (ib.down_speed_bps / 1024 / 1024).toFixed(4);
+          const upMbps = (ib.up_speed_bps / 1024 / 1024).toFixed(4);
+          const totalMb = (ib.total_bytes / 1024 / 1024).toFixed(1);
+          return `
+            <div class="card">
+              <h3>#${ib.inbound_id} ${esc(ib.remark)}</h3>
+              <div class="val" style="font-size:20px">${downMbps} <span style="font-size:12px;color:var(--muted)">Mbps ↓</span></div>
+              <div class="sub" style="font-size:12px;color:var(--muted)">Up: ${upMbps} Mbps ↑</div>
+              <div class="sub" style="font-size:11px;color:var(--muted);margin-top:4px">Total: ${totalMb} MB | Port: ${ib.port} (${ib.protocol})</div>
+            </div>`;
+        }).join('');
+      }
+
+      // 2. 24h Summary Table
+      const sumTbody = document.getElementById('mon-summary-body');
+      if (sumTbody && d.summary_24h && d.summary_24h.length > 0) {
+        sumTbody.innerHTML = d.summary_24h.map(s => `
+          <tr>
+            <td><b>#${s.inbound_id}</b></td>
+            <td><span class="badge ${s.protocol}">${esc(s.remark)}</span></td>
+            <td><code>${s.port}</code></td>
+            <td>${s.snapshots}</td>
+            <td style="color:var(--text)">${s.avg_down_mbps} Mbps</td>
+            <td style="color:var(--green);font-weight:600">${s.max_down_mbps} Mbps</td>
+            <td style="color:var(--muted)">${s.avg_up_mbps} Mbps</td>
+            <td style="color:var(--muted)">${s.max_up_mbps} Mbps</td>
+          </tr>
+        `).join('');
+      }
+    }
+
+    async function loadMonitoring() {
+      try {
+        const d = await api('/api/admin/api/monitoring');
+        _renderMonitoringData(d);
+      } catch (e) {
+        console.error("Failed to load monitoring stats:", e);
+      }
+    }
+
+    // ── Inbounds & SNI Popularity ──────────────────────────────────────────────
+    let _inboundsData = null;
+    let _inboundsPeriodDays = 3;
+    let _inboundsSortField = 'period_total_bytes';
+    let _inboundsSortAsc = false;
+
+    function setInboundsPeriod(days) {
+      _inboundsPeriodDays = days;
+      ['1d', '3d', '7d', '30d'].forEach(k => {
+        const btn = document.getElementById('ib-btn-' + k);
+        if (btn) btn.classList.remove('primary');
+      });
+      const curBtn = document.getElementById('ib-btn-' + (days === 1 ? '1d' : days + 'd'));
+      if (curBtn) curBtn.classList.add('primary');
+      const titleEl = document.getElementById('ib-period-title');
+      if (titleEl) titleEl.textContent = `(${days === 1 ? 'Last 24 hours' : 'Last ' + days + ' days'})`;
+      loadInboundsPopularity();
+    }
+
+    async function loadInboundsPopularity() {
+      const tbody = document.getElementById('ib-popularity-tbody');
+      if (tbody) tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--muted)">⏳ Loading inbounds comparison for ' + _inboundsPeriodDays + ' days...</td></tr>';
+      try {
+        const d = await api(`/api/admin/api/inbounds-stats?days=${_inboundsPeriodDays}`);
+        _inboundsData = d;
+        _renderInboundsKPI(d);
+        renderInboundsTable();
+      } catch (e) {
+        console.error("Failed to load inbounds stats:", e);
+        if (tbody) tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--red)">Failed to load data: ${esc(e.message)}</td></tr>`;
+      }
+    }
+
+    function _renderInboundsKPI(d) {
+      if (!d || !d.inbounds) return;
+      const totalGb = (d.total_period_bytes / (1024 * 1024 * 1024)).toFixed(2);
+      document.getElementById('ib-kpi-total').innerHTML = `${totalGb} <span style="font-size:14px;color:var(--muted)">GB</span>`;
+
+      // Top inbound
+      const topIb = d.inbounds[0];
+      if (topIb && topIb.period_total_bytes > 0) {
+        const topIbGb = (topIb.period_total_bytes / (1024 * 1024 * 1024)).toFixed(1);
+        document.getElementById('ib-kpi-top-ib').innerHTML = `<span style="color:var(--green)">#${topIb.id}</span> <span style="font-size:14px">${esc(topIb.remark)}</span> <div style="font-size:11px;color:var(--muted)">${topIbGb} GB (${topIb.period_share_pct}%)</div>`;
+      } else {
+        document.getElementById('ib-kpi-top-ib').textContent = '—';
+      }
+
+      // Top SNI mask
+      const sniCounts = {};
+      d.inbounds.forEach(ib => {
+        const snis = (ib.sni && ib.sni.length) ? ib.sni : (ib.target ? [ib.target] : []);
+        snis.forEach(s => {
+          if (!sniCounts[s]) sniCounts[s] = { count: 0, bytes: 0 };
+          sniCounts[s].count++;
+          sniCounts[s].bytes += (ib.period_total_bytes || 0);
+        });
+      });
+      let topSni = null;
+      let maxSniBytes = -1;
+      for (const [sni, info] of Object.entries(sniCounts)) {
+        if (info.bytes > maxSniBytes) {
+          maxSniBytes = info.bytes;
+          topSni = { sni, ...info };
+        }
+      }
+      if (topSni && maxSniBytes > 0) {
+        const sniGb = (topSni.bytes / (1024 * 1024 * 1024)).toFixed(1);
+        document.getElementById('ib-kpi-top-sni').innerHTML = `<span style="color:var(--accent);font-size:15px">${esc(topSni.sni)}</span> <div style="font-size:11px;color:var(--muted)">${sniGb} GB via mask</div>`;
+      } else {
+        document.getElementById('ib-kpi-top-sni').textContent = '—';
+      }
+
+      // Active unique clients
+      const totalAct = d.inbounds.reduce((acc, x) => acc + (x.active_clients || 0), 0);
+      const totalOnline = d.inbounds.reduce((acc, x) => acc + (x.online_in_period || 0), 0);
+      document.getElementById('ib-kpi-active-clients').innerHTML = `${totalAct} <span style="font-size:12px;color:var(--muted)">active</span> <div style="font-size:11px;color:var(--green)">${totalOnline} online in period</div>`;
+    }
+
+    function sortInbounds(field) {
+      if (_inboundsSortField === field) {
+        _inboundsSortAsc = !_inboundsSortAsc;
+      } else {
+        _inboundsSortField = field;
+        _inboundsSortAsc = false;
+      }
+      renderInboundsTable();
+    }
+
+    function renderInboundsTable() {
+      if (!_inboundsData || !_inboundsData.inbounds) return;
+      const q = (document.getElementById('ib-table-filter').value || '').trim().toLowerCase();
+      const protoFilter = (document.getElementById('ib-proto-filter').value || '').toLowerCase();
+
+      let list = [..._inboundsData.inbounds];
+
+      if (protoFilter) {
+        list = list.filter(ib => (ib.protocol || '').toLowerCase().includes(protoFilter));
+      }
+      if (q) {
+        list = list.filter(ib => {
+          const remark = (ib.remark || '').toLowerCase();
+          const snis = (ib.sni || []).join(' ').toLowerCase();
+          const target = (ib.target || '').toLowerCase();
+          const proto = (ib.protocol || '').toLowerCase();
+          const net = (ib.network || '').toLowerCase();
+          const port = String(ib.port || '');
+          const id = String(ib.id || '');
+          return remark.includes(q) || snis.includes(q) || target.includes(q) || proto.includes(q) || net.includes(q) || port.includes(q) || id.includes(q);
+        });
+      }
+
+      // Sort
+      list.sort((a, b) => {
+        let va = a[_inboundsSortField];
+        let vb = b[_inboundsSortField];
+        if (typeof va === 'string') va = va.toLowerCase();
+        if (typeof vb === 'string') vb = vb.toLowerCase();
+        if (va < vb) return _inboundsSortAsc ? -1 : 1;
+        if (va > vb) return _inboundsSortAsc ? 1 : -1;
+        return 0;
+      });
+
+      const countEl = document.getElementById('ib-rows-count');
+      if (countEl) countEl.textContent = `Showing ${list.length} of ${_inboundsData.inbounds.length} inbounds`;
+
+      const tbody = document.getElementById('ib-popularity-tbody');
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:20px;color:var(--muted)">No inbounds match your filter</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = list.map(ib => {
+        const statusBadge = ib.enable ? '<span class="badge on">ON</span>' : '<span class="badge off">OFF</span>';
+        
+        let protoBadgeClass = 'vless';
+        if (ib.protocol === 'hysteria') protoBadgeClass = 'hyst';
+        if (ib.protocol === 'amneziawg') protoBadgeClass = 'awg';
+
+        const protoLabel = `${ib.protocol.toUpperCase()}` + (ib.network ? ` / ${ib.network.toUpperCase()}` : '');
+
+        // SNI rendering
+        let sniHtml = '—';
+        if (ib.sni && ib.sni.length) {
+          sniHtml = ib.sni.map(s => `<span class="badge" style="background:#3b82f618;color:#93c5fd;font-family:monospace;margin:1px 2px">${esc(s)}</span>`).join(' ');
+        }
+        let targetHtml = '';
+        if (ib.target) {
+          targetHtml = `<div style="font-size:11px;color:var(--muted);margin-top:2px">Target: <code style="color:#cbd5e1">${esc(ib.target)}</code></div>`;
+        }
+
+        // Params (Path, Mode, Fingerprint)
+        const params = [];
+        if (ib.path) params.push(`<span title="Path">🛣️ <code>${esc(ib.path)}</code></span>`);
+        if (ib.mode) params.push(`<span class="badge" style="background:#1e293b;color:#cbd5e1">${esc(ib.mode)}</span>`);
+        if (ib.fingerprint) params.push(`<span title="Fingerprint">🦊 ${esc(ib.fingerprint)}</span>`);
+        const paramsHtml = params.length ? params.join('<br>') : '<span style="color:var(--muted)">—</span>';
+
+        // Traffic format
+        const formatTraffic = (bytes) => {
+          if (!bytes || bytes === 0) return '<span style="color:var(--muted)">0 MB</span>';
+          if (bytes > 1024 * 1024 * 1024) {
+            return `<b>${(bytes / (1024 * 1024 * 1024)).toFixed(2)}</b> <span style="font-size:11px;color:var(--muted)">GB</span>`;
+          }
+          return `<b>${(bytes / (1024 * 1024)).toFixed(1)}</b> <span style="font-size:11px;color:var(--muted)">MB</span>`;
+        };
+
+        const downHtml = formatTraffic(ib.period_down_bytes);
+        const upHtml = formatTraffic(ib.period_up_bytes);
+        const totHtml = formatTraffic(ib.period_total_bytes);
+
+        // Share progress bar
+        const pct = ib.period_share_pct || 0;
+        let barColor = 'var(--accent)';
+        if (pct >= 30) barColor = 'var(--green)';
+        else if (pct >= 10) barColor = '#3b82f6';
+        else if (pct === 0) barColor = 'var(--border)';
+
+        const shareHtml = `
+          <div style="display:flex;align-items:center;gap:6px">
+            <div style="flex:1;background:var(--bg);height:6px;border-radius:3px;overflow:hidden;border:1px solid #333">
+              <div style="background:${barColor};width:${Math.min(100, pct)}%;height:100%"></div>
+            </div>
+            <span style="font-size:12px;font-weight:600;min-width:40px;text-align:right">${pct}%</span>
+          </div>
+        `;
+
+        // Speeds info
+        let speedsHtml = '';
+        if (ib.max_down_speed_mbps > 0 || ib.max_up_speed_mbps > 0) {
+          speedsHtml = `<div style="font-size:11px;color:var(--muted);margin-top:2px">Peak: ↓${ib.max_down_speed_mbps} / ↑${ib.max_up_speed_mbps} Mbps</div>`;
+        }
+
+        // Sub-table for connected users
+        const users = ib.users || [];
+        const hasUsers = users.length > 0;
+        const toggleIcon = hasUsers ? `<span id="ib-toggle-icon-${ib.id}" style="cursor:pointer;font-size:14px;color:var(--accent);user-select:none" onclick="toggleInboundUsers(${ib.id})">▶</span>` : `<span style="color:var(--muted);font-size:12px">•</span>`;
+
+        let usersSubTableHtml = '';
+        if (hasUsers) {
+          usersSubTableHtml = `
+            <tr id="ib-users-row-${ib.id}" style="display:none;background:#0d1117">
+              <td colspan="13" style="padding:12px 16px 16px 36px">
+                <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px">👥 CONNECTED USERS BREAKDOWN (#${ib.id} ${esc(ib.remark)}):</div>
+                <table style="width:100%;font-size:12px;background:#161b22;border:1px solid #30363d;border-radius:6px">
+                  <thead>
+                    <tr style="color:var(--muted);border-bottom:1px solid #30363d;text-align:left">
+                      <th style="padding:6px 10px">User / Telegram</th>
+                      <th style="padding:6px 10px">Client Identifier</th>
+                      <th style="padding:6px 10px">Sessions</th>
+                      <th style="padding:6px 10px">Down</th>
+                      <th style="padding:6px 10px">Up</th>
+                      <th style="padding:6px 10px">Total Traffic</th>
+                      <th style="padding:6px 10px">Inbound Share</th>
+                      <th style="padding:6px 10px">First Connected</th>
+                      <th style="padding:6px 10px">Last Active</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${users.map(u => {
+                      const uTot = u.total_bytes || 0;
+                      const uPct = ib.period_total_bytes > 0 ? ((uTot / ib.period_total_bytes) * 100).toFixed(1) : '—';
+                      return `
+                        <tr style="border-bottom:1px solid #21262d">
+                          <td style="padding:6px 10px">
+                            ${portalLink(u.web_token, u.first_name)}
+                            ${u.tg_id ? `<span style="font-size:11px;color:var(--muted);margin-left:4px">(${u.tg_id})</span>` : ''}
+                          </td>
+                          <td style="padding:6px 10px;font-family:monospace;color:#93c5fd">${esc(u.email)}</td>
+                          <td style="padding:6px 10px;font-weight:600;color:var(--accent)">${u.connections_count}</td>
+                          <td style="padding:6px 10px" class="mono">${formatTraffic(u.down_bytes)}</td>
+                          <td style="padding:6px 10px" class="mono" style="color:var(--muted)">${formatTraffic(u.up_bytes)}</td>
+                          <td style="padding:6px 10px" class="mono"><b>${formatTraffic(uTot)}</b></td>
+                          <td style="padding:6px 10px;color:var(--muted)">${uPct !== '—' ? uPct + '%' : '—'}</td>
+                          <td style="padding:6px 10px;color:var(--muted);font-size:11px">${u.first_connected_at || '—'}</td>
+                          <td style="padding:6px 10px;color:var(--green);font-size:11px">${u.last_connected_at || '—'}</td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          `;
+        }
+
+        return `
+          <tr style="cursor:${hasUsers ? 'pointer' : 'default'}" onclick="${hasUsers ? `if (event.target.tagName !== 'SPAN' && event.target.tagName !== 'A') toggleInboundUsers(${ib.id})` : ''}">
+            <td style="text-align:center">${toggleIcon}</td>
+            <td><b>#${ib.id}</b></td>
+            <td>
+              <div style="font-weight:600">${esc(ib.remark)}</div>
+              <div style="margin-top:2px">${statusBadge}</div>
+            </td>
+            <td>
+              <span class="badge ${protoBadgeClass}">${protoLabel}</span>
+              ${ib.security !== 'none' ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${esc(ib.security.toUpperCase())}</div>` : ''}
+            </td>
+            <td>
+              ${sniHtml}
+              ${targetHtml}
+            </td>
+            <td style="font-size:12px">${paramsHtml}</td>
+            <td><code>${ib.port}</code></td>
+            <td class="mono" style="font-weight:600;color:var(--accent)">${ib.total_connections || 0}</td>
+            <td class="mono">
+              <span style="color:var(--green);font-weight:600" title="Active Clients">${ib.active_clients}</span>
+              <span style="color:var(--muted)"> / ${ib.total_clients}</span>
+              ${ib.online_in_period > 0 ? `<div style="font-size:11px;color:var(--green);margin-top:2px">⚡ ${ib.online_in_period} online</div>` : ''}
+            </td>
+            <td class="mono" style="color:var(--text)">${downHtml}</td>
+            <td class="mono" style="color:var(--muted)">${upHtml}</td>
+            <td class="mono">
+              ${totHtml}
+              ${speedsHtml}
+            </td>
+            <td>${shareHtml}</td>
+          </tr>
+          ${usersSubTableHtml}
+        `;
+      }).join('');
+    }
+
+    function toggleInboundUsers(ibId) {
+      const row = document.getElementById(`ib-users-row-${ibId}`);
+      const icon = document.getElementById(`ib-toggle-icon-${ibId}`);
+      if (!row) return;
+      if (row.style.display === 'none' || !row.style.display) {
+        row.style.display = 'table-row';
+        if (icon) icon.innerHTML = '▼';
+      } else {
+        row.style.display = 'none';
+        if (icon) icon.innerHTML = '▶';
+      }
+    }
+
 
     function openModal(html) {
       document.getElementById('modal-content').innerHTML = html;
@@ -904,19 +1340,52 @@
       document.getElementById('modal').classList.remove('show');
     }
 
+    function toUTC9Date(s) {
+      if (!s) return null;
+      if (s instanceof Date) return isNaN(s.getTime()) ? null : s;
+      if (typeof s === 'number') {
+        const ms = s < 1e11 ? s * 1000 : s;
+        const d = new Date(ms);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      if (typeof s === 'string') {
+        let str = s.trim();
+        if (!str) return null;
+        if (/^\d{10,13}$/.test(str)) {
+          const num = parseInt(str, 10);
+          const ms = num < 1e11 ? num * 1000 : num;
+          const d = new Date(ms);
+          return isNaN(d.getTime()) ? null : d;
+        }
+        if (!str.includes('T')) str = str.replace(' ', 'T');
+        if (!str.endsWith('Z') && !str.endsWith('z') && !/[+-]\d{2}:?\d{2}$/.test(str)) {
+          str += 'Z';
+        }
+        const d = new Date(str);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      return null;
+    }
+
     function fmtDate(s) {
-      if (!s) return '—';
-      // If date doesn't contain T, replace space with T to create ISO-like string
-      let dString = typeof s === 'string' && !s.includes('T') ? s.replace(' ', 'T') : s;
-      // Ensure it ends in Z if not present
-      if (!dString.endsWith('Z') && !dString.endsWith('z')) dString += 'Z';
-      
-      const d = new Date(dString);
-      if (isNaN(d)) return 'Invalid Date';
-      
-      d.setTime(d.getTime() + 9 * 3600000); // shift to UTC+9
-      return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'})
-        + ' ' + d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+      const d = toUTC9Date(s);
+      if (!d) return '—';
+      return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric', timeZone: 'Asia/Yakutsk'})
+        + ' ' + d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit', timeZone: 'Asia/Yakutsk'});
+    }
+
+    function fmtDateFull(s) {
+      const d = toUTC9Date(s);
+      if (!d) return '—';
+      return d.toLocaleString('ru-RU', {
+        timeZone: 'Asia/Yakutsk',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
     }
 
     // ── WebSocket ──────────────────────────────────────────────────────────────
@@ -942,6 +1411,9 @@
             case 'online':
               _onlineUsers = msg.data;
               _renderOnline();
+              break;
+            case 'monitoring':
+              _renderMonitoringData(msg.data);
               break;
             case 'pong':
               break;
@@ -1016,8 +1488,31 @@
       return 'pending';
     }
 
-    function _protoLabel(proto) {
-      return proto.toUpperCase();
+    function _typeLabelFromInbound(ib) {
+      const tag = (ib && ib.tag) || '';
+      const port = (ib && ib.port) || 0;
+      const ibId = (ib && ib.id) ? ib.id : null;
+      const idPrefix = ibId ? `#${ibId} ` : '';
+
+      if (tag.includes('4443') || tag.includes('35443') || port === 4443 || port === 35443 || (ib.protocol && ib.protocol.includes('hysteria'))) {
+        return `${idPrefix || (port === 35443 ? '#16 ' : '#4 ')}HYST2`;
+      }
+      if (tag.includes('7443') || port === 7443 || port === 53151 || tag.includes('53151')) {
+        return `${idPrefix || (port === 53151 ? '#10 ' : '#1 ')}V|TCP`;
+      }
+      if (tag.includes('14715') || port === 14715) {
+        return `${idPrefix || '#9 '}V|WS`;
+      }
+      if (tag.includes('47447') || tag.includes('38745') || tag.includes('48745') || tag.includes('8081') || port === 47447 || port === 38745 || port === 48745 || port === 8081 || (tag && tag.toLowerCase().includes('xhttp'))) {
+        let fallbackId = '';
+        if (port === 47447) fallbackId = '#2 ';
+        else if (port === 38745) fallbackId = '#14 ';
+        else if (port === 48745) fallbackId = '#15 ';
+        else if (port === 8081) fallbackId = '#5 ';
+        return `${idPrefix || fallbackId}V|XHTTP`;
+      }
+      if (tag.toLowerCase().includes('tcp')) return `${idPrefix}V|TCP`;
+      return idPrefix ? `${idPrefix}VLESS` : null;
     }
 
     function _renderOnline() {
@@ -1031,17 +1526,54 @@
       if (tableEl) {
         tableEl.innerHTML = online.length
           ? online.map(u => {
+              const inbounds = u.inbounds || [];
               const protos = u.protocols || (u.type ? [u.type] : []);
-              const badges = protos.map(p =>
-                `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:2px">
-                  <span class="type-full">${_protoLabel(p)}</span><span class="type-short">${p[0].toUpperCase()}</span>
-                </span>`
-              ).join('');
-              const displayName = u.names ? u.names[0] : u.name;
+              let badges;
+              if (inbounds.length > 0) {
+                const seen = new Set();
+                badges = inbounds.map(ib => {
+                  const label = _typeLabelFromInbound(ib);
+                  if (!label || seen.has(label)) return '';
+                  seen.add(label);
+                  const cls = label.includes('V|') || label.includes('VLESS') ? 'on' : 'hyst';
+                  const title = ib.remark ? `${ib.remark} (Port ${ib.port || '—'})` : (ib.port ? `Port ${ib.port}` : '');
+                  return `<span class="badge ${cls}" style="margin-right:2px" title="${esc(title)}">${label}</span>`;
+                }).filter(Boolean).join('');
+              } else {
+                badges = protos.map(p => {
+                  const label = p === 'awg' ? '#100 AWG' : p[0].toUpperCase();
+                  return `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:2px">${label}</span>`;
+                }).join('');
+              }
+              const lastSpeed = u.last_speed_mbps > 0
+                  ? '<span style="color:var(--muted)">' + u.last_speed_mbps + '<span class="speed-unit"> Mbps</span></span>'
+                  : '<span style="color:var(--muted)">—</span>';
+              const platforms = u.platforms || [];
+              const platformIcons = {
+                'android': '📱',
+                'ios': '🍎',
+                'macos': '💻',
+                'windows': '🪟',
+                'linux': '🐧',
+              };
+              const platformHtml = platforms.length
+                ? platforms.map(p => {
+                    const icon = platformIcons[p.platform] || '❓';
+                    return `<span title="${p.platform}${p.client_app ? ' / ' + p.client_app : ''} (×${p.seen_count})" style="cursor:help">${icon}</span>`;
+                  }).join('')
+                : '<span style="color:var(--muted);font-size:0.85em">—</span>';
+              const uniqueNames = Array.from(new Set(u.names || []));
+              const namesHtml = uniqueNames
+                .map(n => `<span onclick="copyText(this)" style="cursor:copy" title="Click to copy">${n}</span>`)
+                .join(', ') || '—';
+              const paidTag = u.has_paid
+                ? ' <span class="badge paid" style="font-size:0.65em;padding:1px 4px;margin-left:2px" title="Оплачивал подписку">💳 PAID</span>'
+                : '';
               return `<tr>
                 <td><span class="pulse-dot"></span>${badges}</td>
-                <td>${portalLink(u.web_token, u.first_name)}</td>
-                <td class="col-online-name">${displayName}</td>
+                <td>${portalLink(u.web_token, u.first_name)}${paidTag}</td>
+                <td class="mono" style="font-size:0.85em">${namesHtml}</td>
+                <td class="mono">${lastSpeed}</td>
                 <td class="mono">${u.speed_mbps > 0
                     ? '<span style="color:var(--green)">' + u.speed_mbps + '<span class="speed-unit"> Mbps</span></span>'
                     : '<span style="color:var(--muted)">—</span>'}</td>
@@ -1049,9 +1581,10 @@
                     ? '<span style="color:var(--orange)">' + u.ip_count + '</span>'
                     : u.ip_count}</td>
                 <td>${u.expires ? fmtDate(u.expires) + (u.is_test ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>' : '') : '—'}</td>
+                <td class="mono" style="font-size:1.1em">${platformHtml}</td>
               </tr>`;
             }).join('')
-          : '<tr><td colspan="6" style="color:var(--muted);text-align:center">No active connections</td></tr>';
+          : '<tr><td colspan="8" style="color:var(--muted);text-align:center">No active connections</td></tr>';
       }
     }
 
@@ -1065,59 +1598,68 @@
       }
     }
 
-    function fmtDt(s) {
-      if (!s) return '—';
-      const d = new Date(s);
-      if (isNaN(d)) return s;
-      return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'})
-        + ' ' + d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+    function renderOffline(users) {
+      const countEl = document.getElementById('offline-count');
+      const tableEl = document.getElementById('dash-offline');
+      if (countEl) countEl.textContent = `(${users.length})`;
+      if (!tableEl) return;
+
+      users.sort((a, b) => (b.last_seen_ts || 0) - (a.last_seen_ts || 0));
+
+      tableEl.innerHTML = users.length
+        ? users.map(u => {
+            const now = Date.now();
+            const lastTs = u.last_seen_ts || 0;
+            const hoursAgo = lastTs ? (now - lastTs) / 3600000 : Infinity;
+            let dot;
+            if (hoursAgo < 2) dot = '<span class="pulse-dot" style="background:var(--green)"></span>';
+            else if (hoursAgo < 24) dot = '<span style="color:var(--orange);font-size:18px">◉</span>';
+            else dot = '<span style="color:var(--red);font-size:18px">◉</span>';
+
+            const displayName = u.first_name || (u.names && u.names[0]) || '—';
+            const badges = (u.protocols || [])
+              .map(p => `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:2px">${p[0].toUpperCase()}</span>`)
+              .join(' ');
+            const testTag = u.is_test
+              ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>'
+              : '';
+
+            const uniqueNames = Array.from(new Set(u.names || []));
+            const namesHtml = uniqueNames
+              .map(n => `<span onclick="copyText(this)" style="cursor:copy" title="Click to copy">${n}</span>`)
+              .join(', ') || '—';
+            return `<tr>
+              <td>${dot} ${portalLink(u.web_token, displayName)}${testTag}</td>
+              <td class="mono" style="font-size:0.85em">${namesHtml}</td>
+              <td>${badges}</td>
+              <td class="mono">${u.last_seen || '—'}</td>
+              <td class="mono">${u.expires ? fmtDate(u.expires) : '—'}</td>
+            </tr>`;
+          }).join('')
+        : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No users</td></tr>';
     }
 
-    // ── Offline Users (dashboard section) ──────────────────────────────────────
+    function copyText(el) {
+      const text = el.textContent.trim();
+      navigator.clipboard.writeText(text).then(() => {
+        el.style.opacity = '0.4';
+        setTimeout(() => el.style.opacity = '1', 300);
+      }).catch(() => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      });
+    }
 
-    async function loadOffline() {
-      const el = document.getElementById('dash-offline');
-      const countEl = document.getElementById('dash-offline-count');
-      if (!el) return;
-      el.innerHTML = '<tr><td colspan="5" style="color:var(--muted);text-align:center">Loading...</td></tr>';
-      try {
-        const users = await api('/api/admin/offline');
-        if (countEl) countEl.textContent = `(${users.length})`;
-        if (!users.length) {
-          el.innerHTML = '<tr><td colspan="5" style="color:var(--muted);text-align:center">Everyone is online</td></tr>';
-          return;
-        }
-        el.innerHTML = users.map(u => {
-          const lastSeen = u.last_seen
-            ? fmtUTC9_full(u.last_seen)
-            : '<span style="color:var(--muted)">never</span>';
-          const protos = u.protocols || (u.type ? [u.type] : []);
-          const badges = protos.map(p =>
-            `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:2px">
-              <span class="type-full">${_protoLabel(p)}</span><span class="type-short">${p[0].toUpperCase()}</span>
-            </span>`
-          ).join('');
-          const displayName = u.names ? u.names[0] : u.name;
-          return `<tr>
-            <td>${badges}</td>
-            <td>${portalLink(u.web_token, u.first_name)}</td>
-            <td class="col-online-name">${displayName}</td>
-            <td>${lastSeen}</td>
-             <td>${u.expires ? fmtDate(u.expires) + (u.is_test ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>' : '') : '—'}</td>
-          </tr>`;
-        }).join('');
-      } catch (e) {
-        el.innerHTML = '<tr><td colspan="5" style="color:var(--red)">Error loading offline users</td></tr>';
-      }
+    function fmtDt(s) {
+      return fmtDate(s);
     }
 
     function fmtUTC9_full(dateStr) {
-      if (!dateStr) return '—';
-      const d = new Date(dateStr + ':00Z');
-      if (isNaN(d)) return dateStr;
-      d.setTime(d.getTime() + 9 * 3600000);
-      return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric', timeZone:'UTC'})
-        + ' ' + d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit', timeZone:'UTC'});
+      return fmtDateFull(dateStr);
     }
 
     // ── Dashboard ─────────────────────────────────────────────────────────────
@@ -1230,77 +1772,133 @@
       `);
     }
 
-    // ── Traffic ─────────────────────────────────────────────────────────────────
-    let _trafficData = [];
-    let _trafficSort = { key: 'total_bytes', dir: 'asc' };
+    // ── Reset User ──────────────────────────────────────────────────────────────
 
-    function sortTraffic(key) {
-      if (_trafficSort.key === key) {
-        _trafficSort.dir = _trafficSort.dir === 'desc' ? 'asc' : 'desc';
-      } else {
-        _trafficSort.key = key;
-        _trafficSort.dir = 'desc';
-      }
-      _trafficData.sort((a, b) => {
-        let va = a[key], vb = b[key];
-        if (typeof va === 'string') va = va.toLowerCase();
-        if (typeof vb === 'string') vb = vb.toLowerCase();
-        if (va < vb) return _trafficSort.dir === 'desc' ? 1 : -1;
-        if (va > vb) return _trafficSort.dir === 'desc' ? -1 : 1;
-        return 0;
-      });
-      renderTraffic();
-      document.querySelectorAll('[id^="sort-"]').forEach(el => el.textContent = '');
-      document.getElementById('sort-' + key).textContent = _trafficSort.dir === 'desc' ? '▼' : '▲';
-    }
-
-    function renderTraffic() {
-      const tbody = document.getElementById('traffic-body');
-      if (!_trafficData.length) {
-        tbody.innerHTML = '<tr><td colspan="9" style="color:var(--muted);text-align:center;padding:24px">No traffic data for this period</td></tr>';
-        return;
-      }
-      tbody.innerHTML = _trafficData.map(u => {
-        const name = u.first_name
-          ? `<b>${esc(u.first_name)}</b><br><span style="color:var(--muted);font-size:11px">${esc(u.client_name)}</span>`
-          : `<b>${esc(u.client_name)}</b>`;
-        const tgLink = u.tg_id
-          ? `<br><a href="tg://user?id=${u.tg_id}" style="color:var(--muted);font-size:11px">tg:${u.tg_id}</a>`
-          : '';
-        const protoBadge = `<span class="badge badge-${u.protocol}">${u.protocol}</span>`;
-        const ips = u.ip_count ? `<span style="color:var(--green)">${u.ip_count}</span>` : '0';
-        return `<tr>
-          <td>${name}${tgLink}</td>
-          <td>${protoBadge}</td>
-          <td style="text-align:center">${ips}</td>
-          <td><b>${u.total_fmt}</b></td>
-          <td style="color:var(--muted)">${u.rx_fmt}</td>
-          <td style="color:var(--muted)">${u.tx_fmt}</td>
-          <td style="font-size:11px"><span style="color:var(--green)">↓${u.rx_speed_max}</span> <span style="color:var(--orange)">↑${u.tx_speed_max}</span></td>
-          <td style="font-size:11px;color:var(--muted)"><span>↓${u.rx_speed_avg}</span> <span>↑${u.tx_speed_avg}</span></td>
-          <td style="text-align:center;color:var(--muted);font-size:11px">${u.snapshots}</td>
-        </tr>`;
-      }).join('');
-    }
-
-    async function loadTraffic() {
-      const hours = document.getElementById('traffic-hours').value;
-      const proto = document.getElementById('traffic-proto').value;
-      const search = document.getElementById('traffic-search').value;
-      const params = new URLSearchParams({hours, proto});
-      if (search) params.set('search', search);
+    async function resetPreview() {
+      const tgId = document.getElementById('reset-tg-id').value.trim();
+      const status = document.getElementById('reset-status');
+      if (!tgId) { status.textContent = 'Enter TG ID'; return; }
+      status.textContent = 'Loading...';
       try {
-        const d = await api('/api/admin/speed/users?' + params);
-        document.getElementById('traffic-count').textContent = `${d.total} users`;
-        _trafficData = d.users;
-        document.querySelectorAll('[id^="sort-"]').forEach(el => el.textContent = '');
-        sortTraffic(_trafficSort.key);
+        const r = await api(`/api/admin/users/${tgId}/delete-preview`);
+        if (!r.found) { status.textContent = 'User not found'; return; }
+        let html = `<div style="min-width:500px;max-width:90vw">
+          <h2 style="color:var(--red);margin-bottom:16px">🗑 Delete User Preview</h2>`;
+
+        // User info
+        const u = r.user;
+        html += `<div style="background:var(--bg);border-radius:6px;padding:12px;margin-bottom:12px">
+          <table class="sub-table" style="width:100%">
+            <tr><td style="color:var(--muted)">TG ID</td><td class="mono">${esc(u.tg_id)}</td></tr>
+            <tr><td style="color:var(--muted)">Name</td><td>${esc(u.first_name)}</td></tr>
+            <tr><td style="color:var(--muted)">Email</td><td>${esc(u.email)}</td></tr>
+            <tr><td style="color:var(--muted)">Subscription</td><td>${u.subscription_until ? esc(u.subscription_until) : '—'}</td></tr>
+            <tr><td style="color:var(--muted)">Registered</td><td>${u.created_at ? fmtDate(u.created_at) : '—'}</td></tr>
+          </table>
+        </div>`;
+
+        // VPN Keys
+        if (r.vpn_keys.length) {
+          html += `<h3 style="font-size:13px;margin-bottom:6px;color:var(--red)">VPN Keys (${r.vpn_keys.length})</h3>
+          <div style="background:var(--bg);border-radius:6px;padding:8px 12px;margin-bottom:12px">
+            <table class="sub-table" style="width:100%">
+              <tr><th style="color:var(--muted)">Client</th><th style="color:var(--muted)">Type</th><th style="color:var(--muted)">Expires</th></tr>`;
+          r.vpn_keys.forEach(k => {
+            html += `<tr><td class="mono">${esc(k.client_name)}</td><td><span class="badge ${_protoBadgeClass(k.vpn_type)}">${esc(k.vpn_type)}</span></td><td>${k.expires_at ? fmtDate(k.expires_at) : '—'}</td></tr>`;
+          });
+          html += `</table></div>`;
+        }
+
+        // Payments
+        if (r.payments.length) {
+          html += `<h3 style="font-size:13px;margin-bottom:6px;color:var(--red)">Payments (${r.payments.length})</h3>
+          <div style="background:var(--bg);border-radius:6px;padding:8px 12px;margin-bottom:12px">
+            <table class="sub-table" style="width:100%">
+              <tr><th style="color:var(--muted)">Payment</th><th style="color:var(--muted)">Tariff</th><th style="color:var(--muted)">Amount</th><th style="color:var(--muted)">Status</th></tr>`;
+          r.payments.forEach(p => {
+            const st = p.status === 'paid' ? '<span style="color:var(--green)">paid</span>' : esc(p.status);
+            html += `<tr><td class="mono" style="font-size:11px">${esc(p.payment_id).substring(0,16)}…</td><td>${esc(p.tariff)}</td><td>${p.amount} ₽</td><td>${st}</td></tr>`;
+          });
+          html += `</table></div>`;
+        }
+
+        // AWG clients
+        if (r.awg_clients.length) {
+          html += `<h3 style="font-size:13px;margin-bottom:6px;color:var(--red)">AWG Clients (${r.awg_clients.length})</h3>
+          <div style="background:var(--bg);border-radius:6px;padding:8px 12px;margin-bottom:12px">
+            <table class="sub-table" style="width:100%">
+              <tr><th style="color:var(--muted)">Name</th><th style="color:var(--muted)">Address</th><th style="color:var(--muted)">Enabled</th></tr>`;
+          r.awg_clients.forEach(c => {
+            html += `<tr><td class="mono">${esc(c.name)}</td><td>${c.address}</td><td>${c.enabled ? '✓' : '✗'}</td></tr>`;
+          });
+          html += `</table></div>`;
+        }
+
+        // Related counts
+        const rc = r.related_counts;
+        const rcTotal = Object.values(rc).reduce((a, b) => a + b, 0);
+        if (rcTotal > 0) {
+          html += `<h3 style="font-size:13px;margin-bottom:6px;color:var(--muted)">Related Records (${rcTotal})</h3>
+          <div style="background:var(--bg);border-radius:6px;padding:8px 12px;margin-bottom:12px">
+            <div style="display:flex;flex-wrap:wrap;gap:8px">`;
+          Object.entries(rc).forEach(([tbl, cnt]) => {
+            if (cnt > 0) html += `<span style="background:var(--card);padding:4px 10px;border-radius:4px;font-size:11px;color:var(--muted)">${tbl}: <b style="color:var(--text)">${cnt}</b></span>`;
+          });
+          html += `</div></div>`;
+        }
+
+        // x-ui backup notice
+        html += `<div style="background:#7c3aed22;border:1px solid var(--accent);border-radius:6px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:var(--accent)">
+          ⚠️ An <b>x-ui backup</b> will be created automatically before deletion
+        </div>`;
+
+        // Confirm button
+        html += `<div style="display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="closeModal()" style="padding:8px 16px;background:var(--border);color:var(--text);border:none;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
+          <button id="btn-confirm-delete" onclick="resetDelete(${tgId})" style="padding:8px 16px;background:var(--red);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">🗑 Confirm Delete</button>
+        </div></div>`;
+
+        openModal(html);
+        status.textContent = '';
       } catch (e) {
-        console.error('Traffic load error:', e);
-        _trafficData = [];
-        renderTraffic();
-        document.getElementById('traffic-body').innerHTML =
-          `<tr><td colspan="9" style="color:var(--red);text-align:center">Error: ${e.message}</td></tr>`;
+        status.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+      }
+    }
+
+    async function resetDelete(tgId) {
+      const btn = document.getElementById('btn-confirm-delete');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Deleting...'; }
+      try {
+        const r = await api(`/api/admin/users/${tgId}/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirm: true }),
+        });
+        if (r.status === 'ok') {
+          let html = `<div style="min-width:400px">
+            <h2 style="color:var(--green);margin-bottom:16px">✅ User deleted</h2>
+            <div style="background:var(--bg);border-radius:6px;padding:12px;margin-bottom:12px">
+              <div style="font-size:12px;color:var(--muted);margin-bottom:6px">x-ui backup:</div>
+              <code style="color:var(--accent);font-size:12px;word-break:break-all">${r.backup_path}</code>
+            </div>
+            <div style="background:var(--bg);border-radius:6px;padding:12px;margin-bottom:16px">
+              <h3 style="font-size:13px;margin-bottom:8px;color:var(--muted)">Deleted</h3>
+              <div style="display:flex;flex-wrap:wrap;gap:6px">`;
+          Object.entries(r.deleted).forEach(([key, val]) => {
+            if (val > 0) html += `<span style="background:var(--card);padding:4px 10px;border-radius:4px;font-size:11px">${key}: <b style="color:var(--green)">${val}</b></span>`;
+          });
+          html += `</div></div>
+            <div style="display:flex;justify-content:flex-end">
+              <button onclick="closeModal()" style="padding:8px 16px;background:var(--border);color:var(--text);border:none;border-radius:6px;cursor:pointer;font-size:13px">Close</button>
+            </div></div>`;
+          openModal(html);
+          document.getElementById('reset-status').innerHTML = `<span style="color:var(--green)">✅ User ${tgId} deleted</span>`;
+        }
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = '🗑 Confirm Delete'; }
+        document.getElementById('reset-status').innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+        // Show error in modal
+        openModal(`<div style="min-width:300px"><h2 style="color:var(--red);margin-bottom:12px">❌ Delete failed</h2><p style="color:var(--muted)">${esc(e.message)}</p><div style="display:flex;justify-content:flex-end;margin-top:16px"><button onclick="closeModal()" style="padding:8px 16px;background:var(--border);color:var(--text);border:none;border-radius:6px;cursor:pointer;font-size:13px">Close</button></div></div>`);
       }
     }
 
@@ -1332,12 +1930,22 @@
           <div class="val">${d.users.total}</div>
           <div class="sub">${d.users.active} active (${d.users.active_sub} sub + ${d.users.active_key_only} key)</div>
         </div>
+        <div class="card" style="border-color:${d.users.expiring_soon > 0 ? 'var(--orange)' : 'var(--border)'}">
+          <h3>Expiring Soon</h3>
+          <div class="val" style="color:${d.users.expiring_soon > 0 ? 'var(--orange)' : 'var(--text)'}">${d.users.expiring_soon || 0}</div>
+          <div class="sub">истекают в течение 3 дней</div>
+        </div>
+        <div class="card" style="border-color:${d.users.recently_expired > 0 ? 'var(--red)' : 'var(--border)'}">
+          <h3>Recently Expired</h3>
+          <div class="val" style="color:${d.users.recently_expired > 0 ? 'var(--red)' : 'var(--text)'}">${d.users.recently_expired || 0}</div>
+          <div class="sub">истекли 0-30 дней назад</div>
+        </div>
         <div class="card">
           <h3>NL Proxy</h3>
           <div class="val" style="font-size:13px">${d.nl_proxy.host}:${d.nl_proxy.port}</div>
           <div class="sub">
-            <span class="dot ${d.nl_proxy.status === 'up' ? 'on' : 'off'}"></span>
-            ${d.nl_proxy.status === 'up' ? 'UP' : 'DOWN'}
+            <span class="dot ${(d.nl_proxy.status || '').startsWith('up') ? 'on' : 'off'}"></span>
+            ${(d.nl_proxy.status || '').startsWith('up') ? 'UP' : 'DOWN'}
           </div>
           <div class="sub" style="font-size:11px;color:var(--muted)">
             YouTube → ${d.nl_proxy.routing === 'direct' ? 'DIRECT' : 'NL'}
@@ -1365,28 +1973,52 @@
           <div class="sub">${d.payments.paid} paid / ${d.payments.total} total</div>
         </div>`;
 
-      // Extra dashboard cards (protocol mix, autopay, discounts)
-      const proto = d.protocol_breakdown || [];
-      const protoHtml = proto.map(p => `${p.vpn_type.toUpperCase()}: <b>${p.count}</b>`).join(' <span style="font-size:12px;color:var(--muted)">/</span> ') || '<span style="color:var(--muted)">N/A</span>';
-      const ap = d.autopay_summary || {};
-      const disc = d.discount_summary || [];
-      const discTotal = disc.reduce((s, x) => s + x.user_count, 0);
-      document.getElementById('dash-extra-cards').innerHTML = `
-        <div class="card">
-          <h3>Protocol Mix</h3>
-          <div class="val" style="font-size:14px">${protoHtml}</div>
-          <div class="sub">active keys by type</div>
-        </div>
-        <div class="card">
-          <h3>Autopay</h3>
-          <div class="val">${ap.enabled || 0}</div>
-          <div class="sub">${ap.with_method || 0} with saved card</div>
-        </div>
-        <div class="card">
-          <h3>Discounts</h3>
-          <div class="val">${discTotal}</div>
-          <div class="sub">${disc.map(x => x.discount + '%: ' + x.user_count).join(', ') || 'none'}</div>
-        </div>`;
+      document.getElementById('dash-extra-cards').innerHTML = '';
+
+      // Render Expiring Soon Table (0-3 days)
+      const subSum = d.subscription_summary || {};
+      const expiringSoon = subSum.expiring_soon || [];
+      document.getElementById('expiring-soon-count').textContent = `(${expiringSoon.length})`;
+      document.getElementById('dash-expiring-soon').innerHTML = expiringSoon.length
+        ? expiringSoon.map(u => {
+            const hours = u.hours_left != null ? u.hours_left : 0;
+            const daysLeft = Math.floor(hours / 24);
+            const hoursMod = hours % 24;
+            const leftText = daysLeft > 0 ? `${daysLeft}д ${hoursMod}ч` : `${hoursMod}ч`;
+            return `
+              <tr>
+                <td class="mono">${u.tg_id}</td>
+                <td>${portalLink(u.web_token, (u.first_name || '') + ' ' + (u.last_name || ''))}</td>
+                <td>${fmtDate(u.subscription_until)}</td>
+                <td><span class="badge" style="background:#f59e0b22;color:var(--orange)">осталось ${leftText}</span></td>
+                <td>
+                  <button class="btn sm primary" onclick="showUserDetail(${u.tg_id})">Продлить / Профиль</button>
+                </td>
+              </tr>`;
+          }).join('')
+        : '<tr><td colspan="5" style="color:var(--muted);text-align:center">Нет подписок, истекающих в ближайшие 3 дня</td></tr>';
+
+      // Render Recently Expired Table (0-30 days ago)
+      const recentlyExpired = subSum.recently_expired || [];
+      document.getElementById('recently-expired-count').textContent = `(${recentlyExpired.length})`;
+      document.getElementById('dash-recently-expired').innerHTML = recentlyExpired.length
+        ? recentlyExpired.map(u => {
+            const hours = u.hours_ago != null ? u.hours_ago : 0;
+            const daysAgo = Math.floor(hours / 24);
+            const hoursMod = hours % 24;
+            const agoText = daysAgo > 0 ? `${daysAgo}д ${hoursMod}ч назад` : `${hoursMod}ч назад`;
+            return `
+              <tr>
+                <td class="mono">${u.tg_id || '—'}</td>
+                <td>${portalLink(u.web_token, (u.first_name || '') + ' ' + (u.last_name || ''))}</td>
+                <td>${fmtDate(u.subscription_until)}</td>
+                <td><span class="badge" style="background:#ef444422;color:var(--red)">истекла ${agoText}</span></td>
+                <td>
+                  <button class="btn sm red" onclick="showUserDetail(${u.tg_id})">Детали / Возврат</button>
+                </td>
+              </tr>`;
+          }).join('')
+        : '<tr><td colspan="5" style="color:var(--muted);text-align:center">Нет недавно истекших подписок (за 30 дней)</td></tr>';
 
       // Site analytics
       try {
@@ -1415,35 +2047,107 @@
           </div>`;
       } catch(e) { console.warn('site-stats:', e) }
 
-      // Web portal events
+      // Active users (personal page visits in last 24h)
+      function hesc(s) {
+        if (!s) return '';
+        return String(s).replace(/[&<>"']/g, function(c) {
+          return '&#' + c.charCodeAt(0) + ';';
+        });
+      }
+      window._userEventCache = {};
+      window.toggleUserEvents = async function(token, el) {
+        const body = el.parentNode.querySelector('.user-events-body');
+        if (body.style.display === 'block') {
+          body.style.display = 'none';
+          el.querySelector('.expand-icon').textContent = '\u25B6';
+          return;
+        }
+        body.style.display = 'block';
+        el.querySelector('.expand-icon').textContent = '\u25BC';
+        if (body.innerHTML) return;
+        try {
+          const events = await api('/api/admin/webpage-events/journey/' + encodeURIComponent(token));
+          var groups = [], last = null;
+          events.forEach(function(e) {
+            var key = e.event_type + '|' + (e.element_id || '');
+            if (last && last.key === key && (e.event_type === 'view_section' || e.event_type === 'page_unload')) {
+              last.count++;
+              last.created_at = e.created_at;
+            } else {
+              last = { key: key, event_type: e.event_type, element_id: e.element_id, element_text: e.element_text, extra_data: e.extra_data, created_at: e.created_at, count: 1 };
+              groups.push(last);
+            }
+          });
+          function cleanDetail(event_type, text, extra) {
+            if (!text) return '';
+            if (event_type === 'view_section') return 'портал открыт';
+            if (event_type === 'click_sub_link') return 'скопирована ссылка на подписку';
+            if (event_type === 'click_connect_btn') {
+              if (text.indexOf('Скачать') !== -1) return 'скачать приложение по ссылке';
+              if (text.indexOf('Подключить') !== -1 || text.indexOf('VPN') !== -1) return 'подключить по deep ссылке';
+              if (text.indexOf('маршрутизацию') !== -1) return 'Настроить маршрутизацию в Happ';
+              if (text.indexOf('маршрут') !== -1) return 'Deep ссылка маршрутизации в Happ';
+              return text;
+            }
+            var s = text.replace(/^[^\x00-\x7F]+/, '').trim();
+            if (event_type === 'select_app') {
+              var m = s.match(/^([A-Za-z0-9]+)/);
+              return m ? m[1] : s;
+            }
+            return s;
+          }
+          var firstView = true;
+          body.innerHTML = groups.filter(function(g) {
+            if (g.event_type === 'view_section') {
+              if (firstView) { firstView = false; return true; }
+              return false;
+            }
+            return true;
+          }).map(function(g) {
+            var label = g.event_type.replace(/_/g, ' ');
+            var detail = cleanDetail(g.event_type, g.element_text || g.element_id, g.extra_data);
+            var time = (g.created_at || '').substring(11, 16);
+            var count = g.count > 1 ? ' <span style="color:var(--muted)">\u00d7' + g.count + '</span>' : '';
+            return '<div style="padding:4px 0;font-size:11px;line-height:1.4;border-bottom:1px solid var(--border)">' +
+              '<span style="color:var(--accent)">' + hesc(label) + '</span>' + count +
+              (detail ? ' <span style="color:var(--text)">\u00b7 ' + hesc(detail) + '</span>' : '') +
+              ' <span style="color:var(--muted);font-size:10px">' + hesc(time) + '</span>' +
+              '</div>';
+          }).join('') || '<div style="padding:6px 0;font-size:11px;color:var(--muted)">No events</div>';
+        } catch(e) {
+          body.innerHTML = '<div style="padding:6px 0;font-size:11px;color:var(--red)">Failed to load</div>';
+        }
+      }
       try {
-        const we = await api('/api/admin/webpage-events/stats?days=7');
-        const total7d = we.reduce((s, r) => s + r.cnt, 0);
-        const topEvents = we.slice(0, 6);
-        const eventCards = topEvents.map(e => `
-          <div class="card">
-            <h3>${e.event_type.replace(/_/g, ' ')}</h3>
-            <div class="val">${e.cnt}</div>
-            <div class="sub">7d total: ${total7d}</div>
-          </div>`).join('');
-        document.getElementById('dash-web-events').innerHTML = eventCards || '<div class="card"><h3>No events</h3></div>';
-        // Simple bar chart
-        const maxCnt = Math.max(...topEvents.map(e => e.cnt), 1);
-        const chartHtml = topEvents.map(e => {
-          const pct = Math.round((e.cnt / maxCnt) * 100);
-          return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px">
-            <span style="width:140px;color:var(--muted);text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.event_type.replace(/_/g, ' ')}</span>
-            <div style="flex:1;background:var(--border);border-radius:4px;height:16px;overflow:hidden">
-              <div style="width:${pct}%;background:var(--accent);height:100%;border-radius:4px"></div>
-            </div>
-            <span style="color:var(--text);width:40px;text-align:right">${e.cnt}</span>
-          </div>`;
-        }).join('');
-        document.getElementById('dash-web-events-chart').innerHTML = chartHtml;
-      } catch(e) { console.warn('webpage-events:', e) }
+        const users = await api('/api/admin/webpage-events/active-users');
+        document.getElementById('dash-web-events').innerHTML = users.length
+          ?           users.map(function(u) {
+            return '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:0;margin-bottom:8px;overflow:hidden">' +
+              '<div class="user-events-header" onclick="toggleUserEvents(\'' + hesc(u.web_token) + '\', this)" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:12px">' +
+              '<div>' +
+                '<strong>' + hesc(u.first_name || '') + ' ' + hesc(u.last_name || '') + '</strong>' +
+                '<div style="font-size:11px;color:var(--muted);margin-top:2px">' +
+                  '<span class="mono">' + u.tg_id + '</span> &middot; ' + u.event_count + ' events &middot; ' + timeSince(u.last_event_ts != null ? u.last_event_ts : u.last_event) +
+                '</div>' +
+              '</div>' +
+              '<span class="expand-icon" style="color:var(--muted);font-size:10px">\u25B6</span>' +
+            '</div>' +
+            '<div class="user-events-body" style="display:none;padding:0 12px 12px"></div>' +
+            '</div>';
+          }).join('')
+          : '<div class="card"><h3 style="color:var(--muted)">No visitors in 24h</h3></div>';
+      } catch(e) { console.warn('active-users:', e) }
 
       // Online users
       await refreshOnline();
+
+      // Offline users
+      try {
+        const offline = await api('/api/admin/offline');
+        renderOffline(offline);
+      } catch (e) {
+        console.warn('offline fetch error', e);
+      }
 
       // New users today
       const newUsers = await api('/api/admin/users/today');
@@ -1461,10 +2165,7 @@
             </tr>`).join('')
         : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No new users today</td></tr>';
 
-      // Offline users
-      loadOffline();
-
-      // Promocodes
+       // Promocodes
       const promos = await api('/api/admin/promocodes');
       document.getElementById('dash-promos').innerHTML = promos.map(p => {
         const used = `${p.used_count}/${p.max_uses ?? '∞'}`;
@@ -1484,18 +2185,6 @@
             <td>${p.is_active ? '🟢' : '🔴'}</td>
           </tr>`;
       }).join('');
-
-      // Winback
-      const wb = await api('/api/admin/winback');
-      document.getElementById('dash-winback').innerHTML = wb.length
-        ? wb.map(w => `
-            <tr title="${(w.message || '').replace(/"/g, '&quot;')}" style="cursor:help">
-              <td class="mono">${w.tg_id}</td>
-              <td>${w.first_name || ''} ${w.last_name || ''}</td>
-              <td><span class="badge pending">${w.scenario}</span></td>
-              <td>${fmtDate(w.sent_at)}</td>
-            </tr>`).join('')
-        : '<tr><td colspan="4" style="color:var(--muted);text-align:center">No winback messages sent</td></tr>';
 
       // Finance
       const fin = await api('/api/admin/finance');
@@ -1605,15 +2294,22 @@
                   <th>Month</th>
                   <th>Payments</th>
                   <th>Revenue</th>
+                  <th>Server Cost</th>
+                  <th>Net Profit</th>
                 </tr>
               </thead>
               <tbody>`;
         fin.monthly.forEach(m => {
+          const cost = m.server_cost || 0;
+          const net = m.revenue - cost;
+          const netColor = net >= 0 ? 'var(--green)' : 'var(--red)';
           mhtml += `
                 <tr>
                   <td>${m.month}</td>
                   <td>${m.payments}</td>
                   <td>${m.revenue.toLocaleString()} ₽</td>
+                  <td>${cost.toLocaleString()} ₽</td>
+                  <td style="color:${netColor}">${net >= 0 ? '+' : ''}${net.toLocaleString()} ₽</td>
                 </tr>`;
         });
         mhtml += `
@@ -2063,10 +2759,11 @@
     }
 
     async function showUserDetail(tgId) {
-      const [keys, payments, autopay] = await Promise.all([
+      const [keys, payments, autopay, platforms] = await Promise.all([
         api(`/api/admin/users/${tgId}/keys`),
         api(`/api/admin/users/${tgId}/payments`),
         api(`/api/admin/users/${tgId}/autopay`).catch(() => ({})),
+        api(`/api/admin/users/${tgId}/platforms`).catch(() => []),
       ]);
 
       let html = `<h2>User ${tgId}</h2>`;
@@ -2088,14 +2785,21 @@
       html += `<h3 class="mt mb" style="color:var(--muted)">PAYMENTS (${payments.length})</h3>`;
 
       if (payments.length) {
-        html += `<table class="sub-table"><tr><th>Date</th><th>Tariff</th><th>Amount</th><th>Status</th></tr>`;
+        html += `<table class="sub-table"><tr><th>Date</th><th>Tariff</th><th>Amount</th><th>Status</th><th>Action</th></tr>`;
         payments.forEach(p => {
+          let actionCell = '—';
+          if (p.status === 'paid') {
+            actionCell = `<button class="btn btn-sm btn-danger" style="padding:2px 8px;font-size:11px;" onclick="refundPayment('${p.payment_id}', ${p.amount}, ${tgId})">💸 Refund</button>`;
+          } else if (p.status === 'refunded') {
+            actionCell = `<span class="badge" style="background:var(--red);color:#fff">Refunded</span>`;
+          }
           html += `
             <tr>
               <td>${fmtDate(p.created_at)}</td>
               <td>${p.tariff || ''}</td>
               <td>${p.amount} ₽</td>
               <td><span class="badge ${p.status === 'paid' ? 'paid' : 'pending'}">${p.status}</span>${p.is_test ? ' <span class="badge" style="background:var(--orange);color:#000">TEST</span>' : ''}</td>
+              <td>${actionCell}</td>
             </tr>`;
         });
         html += `</table>`;
@@ -2111,6 +2815,24 @@
         </table>`;
       } else {
         html += `<p style="color:var(--muted)">Not configured</p>`;
+      }
+
+      html += `<h3 class="mt mb" style="color:var(--muted)">PLATFORMS (${platforms.length})</h3>`;
+      if (platforms.length) {
+        const platformLabels = { android: '📱 Android', ios: '🍎 iOS', macos: '💻 macOS', windows: '🪟 Windows', linux: '🐧 Linux', unknown: '❓ Unknown' };
+        html += `<table class="sub-table"><tr><th>Platform</th><th>App</th><th>Version</th><th>Last Seen</th><th>Count</th></tr>`;
+        platforms.forEach(p => {
+          html += `<tr>
+            <td>${platformLabels[p.platform] || p.platform}</td>
+            <td>${p.client_app || '—'}</td>
+            <td>${p.client_version || '—'}</td>
+            <td>${p.last_seen ? fmtDateFull(p.last_seen) : '—'}</td>
+            <td>×${p.seen_count}</td>
+          </tr>`;
+        });
+        html += `</table>`;
+      } else {
+        html += `<p style="color:var(--muted)">No platform data yet</p>`;
       }
 
       html += `<button class="btn mt" onclick="closeModal()">Close</button>`;
@@ -2137,7 +2859,8 @@
 
   <script>
   (function(){
-    var msgOffset = 0, msgLimit = 50;
+    var msgOffset = 0, msgLimit = 25;
+    var _msgCache = {};
 
     function msgBadge(s){
       var c = s==='sent'?'#34d399':s==='failed'?'#f87171':'#fbbf24';
@@ -2145,8 +2868,39 @@
       return '<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;background:'+bg+';color:'+c+'">'+s+'</span>';
     }
 
+    function viewFullMsg(id){
+      var m = _msgCache[id];
+      if(!m) return;
+      var ts = fmtDateFull(m.created_at);
+      var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
+        '<h3 style="margin:0;font-size:16px">📨 Message Detail #' + m.id + '</h3>' +
+        '<button class="btn" onclick="closeModal()" style="padding:4px 10px;font-size:12px;background:var(--border)">✕</button>' +
+      '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:12px">' +
+        '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);background:var(--bg2);padding:10px 12px;border-radius:6px;border:1px solid var(--border)">' +
+          '<div><b>ID:</b> <span style="color:var(--fg)">'+m.id+'</span></div>' +
+          '<div><b>TG ID:</b> <span style="font-family:monospace;color:#a78bfb;cursor:pointer" onclick="closeModal();document.getElementById(\'msg-f-tg_id\').value=\''+m.tg_id+'\';loadMsgLog(true)">'+m.tg_id+'</span></div>' +
+          (m.first_name ? '<div><b>User:</b> <span style="color:var(--fg)">'+esc(m.first_name)+'</span></div>' : '') +
+          '<div><b>Time:</b> <span style="color:var(--fg)">'+ts+'</span></div>' +
+          '<div><b>Status:</b> '+msgBadge(m.status)+'</div>' +
+        '</div>' +
+        '<div style="font-size:13px"><b>Source:</b> <span style="color:#818cf8;font-family:monospace">'+esc(m.source)+'</span>' +
+          (m.scenario ? ' &nbsp;|&nbsp; <b>Scenario:</b> <span style="color:#e2e8f0">'+esc(m.scenario)+'</span>' : '') +
+        '</div>' +
+        '<div>' +
+          '<div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px">Message Text:</div>' +
+          '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:12px;white-space:pre-wrap;word-break:break-word;font-size:13px;color:#e2e8f0;max-height:360px;overflow-y:auto;line-height:1.5">'+(m.message_text ? esc(m.message_text) : '<i style="color:var(--muted)">(empty)</i>')+'</div>' +
+        '</div>' +
+        (m.error_text ? '<div><div style="font-size:12px;font-weight:600;color:#f87171;margin-bottom:6px">Error:</div><div style="background:rgba(239,68,68,0.1);border:1px solid #ef4444;border-radius:6px;padding:8px 12px;color:#fca5a5;font-size:13px">'+esc(m.error_text)+'</div></div>' : '') +
+      '</div>';
+      openModal(html);
+    }
+    window.viewFullMsg = viewFullMsg;
+
     async function loadMsgLog(reset){
       if(reset) msgOffset = 0;
+      var tbody = document.getElementById('msg-table-body');
+      if(tbody) tbody.innerHTML='<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--muted)">⏳ Loading messages...</td></tr>';
       var p = new URLSearchParams();
       var t=document.getElementById('msg-f-tg_id').value;
       var s=document.getElementById('msg-f-source').value;
@@ -2158,41 +2912,55 @@
       p.set('offset', msgOffset);
       try{
         var r = await api('/api/admin/api/messages?'+p);
-        document.getElementById('msg-stat-total').textContent = r.counts.total||0;
-        document.getElementById('msg-stat-sent').textContent = r.counts.sent||0;
-        document.getElementById('msg-stat-failed').textContent = r.counts.failed||0;
-        document.getElementById('msg-stat-blocked').textContent = r.counts.blocked||0;
-        var tbody = document.getElementById('msg-table-body');
-        if(!r.items.length){
+        document.getElementById('msg-stat-total').textContent = (r.counts&&r.counts.total)||0;
+        document.getElementById('msg-stat-sent').textContent = (r.counts&&r.counts.sent)||0;
+        document.getElementById('msg-stat-failed').textContent = (r.counts&&r.counts.failed)||0;
+        document.getElementById('msg-stat-blocked').textContent = (r.counts&&r.counts.blocked)||0;
+        _msgCache = {};
+        if(!r.items || !r.items.length){
           tbody.innerHTML='<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--muted)">No messages found</td></tr>';
         } else {
           tbody.innerHTML = r.items.map(function(m){
-            var ts = m.created_at ? new Date(m.created_at+'Z').toLocaleString('ru-RU') : '';
-            var txt = esc((m.message_text||'').substring(0,100));
-            var err = esc((m.error_text||'').substring(0,80));
+            _msgCache[m.id] = m;
+            var ts = fmtDateFull(m.created_at);
+            var rawTxt = m.message_text || '';
+            var shortTxt = rawTxt.length > 50 ? rawTxt.substring(0, 50) + '…' : (rawTxt || '<i style="color:var(--muted)">empty</i>');
+            var err = m.error_text ? (m.error_text.length > 35 ? m.error_text.substring(0, 35) + '…' : m.error_text) : '';
             return '<tr style="border-bottom:1px solid var(--border)">' +
-              '<td style="padding:8px 12px;color:var(--muted);font-size:12px;white-space:nowrap">'+ts+'</td>' +
-              '<td style="padding:8px 12px;font-family:monospace;color:#a78bfb;cursor:pointer" onclick="document.getElementById(\'msg-f-tg_id\').value=\''+m.tg_id+'\';loadMsgLog(true)">'+m.tg_id+'</td>' +
-              '<td style="padding:8px 12px">'+esc(m.first_name||'')+'</td>' +
-              '<td style="padding:8px 12px;font-family:monospace;font-size:12px;color:#818cf8">'+esc(m.source)+'</td>' +
-              '<td style="padding:8px 12px;font-size:12px;color:var(--muted)">'+esc(m.scenario||'')+'</td>' +
-              '<td style="padding:8px 12px">'+msgBadge(m.status)+'</td>' +
-              '<td style="padding:8px 12px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:#cbd5e1" title="'+esc(m.message_text||'')+'">'+txt+'</td>' +
-              '<td style="padding:8px 12px;color:#f87171;font-size:12px">'+err+'</td>' +
+              '<td style="padding:6px 12px;color:var(--muted);font-size:12px;white-space:nowrap">'+ts+'</td>' +
+              '<td style="padding:6px 12px;font-family:monospace;color:#a78bfb;cursor:pointer" onclick="document.getElementById(\'msg-f-tg_id\').value=\''+m.tg_id+'\';loadMsgLog(true)" title="Filter by this TG ID">'+m.tg_id+'</td>' +
+              '<td style="padding:6px 12px;font-size:13px">'+esc(m.first_name||'')+'</td>' +
+              '<td style="padding:6px 12px;font-family:monospace;font-size:12px;color:#818cf8">'+esc(m.source)+'</td>' +
+              '<td style="padding:6px 12px;font-size:12px;color:var(--muted)">'+esc(m.scenario||'')+'</td>' +
+              '<td style="padding:6px 12px">'+msgBadge(m.status)+'</td>' +
+              '<td style="padding:6px 12px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;cursor:pointer;color:#cbd5e1" onclick="viewFullMsg('+m.id+')" title="Click to view full message">'+esc(shortTxt)+' 🔍</td>' +
+              '<td style="padding:6px 12px;color:#f87171;font-size:12px;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+esc(m.error_text||'')+'">'+esc(err)+'</td>' +
             '</tr>';
           }).join('');
         }
         var pg = document.getElementById('msg-pagination');
         pg.innerHTML = '';
+        var totalCount = (r.counts && r.counts.total) || 0;
+        var currentPage = Math.floor(msgOffset / msgLimit) + 1;
+        var totalPages = Math.ceil(totalCount / msgLimit) || 1;
+
         if(msgOffset>0){
           var b=document.createElement('button'); b.className='btn'; b.textContent='← Prev';
           b.onclick=function(){msgOffset-=msgLimit;loadMsgLog();}; pg.appendChild(b);
         }
-        if(r.items.length===msgLimit){
+        var info = document.createElement('span');
+        info.style.cssText = 'align-self:center;font-size:12px;color:var(--muted);padding:0 8px';
+        info.textContent = 'Page ' + currentPage + ' of ' + totalPages + ' (' + totalCount + ' msgs)';
+        pg.appendChild(info);
+
+        if(msgOffset + msgLimit < totalCount){
           var b=document.createElement('button'); b.className='btn'; b.textContent='Next →';
           b.onclick=function(){msgOffset+=msgLimit;loadMsgLog();}; pg.appendChild(b);
         }
-      }catch(e){ console.error(e); }
+      }catch(e){
+        console.error(e);
+        if(tbody) tbody.innerHTML='<tr><td colspan="8" style="text-align:center;padding:32px;color:#f87171">Error loading messages</td></tr>';
+      }
     }
 
     function resetMsgFilters(){
@@ -2202,6 +2970,22 @@
       loadMsgLog(true);
     }
 
+    async function refundPayment(paymentId, amount, tgId) {
+      if (!confirm(`Вы действительно хотите выполнить возврат на сумму ${amount} ₽ (ID: ${paymentId})?\n\nВнимание: Это действие отменит платёж в ЮKassa и деактивирует VPN-конфиг пользователя!`)) {
+        return;
+      }
+      try {
+        const res = await api(`/api/admin/payments/${paymentId}/refund`, { method: 'POST' });
+        alert(`✅ Возврат выполнен успешно!\nСумма: ${amount} ₽\nСостояние VPN: ${res.vpn_deactivated ? 'Деактивирован' : 'Не найден или уже выключен'}`);
+        if (tgId) {
+          showUserDetail(tgId);
+        }
+      } catch (e) {
+        alert(`❌ Ошибка возврата: ${e.message || e}`);
+      }
+    }
+
+    window.refundPayment = refundPayment;
     window.loadMsgLog = loadMsgLog;
     window.resetMsgFilters = resetMsgFilters;
 
