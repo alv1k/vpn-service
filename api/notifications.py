@@ -194,6 +194,14 @@ def _send_html_email(to: str, subject: str, text: str, html: str) -> bool:
     """Generic HTML email sender."""
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASSWORD]):
         logger.error("SMTP not configured")
+        try:
+            execute_query(
+                "INSERT INTO web_users_email_message_texts (email, subject, message_text, status, error_text) "
+                "VALUES (%s, %s, %s, 'failed', %s)",
+                (to, subject, text, "SMTP not configured")
+            )
+        except Exception as db_err:
+            logger.error(f"Failed to log failed email sending to DB: {db_err}")
         return False
 
     msg = MIMEMultipart("alternative")
@@ -217,9 +225,25 @@ def _send_html_email(to: str, subject: str, text: str, html: str) -> bool:
                 server.login(SMTP_USER, SMTP_PASSWORD)
                 server.sendmail(SMTP_FROM or SMTP_USER, to, msg.as_string())
         logger.info(f"Email sent to {to}: {subject}")
+        try:
+            execute_query(
+                "INSERT INTO web_users_email_message_texts (email, subject, message_text, status) "
+                "VALUES (%s, %s, %s, 'sent')",
+                (to, subject, text)
+            )
+        except Exception as db_err:
+            logger.error(f"Failed to log email sending to DB: {db_err}")
         return True
     except Exception as e:
         logger.exception(f"SMTP send failed: {e}")
+        try:
+            execute_query(
+                "INSERT INTO web_users_email_message_texts (email, subject, message_text, status, error_text) "
+                "VALUES (%s, %s, %s, 'failed', %s)",
+                (to, subject, text, str(e)[:255])
+            )
+        except Exception as db_err:
+            logger.error(f"Failed to log failed email sending to DB: {db_err}")
         return False
 
 

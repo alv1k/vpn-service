@@ -50,3 +50,25 @@ TARIFFS = {
     },
 }
 
+
+def get_effective_tariff_price(tariff_key: str, tg_id: int = None, discount_percent: int = 0) -> int:
+    """Calculate tariff price considering user's winback/active discount."""
+    base = TARIFFS.get(tariff_key, {}).get("price", 0)
+    if base <= 0:
+        return base
+    
+    if not discount_percent and tg_id:
+        try:
+            from api.db import has_winback_discount
+            from config import WINBACK_DISCOUNT_PERCENT
+            if has_winback_discount(tg_id):
+                discount_percent = WINBACK_DISCOUNT_PERCENT
+        except Exception:
+            pass
+
+    if discount_percent > 0:
+        discounted = int(round(base * (1 - discount_percent / 100.0)))
+        return max(1, discounted)
+    return base
+
+

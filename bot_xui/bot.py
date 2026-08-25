@@ -37,6 +37,7 @@ from api.db import (
     get_referral_count,
     get_subscription_until,
     get_web_token,
+    get_user_email,
     get_users_expiring_in_days,
     validate_promocode,
     use_promocode,
@@ -56,9 +57,10 @@ from bot_xui.views    import (
     build_main_menu_text,
     # show_vless_link,
 )
-from bot_xui.payment     import process_payment
+from bot_xui.payment     import process_payment, show_tariff_info, create_yookassa_refund
 from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_get_awg_config, handle_get_awg_config_v2, grant_referral_vpn, activate_test_period
 from bot_xui.messaging   import send_message_by_tg_id
+from bot_xui.receipt     import process_receipt_photo, receipt_callback_handler, init_finance_api
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 load_dotenv()
@@ -250,6 +252,7 @@ async def _refer_text(context, tg_id: int) -> tuple[str, str]:
 
 
 async def post_init(application):
+    await init_finance_api()
     await application.bot.set_my_commands([
         BotCommand("start", "Начать взаимодействие с ботом"),
         BotCommand("refer", "Реферальная ссылка и статистика"),
@@ -269,7 +272,7 @@ async def post_init(application):
     scheduler.add_job(
         process_autopayments,
         trigger="cron",
-        hour=11,           # каждый день в 11:00 (после уведомлений)
+        hour="*",          # каждый час для проверки 3 фаз автоплатежа
         minute=0,
         timezone=pytz.timezone("Asia/Tokyo"),
         args=[application.bot],
@@ -419,7 +422,7 @@ async def notify_sub_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Что нужно сделать:\n"
         "1. Откройте бота и нажмите <b>Мои конфиги</b>\n"
         "2. Скопируйте ссылку подписки\n"
-        "3. Вставьте её в приложение <b>Happ</b> или <b>Hiddify</b>\n"
+        "3. Вставьте её в приложение <b>Shadowrocket</b>, <b>Happ</b> или <b>Hiddify</b>\n"
         "4. Если у вас уже была ссылка — удалите старую и добавьте новую\n\n"
         "После этого VPN заработает как обычно.\n"
         "По любым вопросам пишите в поддержку."
@@ -714,10 +717,47 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
         return
     tg_id = update.effective_user.id
 
-    # Ответ админа на пересланное сообщение
+    # Ответ админа на пересланное сообщение или тикет с веб-портала
     if tg_id == ADMIN_TG_ID and update.message.reply_to_message:
         reply_text = update.message.reply_to_message.text or ""
-        # Извлекаем tg_id из пересланного сообщения
+        import re
+        ticket_match = re.search(r"[Тт]икет #(\d+)", reply_text, re.IGNORECASE)
+        if ticket_match:
+            try:
+                ticket_id = int(ticket_match.group(1))
+                from api.db import execute_query
+                ticket = execute_query(
+                    "SELECT id, web_token, tg_id, user_message FROM web_support_tickets WHERE id = %s",
+                    (ticket_id,), fetch='one'
+                )
+                if ticket:
+                    execute_query(
+                        "UPDATE web_support_tickets SET admin_reply = %s, status = 'answered', replied_at = NOW() WHERE id = %s",
+                        (update.message.text, ticket_id)
+                    )
+                    # Если у пользователя есть telegram, также шлем копию в бот
+                    if ticket.get("tg_id"):
+                        try:
+                            await send_message_by_tg_id(
+                                ticket["tg_id"],
+                                f"💬 <b>Ответ поддержки на обращение:</b>\n\n{update.message.text}",
+                                parse_mode="HTML",
+                                bot=context.bot,
+                                source="admin_send", scenario="ticket_reply",
+                            )
+                        except Exception:
+                            pass
+
+                    await log_and_reply_text(
+                        update,
+                        f"✅ Ответ на <b>тикет #{ticket_id}</b> сохранён и отображён на веб-странице пользователя.",
+                        parse_mode="HTML"
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"Error handling admin ticket reply: {e}")
+
+        # Извлекаем tg_id из пересланного сообщения (стандартный feedback бота)
         if "ID:" in reply_text:
             try:
                 target_id = int(reply_text.split("ID:")[1].split(")")[0].strip())
@@ -735,11 +775,21 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
 
     import time as _time
 
-    ts = WAITING_FEEDBACK.get(tg_id)
-    if ts is None or (_time.time() - ts) > _FEEDBACK_TIMEOUT:
-        WAITING_FEEDBACK.pop(tg_id, None)
-        return
+    # Логируем ЛЮБОЕ входящее текстовое сообщение пользователя в message_log
+    if update.message and update.message.text:
+        try:
+            from api.db import log_message_sent
+            log_message_sent(
+                tg_id=tg_id,
+                source="user_message",
+                scenario="incoming_text",
+                message_text=update.message.text,
+                status="sent"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log user message: {e}")
 
+    # Очищаем флаг ожидания если он был
     WAITING_FEEDBACK.pop(tg_id, None)
 
     user = update.effective_user
@@ -779,7 +829,87 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     data  = query.data
 
-    if data == "my_configs":
+    if data == "req_new_awg_conf":
+        tg_id = query.from_user.id
+        from api.db import log_message_sent
+        reply_text = (
+            "✅ <b>Запрос принят!</b>\n\n"
+            "Мы готовим для вас новые файлы конфигурации и отправим их в этот чат в ближайшее время."
+        )
+        await safe_edit_text_logged(query, reply_text, "support_awg_conf_requested")
+        try:
+            alert_text = (
+                f"🔔 <b>Запрос нового AWG-конфига!</b>\n\n"
+                f"👤 Пользователь: {query.from_user.full_name}\n"
+                f"🆔 TG ID: <code>{tg_id}</code>\n"
+                f"📌 Запросил перевыпуск файлов конфигурации."
+            )
+            await context.bot.send_message(chat_id=ADMIN_TG_ID, text=alert_text, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"Failed to send admin notification for req_new_awg_conf: {e}")
+        return
+
+    if data == "ack_awg_conf_ok":
+        tg_id = query.from_user.id
+        from api.db import log_message_sent
+        reply_text = (
+            "👍 <b>Отлично!</b>\n\n"
+            "Рады, что всё в порядке. Если возникнут вопросы или понадобится помощь — пишите нам в поддержку."
+        )
+        await safe_edit_text_logged(query, reply_text, "support_awg_conf_ack")
+        try:
+            alert_text = (
+                f"ℹ️ <b>Ответ пользователя по AWG</b>\n\n"
+                f"👤 Пользователь: {query.from_user.full_name}\n"
+                f"🆔 TG ID: <code>{tg_id}</code>\n"
+                f"📌 Ответил: «Спасибо, не надо» (конфиг не требуется)."
+            )
+            await context.bot.send_message(chat_id=ADMIN_TG_ID, text=alert_text, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"Failed to send admin notification for ack_awg_conf_ok: {e}")
+        return
+
+    if data.startswith("wb_rate:"):
+        parts = data.split(":")
+        rating = parts[1] if len(parts) > 1 else ""
+        tg_id = query.from_user.id
+        from api.db import set_winback_discount, log_message_sent
+        if rating in ("good", "normal"):
+            set_winback_discount(tg_id, True)
+            reply_text = (
+                "🥳 <b>Рады, что вы с нами!</b>\n\n"
+                "Мы закрепили за вами персональную скидку <b>20%</b> на первую оплату любого тарифа!\n"
+                "Воспользоваться скидкой можно в любой момент на странице тарифов."
+            )
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 Выбрать тариф со скидкой 20%", callback_data="tariffs")],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+            ])
+            await safe_edit_text_logged(query, reply_text, "winback_survey", reply_markup=markup)
+        elif rating == "bad":
+            reply_text = (
+                "😔 <b>Сожалеем, что у вас возникли сложности!</b>\n\n"
+                "Мы уже передали ваше сообщение команде поддержки. Напишите нам напрямую, и мы поможем всё настроить."
+            )
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💬 Связаться с поддержкой", url="https://t.me/tiinsupport")],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+            ])
+            await safe_edit_text_logged(query, reply_text, "winback_survey", reply_markup=markup)
+            
+            # Send alert to Admin
+            try:
+                alert_text = (
+                    f"⚠️ <b>Жалоба на качество VPN (Winback 3d)!</b>\n\n"
+                    f"👤 Пользователь: {query.from_user.full_name}\n"
+                    f"🆔 TG ID: <code>{tg_id}</code>\n"
+                    f" Оценка: 👎 Bad / Есть проблемы"
+                )
+                await context.bot.send_message(chat_id=ADMIN_TG_ID, text=alert_text, parse_mode="HTML")
+            except Exception as e:
+                logger.warning(f"Failed to send winback bad rating alert: {e}")
+
+    elif data == "my_configs":
         await show_configs(query, xui)
 
     elif data == "tariffs":
@@ -818,15 +948,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Выберите протокол:\n\n"
             "🟢 <b>VLESS</b> — телефоны, ПК, macOS"
         )
-        await query.edit_message_text(
-            text,
-            parse_mode="HTML",
+        await safe_edit_text_logged(query, text, "test_protocol_choose",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🟢 VLESS", callback_data="test_vless")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
             ])
         )
-        await _log_message(query.from_user.id, "bot_menu", "test_protocol_choose", text)
 
     elif data == "get_awg_config":
         await handle_get_awg_config(query)
@@ -872,21 +999,42 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         tariff = TARIFFS.get(tariff_id)
         if not tariff:
-            await query.edit_message_text("❌ Тариф не найден")
+            await safe_edit_text(query, "❌ Тариф не найден")
             return
 
         if tariff.get("is_test"):
             await handle_test_vless(query, xui)
         else:
             renew_info = context.user_data.get("renew_info", {})
-            await process_payment(
+            promo = context.user_data.get("promo")  # keep for confirm_payment step
+            await show_tariff_info(
                 query, tariff_id, "vless",
                 is_renew=is_renew,
                 client_name=renew_info.get("client_name"),
                 inbound_id=renew_info.get("inbound_id"),
-                promo=context.user_data.pop("promo", None),
+                promo=promo,
             )
         await _log_message(query.from_user.id, "bot_menu", "buy_tariff", f"tariff={tariff_id} renew={is_renew}")
+
+    elif data.startswith("confirm_payment_"):
+        parts     = data.removeprefix("confirm_payment_")
+        is_renew  = parts.endswith("_renew")
+        tariff_id = parts.removesuffix("_renew")
+
+        tariff = TARIFFS.get(tariff_id)
+        if not tariff:
+            await safe_edit_text(query, "❌ Тариф не найден")
+            return
+
+        renew_info = context.user_data.get("renew_info", {})
+        promo = context.user_data.pop("promo", None)
+        await process_payment(
+            query, tariff_id, "vless",
+            is_renew=is_renew,
+            client_name=renew_info.get("client_name"),
+            inbound_id=renew_info.get("inbound_id"),
+            promo=promo,
+        )
 
     elif data.startswith("renew_"):
         parts       = data.removeprefix("renew_")
@@ -922,16 +1070,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Нажмите кнопку ниже — прокси подключится автоматически.\n"
             "Перешлите файл друзьям, у кого не работает Telegram."
         )
-        await query.edit_message_text(
-            text,
-            parse_mode="HTML",
+        await safe_edit_text_logged(query, text, "proxy_info",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⚡ Подключить прокси", url=MTPROTO_PROXY_LINK)],
                 [InlineKeyboardButton("📎 Скачать файл", callback_data="proxy_download")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
             ]),
         )
-        await _log_message(query.from_user.id, "bot_menu", "proxy_info", text)
 
     elif data == "proxy_download":
         proxy = make_proxy_file()
@@ -954,6 +1099,68 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                              scenario="proxy_download", status='sent')
         except Exception:
             pass
+
+    elif data in ("yt_check_yes", "yt_check_no"):
+        status_text = "🟢 Всё работает" if data == "yt_check_yes" else "🔴 Да, соединения нет"
+        user = query.from_user
+        user_info = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        if user.username:
+            user_info += f" (@{user.username})"
+        user_info += f" [ID: <code>{user.id}</code>]"
+
+        # Отвечаем пользователю
+        user_reply = f"Спасибо за отклик! Принято: <b>{status_text}</b>."
+        await safe_edit_text_logged(query, user_reply, "yt_check_user_reply")
+
+        # Уведомляем админа
+        admin_notice = (
+            f"📊 <b>Отклик по проверки YouTube (Windows)</b>\n\n"
+            f"👤 <b>Пользователь:</b> {user_info}\n"
+            f"📌 <b>Статус:</b> {status_text}"
+        )
+        if str(user.id) != str(ADMIN_TG_ID):
+            await send_message_by_tg_id(
+                tg_id=ADMIN_TG_ID,
+                text=admin_notice,
+                parse_mode="HTML",
+                source="bot_system",
+                scenario="yt_check_admin_notice",
+            )
+
+    elif data.startswith("op_"):
+        op_map = {
+            "op_mts": "🔴 МТС",
+            "op_megafon": "🟢 МегаФон",
+            "op_yota": "🔵 Yota",
+            "op_beeline": "🟡 Билайн",
+            "op_tele2": "⚫ Tele2 / Т-Мобайл",
+            "op_other": "🌐 Другой / Домашний провайдер",
+        }
+        operator_name = op_map.get(data, data.removeprefix("op_"))
+        user = query.from_user
+        user_info = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        if user.username:
+            user_info += f" (@{user.username})"
+        user_info += f" [ID: <code>{user.id}</code>]"
+
+        # Отвечаем пользователю
+        user_reply = f"✅ Спасибо! Ваш оператор записан: <b>{operator_name}</b>.\n\nМы учитываем особенности каждого провайдера для подбора оптимального протокола."
+        await safe_edit_text_logged(query, user_reply, "operator_survey_user_reply")
+
+        # Уведомляем админа
+        admin_notice = (
+            f"📊 <b>Ответ на опрос: Оператор связи</b>\n\n"
+            f"👤 <b>Пользователь:</b> {user_info}\n"
+            f"📱 <b>Оператор:</b> {operator_name}"
+        )
+        if str(user.id) != str(ADMIN_TG_ID):
+            await send_message_by_tg_id(
+                tg_id=ADMIN_TG_ID,
+                text=admin_notice,
+                parse_mode="HTML",
+                source="bot_system",
+                scenario="operator_survey_admin_notice",
+            )
 
     elif data == "feedback":
         import time as _time
@@ -981,8 +1188,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Списание произойдёт за 1 день до окончания подписки.\n"
             "Отключить: /autopay"
         )
-        await query.edit_message_text(text, parse_mode="HTML")
-        await _log_message(query.from_user.id, "bot_menu", "autopay_on", text)
+        await safe_edit_text_logged(query, text, "autopay_on")
 
     elif data == "autopay_off":
         from api.db import disable_autopay
@@ -991,8 +1197,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔴 Автопродление <b>выключено</b>.\n\n"
             "Включить снова: /autopay"
         )
-        await query.edit_message_text(text, parse_mode="HTML")
-        await _log_message(query.from_user.id, "bot_menu", "autopay_off", text)
+        await safe_edit_text_logged(query, text, "autopay_off")
 
     elif data == "autopay_remove_card":
         from api.db import remove_payment_method
@@ -1002,8 +1207,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Автопродление выключено.\n"
             "При следующей оплате карта сохранится заново."
         )
-        await query.edit_message_text(text, parse_mode="HTML")
-        await _log_message(query.from_user.id, "bot_menu", "autopay_remove_card", text)
+        await safe_edit_text_logged(query, text, "autopay_remove_card")
+
+    elif data == "autopay_change_tariff":
+        from api.db import execute_query
+        tg_id = query.from_user.id
+        user = execute_query(
+            "SELECT autopay_tariff FROM users WHERE tg_id = %s",
+            (tg_id,), fetch='one',
+        )
+        current_tariff_id = (user.get('autopay_tariff') if user else None) or 'monthly_30d'
+
+        buttons = []
+        for t_id, t_info in TARIFFS.items():
+            if t_info.get('is_test'):
+                continue
+            is_current = (t_id == current_tariff_id)
+            mark = "✅ " if is_current else ""
+            btn_text = f"{mark}{t_info['name']} — {t_info['price']} ₽"
+            buttons.append([InlineKeyboardButton(btn_text, callback_data=f"set_autopay_tariff_{t_id}")])
+        buttons.append([InlineKeyboardButton("« Назад в автопродление", callback_data="autopay_manage")])
+
+        text = (
+            "⚙️ <b>Выберите тариф для автопродления</b>\n\n"
+            "Выбранный тариф будет автоматически продлеваться за 1 день до окончания подписки."
+        )
+        await safe_edit_text_logged(query, text, "autopay_change_tariff",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    elif data.startswith("set_autopay_tariff_"):
+        from api.db import update_autopay_tariff
+        t_id = data.removeprefix("set_autopay_tariff_")
+        if t_id in TARIFFS and not TARIFFS[t_id].get("is_test"):
+            update_autopay_tariff(query.from_user.id, t_id)
+            t_name = TARIFFS[t_id]['name']
+            await safe_edit_text(query, f"✅ Тариф автопродления изменён на <b>{t_name}</b>")
+        else:
+            await safe_edit_text(query, "❌ Неверный тариф")
 
     elif data == "autopay_manage":
         from api.db import execute_query
@@ -1013,7 +1254,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (tg_id,), fetch='one',
         )
         if not user or not user.get('payment_method_id'):
-            await query.edit_message_text("❌ Карта не привязана", parse_mode="HTML")
+            await safe_edit_text(query, "❌ Карта не привязана")
             return
         enabled = user['autopay_enabled']
         tariff_id = user.get('autopay_tariff') or 'monthly_30d'
@@ -1027,15 +1268,102 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💳 Карта сохранена\n\n"
             f"При автопродлении списание происходит за 1 день до окончания подписки."
         )
-        await query.edit_message_text(
-            text,
-            parse_mode="HTML",
+        await safe_edit_text_logged(query, text, "autopay_manage",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"{'🔴' if enabled else '🟢'} {toggle_text}", callback_data=toggle_data)],
+                [InlineKeyboardButton("⚙️ Изменить тариф", callback_data="autopay_change_tariff")],
                 [InlineKeyboardButton("🗑 Отвязать карту", callback_data="autopay_remove_card")],
             ]),
         )
-        await _log_message(tg_id, "bot_menu", "autopay_manage", text)
+
+    elif data.startswith("refund_confirm_"):
+        from api.db import (
+            get_last_paid_payment, update_payment_status,
+            deactivate_key_by_payment, get_user_email, log_message_sent,
+        )
+        from api.webhook import deactivate_xui_client
+
+        uid = int(data.removeprefix("refund_confirm_"))
+        if query.from_user.id != uid:
+            await safe_edit_text(query, "❌ Эта кнопка не для вас")
+            return
+
+        payment = get_last_paid_payment(uid)
+        if not payment:
+            await safe_edit_text(query, "❌ Не найден оплаченный платёж")
+            return
+
+        payment_id = payment["payment_id"]
+        amount = str(payment["amount"])
+        client_name = get_user_email(uid, payment_id=payment_id)
+
+        # YooKassa refund
+        yoo_ok = create_yookassa_refund(payment_id, amount)
+        if not yoo_ok:
+            await safe_edit_text(query, "❌ Ошибка создания возврата в YooKassa. Попробуйте позже.")
+            return
+
+        # Update DB
+        update_payment_status(payment_id, "refunded")
+        deactivate_key_by_payment(payment_id)
+
+        # Deactivate XUI client
+        if client_name:
+            deactivate_xui_client(client_name)
+
+        text = (
+            "✅ <b>Возврат оформлен</b>\n\n"
+            f"Деньги вернутся на карту в течение 1–3 рабочих дней.\n\n"
+            f"Если остались вопросы — нажмите «Написать нам» в меню."
+        )
+        await safe_edit_text(query, text)
+
+        log_message_sent(tg_id=uid, source="admin_send", scenario="refund_confirm",
+                         message_text=text, status="sent")
+
+        # Notify admin
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_TG_ID,
+                text=f"🔄 <b>Возврат оформлен (Бот)</b>\n\n"
+                     f"Пользователь: <code>{uid}</code>" + (f" ({client_name})" if client_name else "") + f"\n"
+                     f"Платёж: <code>{payment_id}</code>\n"
+                     f"Сумма: {amount} ₽\n"
+                     f"YooKassa: OK\n\n"
+                     f"⚠️ <i>Проверьте конфиги пользователя (3x-ui / AWG).</i>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    elif data.startswith("refund_decline_"):
+        from api.db import log_message_sent
+
+        uid = int(data.removeprefix("refund_decline_"))
+        if query.from_user.id != uid:
+            await safe_edit_text(query, "❌ Эта кнопка не для вас")
+            return
+
+        text = (
+            "Хорошо! Если возникнут вопросы или понадобится помощь — "
+            "напишите нам через меню «Написать нам»."
+        )
+        await safe_edit_text(query, text)
+
+        log_message_sent(tg_id=uid, source="admin_send", scenario="refund_decline",
+                         message_text=text, status="sent")
+
+        # Notify admin
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_TG_ID,
+                text=f"❌ <b>Возврат отклонён</b>\n\n"
+                     f"Пользователь: <code>{uid}</code>\n"
+                     f"Отказался от возврата.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1055,6 +1383,18 @@ async def notify_expiring_subscriptions(bot):
             tg_id = user['tg_id']
             if not tg_id or user.get('bot_blocked'):
                 continue
+
+            # Пропускаем 3-дневное уведомление для тестовых пользователей (без оплат)
+            if days == 3:
+                from api.db import execute_query
+                paid = execute_query(
+                    "SELECT COUNT(*) AS cnt FROM payments "
+                    "WHERE tg_id = %s AND status = 'paid' AND is_test = 0",
+                    (tg_id,), fetch='one'
+                )
+                if not paid or paid['cnt'] == 0:
+                    continue
+
             email = user.get('email')
             until = user['subscription_until'].strftime("%d.%m.%Y")
             has_autopay = user.get('autopay_enabled') and user.get('payment_method_id')
@@ -1086,22 +1426,21 @@ async def notify_expiring_subscriptions(bot):
                     [InlineKeyboardButton("⚙️ Управление автопродлением", callback_data="autopay_manage")]
                 ])
             else:
-                # No autopay — standard renewal reminder
+                # No autopay — standard renewal reminder with instant tariff choices
                 if days == 0:
                     msg = (
                         f"🔴 <b>Подписка истекает сегодня!</b>\n\n"
                         f"📅 Окончание: <b>{until}</b>\n\n"
-                        f"Продлите сейчас, чтобы не потерять доступ."
+                        f"Выберите тариф для продления:"
                     )
                 else:
                     msg = (
                         f"{icon} <b>Подписка истекает через {label}</b>\n\n"
                         f"📅 Окончание: <b>{until}</b>\n\n"
-                        f"Продлите, чтобы не потерять доступ."
+                        f"Выберите тариф для продления:"
                     )
-                reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Продлить", callback_data="tariffs")]
-                ])
+                from bot_xui.views import _build_tariff_text_and_keyboard
+                _, reply_markup = _build_tariff_text_and_keyboard(tg_id, mode="renew")
 
             try:
                 await bot.send_message(
@@ -1178,6 +1517,23 @@ async def notify_expiring_subscriptions(bot):
                                  status='sent')
             except Exception:
                 pass
+
+            # Notify admin
+            try:
+                sub_date = user.get('subscription_until')
+                client_name = get_user_email(tg_id)
+                await bot.send_message(
+                    chat_id=ADMIN_TG_ID,
+                    text=(
+                        f"⏰ <b>Подписка пользователя истекла</b>\n\n"
+                        f"Пользователь: <code>{tg_id}</code>" + (f" ({client_name})" if client_name else "") + f"\n"
+                        f"Дата окончания: {sub_date}\n\n"
+                        f"⚠️ <i>Подписка завершена. Проверьте конфиги (3x-ui / AWG).</i>"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.warning(f"[NOTIFY] Failed admin expiry notification tg:{tg_id}: {e}")
         except Exception as e:
             err_str = str(e).lower()
             is_block = "blocked" in err_str or "deactivated" in err_str
@@ -1244,6 +1600,7 @@ async def autopay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(f"{'🔴' if enabled else '🟢'} {toggle_text}", callback_data=toggle_data)],
+            [InlineKeyboardButton("⚙️ Изменить тариф", callback_data="autopay_change_tariff")],
             [InlineKeyboardButton("🗑 Отвязать карту", callback_data="autopay_remove_card")],
         ]),
     )
@@ -1288,6 +1645,8 @@ def main():
     app.add_handler(CommandHandler("promos",    promos))
     app.add_handler(CommandHandler("autopay",   autopay_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_feedback_message))
+    app.add_handler(MessageHandler(filters.PHOTO, process_receipt_photo))
+    app.add_handler(CallbackQueryHandler(receipt_callback_handler, pattern="^rcpt_"))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(error_handler)
 

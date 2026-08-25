@@ -210,6 +210,29 @@ def upsert_user_subscription(tg_id: int, subscription_until):
     )
 
 
+def create_user(first_name: str, last_name: str) -> dict:
+    """Создать пользователя без tg_id. Возвращает {id, web_token}."""
+    import secrets
+    token = secrets.token_urlsafe(16)
+    user_id = execute_query(
+        "INSERT INTO users (first_name, last_name, web_token) VALUES (%s, %s, %s)",
+        (first_name, last_name, token)
+    )
+    return {"id": user_id, "web_token": token}
+
+
+def link_tg_id_to_user(user_id: int, tg_id: int):
+    """Привязать tg_id к существующему пользователю (и к его vpn_keys)."""
+    execute_query(
+        "UPDATE users SET tg_id = %s WHERE id = %s",
+        (tg_id, user_id)
+    )
+    execute_query(
+        "UPDATE vpn_keys SET tg_id = %s WHERE user_id = %s",
+        (tg_id, user_id)
+    )
+
+
 # ─────────────────────────────────────────────
 #  Test periods
 # ─────────────────────────────────────────────
@@ -510,7 +533,10 @@ def process_web_referral(newcomer_id: int, referrer_web_token: str) -> bool:
 
 def create_payment(payment_id: str, tg_id: int, tariff: str, amount, status: str = "pending", is_test: bool = False, web_user_id: int = None):
     execute_query(
-        "INSERT INTO payments (payment_id, tg_id, web_user_id, tariff, amount, status, is_test) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        "INSERT INTO payments (payment_id, tg_id, web_user_id, tariff, amount, status, is_test) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        "ON DUPLICATE KEY UPDATE "
+        "status = IF(VALUES(status) = 'canceled', 'canceled', status)",
         (payment_id, tg_id, web_user_id, tariff, amount, status, int(is_test))
     )
 
@@ -598,6 +624,7 @@ def create_vpn_key(
     client_ip: str,
     client_public_key: str,
     vless_link: str = None,
+    xhttp_link: str = None,
     hysteria_link: str = None,
     expires_at=None,
     vpn_type: str = 'awg',
@@ -609,11 +636,11 @@ def create_vpn_key(
     execute_query(
         """
         INSERT INTO vpn_keys
-            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, hysteria_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
+            (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, xhttp_link, hysteria_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, hysteria_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
+        (tg_id, payment_id, client_id, client_name, client_ip, client_public_key, vless_link, xhttp_link, hysteria_link, expires_at, vpn_type, subscription_link, vpn_file, user_id)
     )
     logger.debug("create_vpn_key done")
 
@@ -626,6 +653,7 @@ def upsert_vpn_key(
     client_ip: str,
     client_public_key: str,
     vless_link: str = None,
+    xhttp_link: str = None,
     hysteria_link: str = None,
     expires_at=None,
     vpn_type: str = 'awg',
@@ -653,17 +681,17 @@ def upsert_vpn_key(
             """
             UPDATE vpn_keys 
             SET payment_id = %s, client_id = %s, client_name = %s, client_ip = %s, 
-                client_public_key = %s, vless_link = %s, hysteria_link = %s, 
+                client_public_key = %s, vless_link = %s, xhttp_link = %s, hysteria_link = %s, 
                 expires_at = %s, subscription_link = %s, vpn_file = %s
             WHERE id = %s
             """,
             (payment_id, client_id, client_name, client_ip, client_public_key, 
-             vless_link, hysteria_link, expires_at, subscription_link, vpn_file, existing['id'])
+             vless_link, xhttp_link, hysteria_link, expires_at, subscription_link, vpn_file, existing['id'])
         )
         logger.info(f"Updated existing VPN key {existing['id']} for user {val}")
     else:
         create_vpn_key(tg_id, payment_id, client_id, client_name, client_ip, 
-                       client_public_key, vless_link, hysteria_link, expires_at, 
+                       client_public_key, vless_link, xhttp_link, hysteria_link, expires_at, 
                        vpn_type, subscription_link, vpn_file, user_id)
         logger.info(f"Inserted new VPN key for user {val}")
 
@@ -721,20 +749,31 @@ def get_user_email(tg_id: int, payment_id: str | None = None) -> str | None:
 
 
 def deactivate_key_by_payment(payment_id: str):
-    """Деактивирует ключ по payment_id"""
+    """Деактивирует ключ по payment_id и обновляет дату подписки пользователя в past/NOW"""
+    payment = get_payment_by_id(payment_id)
+    if payment and payment.get("tg_id"):
+        execute_query(
+            "UPDATE users SET subscription_until = NOW() WHERE tg_id = %s",
+            (payment["tg_id"],)
+        )
+    elif payment and payment.get("user_id"):
+        execute_query(
+            "UPDATE users SET subscription_until = NOW() WHERE id = %s",
+            (payment["user_id"],)
+        )
     execute_query(
         "UPDATE vpn_keys SET expires_at = NOW() WHERE payment_id = %s",
         (payment_id,)
     )
 
 def sync_expiry(tg_id: int, expires_at_utc: datetime):
-    """Sync expiry across users.subscription_until and all active vpn_keys.expires_at."""
+    """Sync expiry across users.subscription_until and all vpn_keys.expires_at."""
     # Ensure naive UTC datetime for MySQL
     if expires_at_utc.tzinfo is not None:
         expires_at_utc = expires_at_utc.astimezone(timezone.utc).replace(tzinfo=None)
     upsert_user_subscription(tg_id, expires_at_utc)
     execute_query(
-        "UPDATE vpn_keys SET expires_at = %s WHERE tg_id = %s AND expires_at > NOW()",
+        "UPDATE vpn_keys SET expires_at = %s WHERE tg_id = %s",
         (expires_at_utc, tg_id)
     )
     logger.info(f"Synced expiry for tg_id={tg_id} to {expires_at_utc}")
@@ -749,7 +788,7 @@ def sync_expiry_by_user_id(user_id: int, expires_at_utc: datetime):
         (expires_at_utc, user_id)
     )
     execute_query(
-        "UPDATE vpn_keys SET expires_at = %s WHERE user_id = %s AND expires_at > NOW()",
+        "UPDATE vpn_keys SET expires_at = %s WHERE user_id = %s",
         (expires_at_utc, user_id)
     )
     logger.info(f"Synced expiry for user_id={user_id} to {expires_at_utc}")
@@ -792,19 +831,13 @@ def create_promocode(code: str, promo_type: str, value: int,
     )
 
 
+UNIVERSAL_WINBACK_CODES = {15: "SPARKLING_BACK15", 20: "MISTY_BACK20", 25: "WINDY_BACK25"}
+
+
 def create_winback_promo(tg_id: int, promo_type: str = 'discount', value: int = 20, days_valid: int = 14) -> str:
-    """Create a single-use promo code for a specific user. Returns the promo code string."""
-    import secrets
-    code = f"WIN{tg_id}_{secrets.token_hex(4)[:6].upper()}"
-    from datetime import timedelta
-    expires_at = datetime.now() + timedelta(days=days_valid)
-    execute_query(
-        "INSERT INTO promocodes (code, type, value, max_uses, per_user_limit, expires_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (code.upper(), promo_type, value, 1, 1, expires_at),
-    )
-    code_upper = code.upper()
-    return code_upper
+    """Return a universal winback promo code based on discount value."""
+    code = UNIVERSAL_WINBACK_CODES.get(value, "SPARKLING_BACK15")
+    return code
 
 
 def get_promocode(code: str) -> dict | None:
@@ -932,6 +965,14 @@ def save_user_payment_method_by_id(user_id: int, payment_method_id: str, tariff:
     )
 
 
+def update_autopay_tariff(tg_id: int, tariff: str):
+    """Update autopay tariff for user."""
+    execute_query(
+        "UPDATE users SET autopay_tariff = %s WHERE tg_id = %s",
+        (tariff, tg_id),
+    )
+
+
 def disable_autopay(tg_id: int):
     """Disable autopay for user."""
     execute_query(
@@ -955,6 +996,121 @@ def disable_autopay_by_id(user_id: int):
     )
 
 
+def get_user_target_charge_time(user_id: int, tg_id: int) -> tuple[int, int]:
+    """
+    Get (hour, minute) when user usually pays, or default to 14:00.
+    Ensures target hour is within daytime range [08:00 - 22:00] (Night Guard).
+    """
+    # 1. Try to get time of last paid payment
+    res = execute_query(
+        "SELECT created_at FROM payments WHERE (tg_id = %s OR web_user_id = %s) AND status = 'paid' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (tg_id or 0, user_id), fetch='one'
+    )
+    if not res:
+        # 2. Try user creation time
+        res = execute_query(
+            "SELECT created_at FROM users WHERE id = %s",
+            (user_id,), fetch='one'
+        )
+
+    if res and res.get('created_at'):
+        dt = res['created_at']
+        hour = dt.hour
+        minute = dt.minute
+        # Night Guard: if between 23:00 and 07:59, adjust to 12:00
+        if hour >= 23 or hour < 8:
+            hour = 12
+            minute = 0
+        return hour, minute
+
+    return 14, 0
+
+
+def get_autopay_users_for_phase1() -> list[dict]:
+    """
+    Users with autopay enabled whose subscription expires within 20 to 28 hours (approx 1 day),
+    and who haven't received phase 1 notification in the last 24 hours.
+    """
+    return execute_query(
+        "SELECT u.id, u.tg_id, u.email, u.payment_method_id, u.autopay_tariff, u.autopay_vpn_type, "
+        "u.subscription_until, u.permanent_discount "
+        "FROM users u "
+        "WHERE u.autopay_enabled = 1 AND u.payment_method_id IS NOT NULL "
+        "AND u.subscription_until IS NOT NULL AND u.bot_blocked = 0 "
+        "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL 28 HOUR "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM message_log ml "
+        "  WHERE (ml.tg_id = u.tg_id OR (u.tg_id IS NULL AND ml.tg_id = u.id)) "
+        "  AND ml.scenario IN ('autopay_reminder', 'autopay_phase1_reminder') "
+        "  AND ml.created_at >= NOW() - INTERVAL 24 HOUR"
+        ")",
+        fetch='all'
+    )
+
+
+def get_autopay_users_for_phase2() -> list[dict]:
+    """
+    Users with autopay enabled whose subscription expires within 2 to 4.5 hours (approx 3 hours),
+    and who haven't received phase 2 warning in the last 12 hours.
+    """
+    return execute_query(
+        "SELECT u.id, u.tg_id, u.email, u.payment_method_id, u.autopay_tariff, u.autopay_vpn_type, "
+        "u.subscription_until, u.permanent_discount "
+        "FROM users u "
+        "WHERE u.autopay_enabled = 1 AND u.payment_method_id IS NOT NULL "
+        "AND u.subscription_until IS NOT NULL AND u.bot_blocked = 0 "
+        "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL 5 HOUR "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM message_log ml "
+        "  WHERE (ml.tg_id = u.tg_id OR (u.tg_id IS NULL AND ml.tg_id = u.id)) "
+        "  AND ml.scenario = 'autopay_phase2_warning' "
+        "  AND ml.created_at >= NOW() - INTERVAL 12 HOUR"
+        ")",
+        fetch='all'
+    )
+def get_manual_users_for_phase1() -> list[dict]:
+    """
+    Users WITHOUT autopay enabled whose subscription expires within 20 to 28 hours (approx 1 day),
+    and who haven't received phase 1 manual notification in the last 24 hours.
+    """
+    return execute_query(
+        "SELECT u.id, u.tg_id, u.email, u.subscription_until "
+        "FROM users u "
+        "WHERE (u.autopay_enabled = 0 OR u.autopay_enabled IS NULL OR u.payment_method_id IS NULL) "
+        "AND u.subscription_until IS NOT NULL AND u.bot_blocked = 0 "
+        "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL 28 HOUR "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM message_log ml "
+        "  WHERE (ml.tg_id = u.tg_id OR (u.tg_id IS NULL AND ml.tg_id = u.id)) "
+        "  AND ml.scenario IN ('manual_phase1_reminder', 'autopay_phase1_reminder') "
+        "  AND ml.created_at >= NOW() - INTERVAL 24 HOUR"
+        ")",
+        fetch='all'
+    )
+
+
+def get_manual_users_for_phase2() -> list[dict]:
+    """
+    Users WITHOUT autopay enabled whose subscription expires within 2 to 5 hours (approx 3 hours),
+    and who haven't received phase 2 manual warning in the last 12 hours.
+    """
+    return execute_query(
+        "SELECT u.id, u.tg_id, u.email, u.subscription_until "
+        "FROM users u "
+        "WHERE (u.autopay_enabled = 0 OR u.autopay_enabled IS NULL OR u.payment_method_id IS NULL) "
+        "AND u.subscription_until IS NOT NULL AND u.bot_blocked = 0 "
+        "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL 5 HOUR "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM message_log ml "
+        "  WHERE (ml.tg_id = u.tg_id OR (u.tg_id IS NULL AND ml.tg_id = u.id)) "
+        "  AND ml.scenario IN ('manual_phase2_warning', 'autopay_phase2_warning') "
+        "  AND ml.created_at >= NOW() - INTERVAL 12 HOUR"
+        ")",
+        fetch='all'
+    )
+
+
 def get_autopay_users_due(days_before: int = 1) -> list[dict]:
     """Get users whose subscription expires within `days_before` days and have autopay enabled.
     Excludes users who already have an autopayment (success or pending) for today (prevents duplicate charges)."""
@@ -963,7 +1119,7 @@ def get_autopay_users_due(days_before: int = 1) -> list[dict]:
             "WHERE u.autopay_enabled = 1 AND u.payment_method_id IS NOT NULL "
             "AND u.subscription_until IS NOT NULL "
             "AND u.bot_blocked = 0 "
-            "AND u.subscription_until BETWEEN CURDATE() AND CURDATE() + INTERVAL 1 DAY "
+            "AND u.subscription_until <= NOW() + INTERVAL 30 MINUTE "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM autopay_log al "
             "  WHERE al.user_id = u.id "
@@ -994,6 +1150,7 @@ def get_autopay_users_due(days_before: int = 1) -> list[dict]:
     )
 
 
+
 def log_autopay(tg_id: int, user_id: int, tariff: str, amount: float,
                 payment_id: str = None, status: str = "pending", error: str = None):
     execute_query(
@@ -1006,7 +1163,14 @@ def log_autopay(tg_id: int, user_id: int, tariff: str, amount: float,
 def log_message_sent(tg_id: int, source: str, scenario: str = None,
                        message_text: str = None, status: str = 'sent',
                        error_text: str = None):
-    """Log a sent Telegram message to message_log table."""
+    """Log a sent Telegram message to message_log table (ignoring test messages and test accounts)."""
+    # Skip test accounts and test scenarios
+    TEST_TG_IDS = {111, 444, 999, 123456, 3, 100}
+    if tg_id in TEST_TG_IDS:
+        return
+    if scenario and ('test' in scenario.lower() or 'demo' in scenario.lower()):
+        return
+
     if message_text and len(message_text) > 500:
         message_text = message_text[:500]
     if error_text and len(error_text) > 255:
@@ -1018,6 +1182,42 @@ def log_message_sent(tg_id: int, source: str, scenario: str = None,
     )
 
 
+def log_user_platform(tg_id: int | None, user_id: int | None,
+                     platform: str, client_app: str | None = None,
+                     client_version: str | None = None,
+                     user_agent: str | None = None,
+                     ip: str | None = None):
+    if user_agent and len(user_agent) > 512:
+        user_agent = user_agent[:512]
+    execute_query("""
+        INSERT INTO user_platforms (tg_id, user_id, platform, client_app, client_version, user_agent, ip, first_seen, last_seen, seen_count)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), 1)
+        ON DUPLICATE KEY UPDATE
+            last_seen = NOW(),
+            seen_count = seen_count + 1,
+            user_agent = VALUES(user_agent),
+            ip = VALUES(ip),
+            client_version = VALUES(client_version)
+    """, (tg_id, user_id, platform, client_app, client_version, user_agent, ip))
+
+
+def get_user_platforms(tg_id: int) -> list[dict]:
+    return execute_query(
+        "SELECT platform, client_app, client_version, last_seen, seen_count FROM user_platforms WHERE tg_id = %s ORDER BY last_seen DESC",
+        (tg_id,), fetch='all'
+    )
+
+
+def get_all_users_platforms() -> list[dict]:
+    return execute_query(
+        """SELECT up.*, u.first_name, u.last_name
+           FROM user_platforms up
+           JOIN users u ON u.tg_id = up.tg_id
+           ORDER BY up.last_seen DESC""",
+        fetch='all'
+    )
+
+
 def cleanup_expired_sessions():
     """Remove expired web auth sessions."""
     deleted = _update_rowcount(
@@ -1025,3 +1225,24 @@ def cleanup_expired_sessions():
     )
     if deleted:
         logger.info(f"[SESSION_CLEANUP] Removed {deleted} expired sessions")
+
+
+# ── Winback Campaign Helpers ──────────────────────────────────────────────────
+
+def has_winback_discount(tg_id: int) -> bool:
+    """Check if user has active 20% winback discount."""
+    row = execute_query(
+        "SELECT winback_discount_active FROM users WHERE tg_id = %s",
+        (tg_id,),
+        fetch='one'
+    )
+    return bool(row and row.get('winback_discount_active'))
+
+
+def set_winback_discount(tg_id: int, active: bool = True):
+    """Set or clear active winback discount for user."""
+    val = 1 if active else 0
+    execute_query(
+        "UPDATE users SET winback_discount_active = %s WHERE tg_id = %s",
+        (val, tg_id)
+    )

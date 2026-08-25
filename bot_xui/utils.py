@@ -6,7 +6,7 @@ import subprocess
 from urllib.parse import quote
 import os
 import logging
-from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_TOTP_SECRET, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, VLESS_SID, VLESS_SID_LIST, VLESS_PBK, VLESS_SNI
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_TOTP_SECRET, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, VLESS_SID, VLESS_SID_LIST, VLESS_PBK, VLESS_SNI, VLESS_HTTP_PORT, VLESS_XHTTP_PBK, VLESS_XHTTP_SID, VLESS_XHTTP_SID_LIST
 
 logger = logging.getLogger(__name__)
 
@@ -203,9 +203,10 @@ class XUIClient:
                 "totalGB": client.get('totalGB', 0),
                 "expiryTime": new_expiry,
                 "tgId": client.get('tgId', 0),
-                "enable": client.get('enable', True),
+                "enable": True,
                 "limitIp": client.get('limitIp', 0),
                 "reset": client.get('reset', 0),
+                "flow": client.get('flow') or 'xtls-rprx-vision',
             }
 
             url = f"{self.host}/panel/api/clients/update/{email}"
@@ -264,7 +265,8 @@ class XUIClient:
         import uuid as uuid_lib
 
         if inbound_ids is None:
-            inbound_ids = []
+            from config import ACTIVE_INBOUND_IDS
+            inbound_ids = list(ACTIVE_INBOUND_IDS)
 
         payload = {
             "client": {
@@ -275,6 +277,7 @@ class XUIClient:
                 "enable": True,
                 "tgId": tg_id,
                 "reset": 0,
+                "flow": "xtls-rprx-vision",
             },
             "inboundIds": inbound_ids,
         }
@@ -440,6 +443,23 @@ class XUIClient:
             logger.error(f"Error getting client subscription url: {e}")
             return None
 
+    def get_client_subscription_url_by_email(self, email: str):
+        """Получить ссылку подписки клиента по email (для web-пользователей с tg_id=0)."""
+        from config import XUI_SUB_PATH
+        if not XUI_SUB_PATH:
+            logger.warning("XUI_SUB_PATH not configured")
+            return None
+        try:
+            client_data = self.get_client_by_email(email)
+            if client_data:
+                sub_id = client_data['client'].get('subId')
+                if sub_id:
+                    return f"{XUI_SUB_PATH}/sub/{sub_id}"
+            return None
+        except Exception as e:
+            logger.error(f"Error getting client subscription url by email: {e}")
+            return None
+
 
 def generate_vless_link(
     client_id: str,
@@ -453,26 +473,42 @@ def generate_vless_link(
     fp: str = "chrome",
     spx: str = "/",
     remark: str | None = None,
+    network: str = "tcp",
 ) -> str:
     import random
     from urllib.parse import quote
 
     # Ротация short ID: если передан один из списка, выбираем случайный
-    if VLESS_SID_LIST and sid in VLESS_SID_LIST:
-        sid = random.choice(VLESS_SID_LIST)
+    sid_list = VLESS_XHTTP_SID_LIST if network == "xhttp" else VLESS_SID_LIST
+    if sid_list and sid in sid_list:
+        sid = random.choice(sid_list)
 
-    # Формируем параметры в том же порядке, что и в панели
-    params = (
-        f"type=tcp"
-        f"&encryption=none"
-        f"&security=reality"
-        f"&pbk={pbk}"
-        f"&fp={fp}"
-        f"&sni={sni}"
-        f"&sid={sid}"
-        f"&spx={quote(spx, safe='')}"
-        f"&flow=xtls-rprx-vision"
-    )
+    if network == "xhttp":
+        params = (
+            f"type=xhttp"
+            f"&mode=stream-one"
+            f"&encryption=none"
+            f"&security=reality"
+            f"&pbk={pbk}"
+            f"&fp={fp}"
+            f"&sni={sni}"
+            f"&sid={sid}"
+            f"&spx={quote(spx, safe='')}"
+            f"&host={quote(sni, safe='')}"
+            f"&path={quote(path, safe='')}"
+        )
+    else:
+        params = (
+            f"type=tcp"
+            f"&encryption=none"
+            f"&security=reality"
+            f"&pbk={pbk}"
+            f"&fp={fp}"
+            f"&sni={sni}"
+            f"&sid={sid}"
+            f"&spx={quote(spx, safe='')}"
+            f"&flow=xtls-rprx-vision"
+        )
 
     display_name = remark if remark else client_name
     return f"vless://{client_id}@{domain}:{port}?{params}#{quote(display_name)}"

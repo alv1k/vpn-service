@@ -134,7 +134,7 @@ class TestProxySubscription:
         }
         # XUI returns base64-encoded vless link
         vless = "vless://uuid@host:443?type=tcp&security=reality#old"
-        expected_vless = "vless://uuid@host:443?type=tcp&security=reality#🐿️ TIIN vpn | ✅Active"
+        expected_vless = "vless://uuid@host:443?type=tcp&security=reality#🟢 VLESS TCP ✅ 22д"
         mock_fetch.return_value = base64.b64encode(vless.encode())
 
         response = await proxy_subscription("tok")
@@ -226,3 +226,111 @@ class TestProxySubscription:
         with pytest.raises(HTTPException) as exc:
             await proxy_subscription("tok")
         assert exc.value.status_code == 503
+
+
+# ═════════════════════════════════════════════
+#  Expired subscription tests
+# ═════════════════════════════════════════════
+
+class TestExpiredSubscription:
+
+    def setup_method(self):
+        """Clear cache between tests."""
+        from api import sub_proxy
+        sub_proxy._CACHE.clear()
+
+    # Helper to create mock request with proper headers
+    class MockRequest:
+        def __init__(self, accept_header):
+            from starlette.datastructures import Headers
+            self.headers = Headers({"accept": accept_header})
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
+    async def test_expired_subscription_vpn_client_returns_expired_config(self, mock_user, mock_pick):
+        """VPN client (no text/html in Accept) gets base64 expired config with renewal URL."""
+        from api.sub_proxy import proxy_subscription
+        
+        past = datetime.utcnow() - timedelta(days=5)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": past,
+        }
+
+        # Mock Request with no text/html in Accept
+        mock_request = self.MockRequest("text/plain, */*")
+
+        response = await proxy_subscription("expired-token", mock_request)
+        
+        # Should return Response with base64 body
+        assert response.status_code == 200
+        body_decoded = base64.b64decode(response.body).decode()
+        assert "vless://dummy@expired:443" in body_decoded
+        assert "❌ Подписка истекла" in body_decoded
+        assert "344988.snk.wtf/my/expired-token" in body_decoded
+        
+        # Check headers
+        assert "subscription-userinfo" in response.headers
+        # Expire should be the timestamp of when it expired (past)
+        assert "expire=" in response.headers["subscription-userinfo"]
+        expire_ts = int(response.headers["subscription-userinfo"].split("expire=")[1].split(";")[0])
+        assert expire_ts == int(past.timestamp())
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock, side_effect=RuntimeError("XUI down"))
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
+    async def test_expired_subscription_browser_falls_through_to_xui(self, mock_user, mock_pick, mock_fetch):
+        """Browser (text/html in Accept) falls through to XUI fetch (not handled here)."""
+        from api import sub_proxy
+        from api.sub_proxy import proxy_subscription
+        from fastapi import HTTPException
+        
+        # Clear cache to avoid interference from other tests
+        sub_proxy._CACHE.clear()
+        
+        past = datetime.utcnow() - timedelta(days=5)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": past,
+        }
+
+        # Mock Request with text/html in Accept
+        mock_request = self.MockRequest("text/html,application/xhtml+xml")
+
+        # Should NOT return expired config, should try XUI
+        # XUI fetch is mocked to raise RuntimeError → 503
+        with pytest.raises(HTTPException) as exc:
+            await proxy_subscription("expired-token-browser", mock_request)
+        # 503 because XUI fetch fails
+        assert exc.value.status_code == 503
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
+    async def test_active_subscription_unchanged(self, mock_user, mock_pick):
+        """Active subscription works as before (regression test)."""
+        from api.sub_proxy import proxy_subscription
+        from fastapi import Request
+        from starlette.datastructures import Headers
+        
+        future = datetime.utcnow() + timedelta(days=23)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+        }
+
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = Headers({"accept": "text/plain"})
+
+        # Need to mock _fetch_xui to avoid actual HTTP call
+        with patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock) as mock_fetch:
+            vless = "vless://uuid@host:443?type=tcp&security=reality#old"
+            expected_vless = "vless://uuid@host:443?type=tcp&security=reality#🟢 VLESS TCP ✅ 22д"
+            mock_fetch.return_value = base64.b64encode(vless.encode())
+
+            response = await proxy_subscription("active-token", mock_request)
+            body_decoded = base64.b64decode(response.body).decode()
+            assert body_decoded == expected_vless
+            assert f"expire={int(future.timestamp())}" in response.headers["subscription-userinfo"]

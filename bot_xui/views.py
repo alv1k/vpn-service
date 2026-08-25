@@ -10,7 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot_xui.tariffs import TARIFFS
 from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated, get_permanent_discount, update_vless_link, get_web_token, get_user_by_tg_id, get_payment_by_id, get_referral_count, get_user_by_web_token
-from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, safe_edit_text_logged, reply_text_logged, reply_photo_logged, reply_document_logged, get_user_sub_url, _log_message, make_qr_bytes, WEB_BASE_URL
+from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, safe_edit_text_logged, reply_text_logged, reply_photo_logged, reply_document_logged, _log_message, make_qr_bytes, WEB_BASE_URL
 
 from bot_xui.test_mode import is_test_mode
 from config import ADMIN_TG_ID, REFERRAL_REWARD_DAYS, BOT_USERNAME
@@ -67,8 +67,10 @@ def build_main_menu_text(tg_id: int) -> str:
     if token:
         text += f'🪄 <a href="https://344988.snk.wtf/my/{token}">Гид по подключению</a>\n\n'
 
+    bonus_label = f"Получи бонус за друзей: +{REFERRAL_REWARD_DAYS} дн." if ref_days == 0 else f"👥 Бонус за друзей: +{ref_days} дн."
+
     text += (
-        f"<blockquote>👥 Бонус за друзей: +{ref_days} дн.\n"
+        f"<blockquote>{bonus_label}\n"
         f"Воспользуйся реферальной ссылкой:\n➡️➡️➡️ <code>https://t.me/{BOT_USERNAME}?start={tg_id}</code> ⬅️</blockquote>"
     )
 
@@ -86,9 +88,6 @@ def build_main_menu_text(tg_id: int) -> str:
 
 async def show_main_menu(query, xui=None):
     tg_id = query.from_user.id
-    if xui is not None:
-        from bot_xui.vpn_factory import auto_grant_test_and_notify
-        await auto_grant_test_and_notify(tg_id, xui, query.message.reply_photo)
 
     text = build_main_menu_text(tg_id)
     markup = make_main_keyboard(tg_id)
@@ -115,6 +114,10 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
     awg_used   = is_awg_test_activated(tg_id)
     vless_used = is_vless_test_activated(tg_id)
     perm_discount = get_permanent_discount(tg_id)
+    from api.db import has_winback_discount
+    from config import WINBACK_DISCOUNT_PERCENT
+    winback_discount = WINBACK_DISCOUNT_PERCENT if has_winback_discount(tg_id) else 0
+    effective_discount = max(perm_discount, winback_discount)
 
     test_tariffs    = []
     regular_tariffs = []
@@ -137,16 +140,17 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
     else:
         text = "💎 <b>Тарифы VPN</b>\n\n"
 
-    if perm_discount > 0:
-        text += f"🏷 Ваша скидка: <b>{perm_discount}%</b>\n\n"
+    if effective_discount > 0:
+        discount_label = "🏷 Ваша персональная скидка 20%:" if winback_discount > 0 else "🏷 Ваша скидка:"
+        text += f"{discount_label} <b>{effective_discount}%</b>\n\n"
 
     if test_tariffs and not (awg_used or vless_used) and mode == "buy":
         for t in test_tariffs:
             text += f"🎁 <b>{t['name']}</b> — бесплатно\n\n"
 
     for i, t in enumerate(regular_tariffs):
-        if perm_discount > 0:
-            discounted = max(1, round(t['price'] * (100 - perm_discount) / 100))
+        if effective_discount > 0:
+            discounted = max(1, round(t['price'] * (100 - effective_discount) / 100))
             ppd = discounted / t["days"] if t.get("days") else 0
             price_str = f"<s>{t['price']}₽</s> <b>{discounted}₽</b>"
         else:
@@ -178,8 +182,8 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
 
     row: list = []
     for i, t in enumerate(regular_tariffs):
-        if perm_discount > 0:
-            btn_price = max(1, round(t['price'] * (100 - perm_discount) / 100))
+        if effective_discount > 0:
+            btn_price = max(1, round(t['price'] * (100 - effective_discount) / 100))
             label = f"{tariff_emoji(t.get('days', 0))} {t['days']}дн | {btn_price}₽"
         else:
             label = f"{tariff_emoji(t.get('days', 0))} {t['days']}дн | {t['price']}₽"
@@ -205,8 +209,7 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
 
 async def show_tariffs(query):
     text, markup = _build_tariff_text_and_keyboard(query.from_user.id, mode="buy")
-    await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
-    await _log_message(query.from_user.id, "bot_menu", "tariffs", text)
+    await safe_edit_text_logged(query, text, "tariffs", reply_markup=markup)
 
 
 async def show_renew_tariffs(query, context, inbound_id: int, client_name: str):
@@ -378,12 +381,8 @@ async def _show_no_configs(query):
         [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
     ]
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="HTML",
-    )
-    await _log_message(query.from_user.id, "bot_menu", "my_configs", text)
+    await safe_edit_text_logged(query, text, "my_configs",
+        reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -485,15 +484,15 @@ async def show_single_config(query, client_name: str, xui):
     qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
     bio = make_qr_bytes(qr_url) if qr_url else None
     vless_link = key.get("vless_link") or ""
+    xhttp_link = key.get("xhttp_link") or ""
     hysteria_link = key.get("hysteria_link") or ""
 
     from config import SERVER_LOCATION
     my_url = f"https://344988.snk.wtf/my/{web_token}" if web_token else ""
-    user_data = get_user_by_tg_id(tg_id)
-    sub_url = get_user_sub_url(tg_id, user_data.get('id', 0)) if user_data else ""
+    sub_proxy_url = f"https://344988.snk.wtf/sub/{web_token}" if web_token else ""
     sub_link_text = f"📎 <b>Личный кабинет с инструкциями:</b>\n<code>{my_url}</code>"
-    if sub_url:
-        sub_link_text += f"\n\n📎 <b>Ссылка на подписку:</b>\n<code>{sub_url}</code>"
+    if sub_proxy_url:
+        sub_link_text += f"\n\n📎 <b>Ссылка на подписку:</b>\n<code>{sub_proxy_url}</code>"
 
     caption = (
         f"{sub_info}\n\n"
@@ -516,7 +515,9 @@ async def show_single_config(query, client_name: str, xui):
 
     extra_links = ""
     if vless_link:
-        extra_links += f"\n\n🟢 <b>VLESS standalone:</b>\n<code>{vless_link}</code>"
+        extra_links += f"\n\n🟢 <b>VLESS TCP standalone:</b>\n<code>{vless_link}</code>"
+    if xhttp_link:
+        extra_links += f"\n\n🟠 <b>VLESS XHTTP standalone:</b>\n<code>{xhttp_link}</code>"
     if hysteria_link:
         extra_links += f"\n\n🚀 <b>Hysteria 2 standalone:</b>\n<code>{hysteria_link}</code>"
 

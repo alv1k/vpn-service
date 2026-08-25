@@ -59,6 +59,8 @@ def _make_update(callback_data: str, tg_id: int = 100):
     query.edit_message_text = AsyncMock()
     query.message.reply_text = AsyncMock()
     query.message.delete = AsyncMock()
+    for attr in ['photo', 'video', 'document', 'sticker', 'animation', 'poll', 'voice', 'video_note', 'audio', 'location', 'venue', 'contact', 'dice', 'game']:
+        setattr(query.message, attr, None)
 
     update = MagicMock()
     update.callback_query = query

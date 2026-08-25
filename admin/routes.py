@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -26,6 +27,7 @@ from awg_api.config import (
 logger = logging.getLogger("admin")
 
 SESSION_MAX_AGE = 604800  # 7 days
+YAKUTSK_TZ = timezone(timedelta(hours=9))
 
 
 def _require_admin_session(request: Request):
@@ -85,6 +87,7 @@ _xui = None
 
 # Speed tracking: {(name, type): {"bytes": int, "ts": float, "speed": float}}
 _prev_traffic: dict[tuple[str, str], dict] = {}
+_last_speed: dict[tuple[str, str], dict] = {}  # {"speed": float, "ts": float}
 
 
 def _get_xui():
@@ -145,11 +148,17 @@ def _clean(obj):
     return obj
 
 
-def _calc_speed(name: str, proto: str, total_bytes: int) -> float:
-    """Calculate speed in bytes/sec from delta between snapshots."""
+def _calc_speed_with_last(name: str, proto: str, total_bytes: int) -> tuple[float, float]:
+    """Calculate current speed and return (current_speed, last_speed).
+    last_speed is the previous non-zero speed before this calculation.
+    Resets last_speed if no recent traffic data (client was offline)."""
     key = (name, proto)
     now = time.time()
     prev = _prev_traffic.get(key)
+    last_entry = _last_speed.get(key)
+    last = 0.0
+    if last_entry and now - last_entry["ts"] < 1800:
+        last = last_entry["speed"]
     speed = 0.0
     if prev and now - prev["ts"] > 1:
         delta_bytes = total_bytes - prev["bytes"]
@@ -157,7 +166,12 @@ def _calc_speed(name: str, proto: str, total_bytes: int) -> float:
         if delta_bytes > 0:
             speed = delta_bytes / delta_time
     _prev_traffic[key] = {"bytes": total_bytes, "ts": now, "speed": speed}
-    return speed
+    if speed > 0:
+        _last_speed[key] = {"speed": speed, "ts": now}
+    return speed, last
+
+
+
 
 
 def _speed_mbps(speed_bps: float) -> float:
@@ -177,7 +191,14 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
     cur.execute(f"""
         SELECT k.client_name, k.tg_id, k.user_id, k.expires_at AS key_expires_at,
                COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
-               u.web_token, u.subscription_until
+               u.web_token, u.subscription_until,
+               (SELECT COUNT(*) FROM payments p 
+                WHERE p.status = 'paid' 
+                  AND p.amount > 1.00 
+                  AND (p.is_test IS NULL OR p.is_test = 0)
+                  AND p.tg_id NOT IN (364224373, 6335998601, 397547537)
+                  AND p.tg_id != 0 
+                  AND p.tg_id = k.tg_id) AS paid_count
         FROM vpn_keys k
         LEFT JOIN users u ON (k.tg_id != 0 AND k.tg_id = u.tg_id) OR (k.user_id IS NOT NULL AND k.user_id = u.id)
         WHERE k.client_name IN ({placeholders})
@@ -192,22 +213,25 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
         expires = None
         is_test = False
         if sub and hasattr(sub, "strftime"):
-            expires = sub.strftime("%Y-%m-%d")
+            expires = sub.isoformat()
         elif sub:
             expires = str(sub)
         elif key_exp and hasattr(key_exp, "strftime"):
-            expires = key_exp.strftime("%Y-%m-%d")
+            expires = key_exp.isoformat()
             is_test = True
         elif key_exp:
             expires = str(key_exp)
             is_test = True
+        tg_id_val = r.get("tg_id")
+        has_paid = (r.get("paid_count") or 0) > 0 and (tg_id_val not in (364224373, 6335998601, 397547537))
         result[r["client_name"]] = {
-            "tg_id": r.get("tg_id"),
+            "tg_id": tg_id_val,
             "user_id": r.get("user_id"),
             "first_name": r.get("first_name") or "",
             "web_token": r.get("web_token") or "",
             "expires": expires,
             "is_test": is_test,
+            "has_paid": has_paid,
         }
     # For hysteria _h entries without user info, fall back to base vless name
     missing_bases = set()
@@ -246,54 +270,104 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
     return result
 
 
-def _get_online_users() -> tuple[list[dict], set]:
-    """Parse xray access log + awg handshakes to find who's online now.
-    Returns merged list of users (all protocols united by tg_id/user_id) and identity set."""
-    # Collect raw protocol entries: list of {name, type, ip_count, last_seen, speed_mbps}
-    raw_entries = []
-    vless_ips: dict[str, set[str]] = {}   # email -> set of IPs
-    vless_ts: dict[str, str] = {}         # email -> latest timestamp
-
-    # VLESS: parse access.log for activity in last 5 minutes
-    access_log = "/var/log/x-ui/access.log"
+def _get_inbound_map() -> dict[str, dict]:
+    """Build tag → {id, port, remark, protocol} mapping from x-ui SQLite inbounds table."""
+    xui_db = "/etc/x-ui/x-ui.db"
     try:
-        cutoff = time.time() - 300  # 5 min ago
-        result = subprocess.run(
-            ["tail", "-500", access_log], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.strip().split("\n"):
-            if "email:" not in line or "127.0.0.1" in line.split("from ")[1][:15] if "from " in line else True:
-                continue
-            ts_match = re.match(r"(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})", line)
-            if not ts_match:
-                continue
-            try:
-                ts = datetime.strptime(ts_match.group(1), "%Y/%m/%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                if ts.timestamp() < cutoff:
-                    continue
-            except Exception:
-                continue
+        conn = sqlite3.connect(xui_db)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tag, id, port, protocol, remark FROM inbounds")
+        mapping = {
+            tag: {"id": ib_id, "port": port, "protocol": proto, "remark": rem}
+            for tag, ib_id, port, proto, rem in cursor.fetchall()
+        }
+        conn.close()
+        return mapping
+    except Exception as e:
+        logger.warning(f"Inbound map query error: {e}")
+        return {}
 
-            ip_match = re.search(r"from (?:tcp:)?(\d+\.\d+\.\d+\.\d+)", line)
-            ip = ip_match.group(1) if ip_match else "?"
 
-            email_match = re.search(r"email: (.+)$", line)
-            if not email_match:
+def _parse_access_log_inbounds(log_path: str = "/var/log/x-ui/access.log",
+                               window_seconds: int = 180) -> tuple[dict[str, dict[str, float]], dict[str, set[str]]]:
+    """Parse xray access log for inbound tags with their last seen timestamp and IPs per email in the last window_seconds.
+    Returns (inbounds_by_email: {email: {inbound_tag: last_ts}}, ips_by_email)."""
+    inbounds: dict[str, dict[str, float]] = {}
+    ips: dict[str, set[str]] = {}
+    try:
+        now = time.time()
+        with open(log_path) as f:
+            lines = f.readlines()
+        ip_re = re.compile(r'from\s+(?:tcp:)?(\d+\.\d+\.\d+\.\d+):\d+')
+        for line in lines[-500:]:
+            m = re.match(
+                r'^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\.\d+\s+.*\[([^\]]+)\].*email:\s*(\S+)',
+                line
+            )
+            if not m:
                 continue
-            email = email_match.group(1).strip()
-            vless_ips.setdefault(email, set()).add(ip)
-            vless_ts[email] = ts.strftime("%H:%M:%S")
+            ts_str = m.group(1)
+            inbound_tag = re.split(r'\s*(?:->|>>)\s*', m.group(2))[0].strip()
+            email = m.group(3)
+            if inbound_tag == "api" or email.startswith("api."):
+                continue
+            line_ts = datetime.strptime(ts_str, "%Y/%m/%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+            if now - line_ts > window_seconds:
+                continue
+            if email not in inbounds:
+                inbounds[email] = {}
+                ips[email] = set()
+            # Store latest timestamp for this inbound
+            if inbound_tag not in inbounds[email] or line_ts > inbounds[email][inbound_tag]:
+                inbounds[email][inbound_tag] = line_ts
+            ipm = ip_re.search(line)
+            if ipm:
+                ips[email].add(ipm.group(1))
+    except FileNotFoundError:
+        logger.warning(f"Access log not found: {log_path}")
+    except Exception as e:
+        logger.warning(f"Access log parse error: {e}")
+    return inbounds, ips
 
-        for email, ips in vless_ips.items():
+
+def _get_online_users() -> tuple[list[dict], set]:
+    """Query x-ui client_traffics.last_online + awg handshakes to find who's online now.
+    Returns merged list of users (all protocols united by tg_id/user_id) and identity set."""
+    raw_entries = []
+
+    # Parse access log first — ip_count and inbound override depend on it
+    inbound_map = _get_inbound_map()
+    log_inbounds, log_ips = _parse_access_log_inbounds()
+
+    # VLESS/Hysteria: query x-ui SQLite for clients with last_online in last 5 minutes
+    xui_db = "/etc/x-ui/x-ui.db"
+    try:
+        cutoff_ms = int((time.time() - 300) * 1000)
+        conn = sqlite3.connect(xui_db)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT ct.email, ct.last_online, ct.inbound_id, i.tag, i.port
+            FROM client_traffics ct
+            LEFT JOIN inbounds i ON i.id = ct.inbound_id
+            WHERE ct.enable = 1 AND ct.last_online > ?
+        """, (cutoff_ms,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        now_str = time.strftime("%H:%M:%S")
+        for email, last_online_ms, ct_inbound_id, inbound_tag, inbound_port in rows:
             is_hysteria = email.endswith("_h")
             raw_entries.append({
                 "name": email,
-                "ip_count": len(ips),
+                "ip_count": max(len(log_ips.get(email, [])), 1),
                 "type": "hysteria" if is_hysteria else "vless",
-                "last_seen": vless_ts[email],
+                "inbound_id": ct_inbound_id,
+                "inbound_tag": inbound_tag or "",
+                "inbound_port": inbound_port or 0,
+                "last_seen": now_str,
             })
     except Exception as e:
-        logger.warning(f"Access log parse error: {e}")
+        logger.warning(f"x-ui DB query error: {e}")
 
     # VLESS/Hysteria: get per-client traffic from x-ui for speed calc
     try:
@@ -307,8 +381,9 @@ def _get_online_users() -> tuple[list[dict], set]:
         for e in raw_entries:
             if e["name"] in traffic:
                 proto = "hysteria" if e["name"].endswith("_h") else "vless"
-                speed = _calc_speed(e["name"], proto, traffic[e["name"]])
+                speed, last = _calc_speed_with_last(e["name"], proto, traffic[e["name"]])
                 e["speed_mbps"] = _speed_mbps(speed)
+                e["last_speed_mbps"] = _speed_mbps(last)
     except Exception as e:
         logger.warning(f"Traffic fetch error: {e}")
 
@@ -329,13 +404,21 @@ def _get_online_users() -> tuple[list[dict], set]:
                 name = pub_to_name.get(pub_key, pub_key[:12])
                 rx = int(parts[5]) if parts[5].isdigit() else 0
                 tx = int(parts[6]) if parts[6].isdigit() else 0
-                speed = _calc_speed(name, "awg", rx + tx)
+                speed, last = _calc_speed_with_last(name, "awg", rx + tx)
+                # Parse endpoint IP from parts[3] (format "ip:port")
+                awg_ip = 1
+                if len(parts) > 3 and parts[3] and parts[3] != "(none)":
+                    ep = parts[3].rsplit(":", 1)[0]
+                    if ep and re.match(r'^\d+\.\d+\.\d+\.\d+$', ep):
+                        awg_ip = ep
                 raw_entries.append({
                     "name": name,
                     "ip_count": 1,
+                    "awg_ip": awg_ip,
                     "type": "awg",
-                    "last_seen": datetime.fromtimestamp(last_handshake, tz=timezone.utc).strftime("%H:%M:%S"),
+                    "last_seen": datetime.fromtimestamp(last_handshake, tz=YAKUTSK_TZ).strftime("%H:%M:%S"),
                     "speed_mbps": _speed_mbps(speed),
+                    "last_speed_mbps": _speed_mbps(last),
                 })
     except Exception as e:
         logger.warning(f"AWG online parse error: {e}")
@@ -369,10 +452,13 @@ def _get_online_users() -> tuple[list[dict], set]:
                 "web_token": info.get("web_token", ""),
                 "expires": info.get("expires"),
                 "is_test": info.get("is_test", False),
+                "has_paid": info.get("has_paid", False),
                 "protocols": [],
                 "names": [],
+                "inbounds": [],
                 "ip_count": 0,
                 "speed_mbps": 0,
+                "last_speed_mbps": 0,
                 "last_seen": "",
             }
 
@@ -381,8 +467,51 @@ def _get_online_users() -> tuple[list[dict], set]:
         if proto not in entry["protocols"]:
             entry["protocols"].append(proto)
         entry["names"].append(e["name"])
-        entry["ip_count"] = max(entry["ip_count"], e.get("ip_count", 0))
+        # Prefer real-time inbound from access log over SQLite config
+        email = e["name"]
+        log_tags_dict = log_inbounds.get(email, {})
+        if log_tags_dict:
+            # Sort tags by timestamp ascending (earliest connected first, newer second/third)
+            sorted_tags = sorted(log_tags_dict.items(), key=lambda item: item[1])
+            for tag, ts in sorted_tags:
+                meta = inbound_map.get(tag, {})
+                info = {
+                    "tag": tag,
+                    "id": meta.get("id"),
+                    "port": meta.get("port"),
+                    "protocol": meta.get("protocol"),
+                    "remark": meta.get("remark"),
+                    "ts": ts,
+                }
+                # Check if this tag already exists, update ts if newer or append
+                existing = next((x for x in entry["inbounds"] if x.get("tag") == tag), None)
+                if existing:
+                    existing["ts"] = max(existing.get("ts", 0), ts)
+                else:
+                    entry["inbounds"].append(info)
+        else:
+            inbound_info = {"ts": time.time()}
+            ib_tag = e.get("inbound_tag")
+            meta = inbound_map.get(ib_tag, {}) if ib_tag else {}
+            if e.get("inbound_id") or meta.get("id"):
+                inbound_info["id"] = e.get("inbound_id") or meta.get("id")
+            if ib_tag:
+                inbound_info["tag"] = ib_tag
+            if e.get("inbound_port") or meta.get("port"):
+                inbound_info["port"] = e.get("inbound_port") or meta.get("port")
+            if meta.get("protocol"):
+                inbound_info["protocol"] = meta.get("protocol")
+            if meta.get("remark"):
+                inbound_info["remark"] = meta.get("remark")
+            if not any(x.get("id") == inbound_info.get("id") and x.get("tag") == inbound_info.get("tag") for x in entry["inbounds"]):
+                entry["inbounds"].append(inbound_info)
+
+        # Sort inbounds list chronologically (first connected ➔ later connected)
+        entry["inbounds"].sort(key=lambda x: x.get("ts", 0))
+
+        entry["ip_count"] += e.get("ip_count", 0)
         entry["speed_mbps"] = max(entry.get("speed_mbps", 0), e.get("speed_mbps", 0))
+        entry["last_speed_mbps"] = max(entry.get("last_speed_mbps", 0), e.get("last_speed_mbps", 0))
         if e.get("last_seen", "") > entry.get("last_seen", ""):
             entry["last_seen"] = e["last_seen"]
 
@@ -393,6 +522,36 @@ def _get_online_users() -> tuple[list[dict], set]:
             online_identities.add(("vless", base))
 
     online = list(merged.values())
+
+    # Enrich with platform info from user_platforms table
+    try:
+        tg_ids = [u["tg_id"] for u in online if u.get("tg_id")]
+        if tg_ids:
+            from api.db import execute_query
+            ph = ",".join(["%s"] * len(tg_ids))
+            rows = execute_query(f"""
+                SELECT tg_id, platform, client_app, client_version, last_seen, seen_count
+                FROM user_platforms
+                WHERE tg_id IN ({ph}) AND last_seen >= NOW() - INTERVAL 24 HOUR
+                ORDER BY last_seen DESC
+            """, tuple(tg_ids), fetch='all')
+            platforms_by_tg: dict[int, list[dict]] = {}
+            for r in rows:
+                platforms_by_tg.setdefault(r["tg_id"], []).append({
+                    "platform": r["platform"],
+                    "client_app": r["client_app"],
+                    "client_version": r["client_version"],
+                    "last_seen": r["last_seen"].isoformat() if hasattr(r["last_seen"], 'isoformat') else str(r["last_seen"]),
+                    "seen_count": r["seen_count"],
+                })
+            for u in online:
+                tg = u.get("tg_id")
+                if tg and tg in platforms_by_tg:
+                    u["platforms"] = platforms_by_tg[tg]
+                else:
+                    u["platforms"] = []
+    except Exception as e:
+        logger.warning(f"Platform enrichment error: {e}")
 
     # Sort: by first_name
     online.sort(key=lambda u: (u.get("first_name") or '').lower())
@@ -408,6 +567,30 @@ def _get_online_users() -> tuple[list[dict], set]:
 async def online_users():
     online, _ = _get_online_users()
     return online
+
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    if not await _ws_authenticate(websocket):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    _admin_ws_connections.add(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                if msg.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+            except Exception:
+                pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning(f"WebSocket error: {e}")
+    finally:
+        _admin_ws_connections.discard(websocket)
 
 
 @router.get("/online/stream", dependencies=[Depends(_require_admin_session)])
@@ -428,7 +611,8 @@ async def online_stream(request: Request):
 async def offline_users():
     """Users with active VPN keys who are NOT currently online.
     All protocols merged into a single row per user (by tg_id/user_id)."""
-    _, online_identities = _get_online_users()
+    online, online_identities = _get_online_users()
+    online_tg_ids = {u['tg_id'] for u in online if u.get('tg_id')}
 
     # Collect raw entries: {name, type, last_seen, last_seen_ts}
     raw_entries = []
@@ -466,7 +650,7 @@ async def offline_users():
                 if last_online > 0:
                     try:
                         last_str = datetime.fromtimestamp(
-                            last_online / 1000, tz=timezone.utc
+                            last_online / 1000, tz=YAKUTSK_TZ
                         ).strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         pass
@@ -500,7 +684,7 @@ async def offline_users():
                 if last_online > 0:
                     try:
                         last_str = datetime.fromtimestamp(
-                            last_online / 1000, tz=timezone.utc
+                            last_online / 1000, tz=YAKUTSK_TZ
                         ).strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         pass
@@ -537,7 +721,7 @@ async def offline_users():
             last_ts = 0
             if last_hs > 0:
                 last_str = datetime.fromtimestamp(
-                    last_hs, tz=timezone.utc
+                    last_hs, tz=YAKUTSK_TZ
                 ).strftime("%Y-%m-%d %H:%M")
                 last_ts = last_hs * 1000
 
@@ -561,6 +745,11 @@ async def offline_users():
         info = user_info.get(e["name"], {})
         tg_id = info.get("tg_id")
         user_id = info.get("user_id")
+
+        # Skip if this user is already online (checked by tg_id to handle multiple emails)
+        if tg_id and tg_id in online_tg_ids:
+            continue
+
         if tg_id and tg_id != 0:
             key = ("tg", tg_id)
         elif user_id:
@@ -717,7 +906,7 @@ async def finance():
     row = cur.fetchone()
     first_payment = row["d"] if row and row["d"] else None
 
-    # Monthly breakdown
+    # Monthly breakdown with server costs from DB
     fmt = "%Y-%m"
     cur.execute(
         "SELECT DATE_FORMAT(created_at, %s) as month,"
@@ -728,11 +917,46 @@ async def finance():
     )
     monthly = cur.fetchall()
 
+    # Fetch project infrastructure costs from global PostgreSQL finance DB
+    monthly_costs_map = {}
+    current_server_cost = float(os.getenv("SERVER_MONTHLY_COST", "1261.6"))
+    try:
+        import psycopg2
+        pg_conn = psycopg2.connect(
+            host=os.getenv("FINANCE_PG_HOST", "127.0.0.1"),
+            port=int(os.getenv("FINANCE_PG_PORT", "5432")),
+            user=os.getenv("FINANCE_PG_USER", "finance"),
+            password=os.getenv("FINANCE_PG_PASSWORD", "finance_pass"),
+            dbname=os.getenv("FINANCE_PG_DB", "finance"),
+            connect_timeout=3
+        )
+        pg_cur = pg_conn.cursor()
+        pg_cur.execute(
+            "SELECT month, SUM(cost_rub) as total_rub FROM infrastructure_costs WHERE project='vpn' GROUP BY month"
+        )
+        for row in pg_cur.fetchall():
+            monthly_costs_map[row[0]] = float(row[1])
+        
+        pg_cur.execute(
+            "SELECT SUM(cost_rub) FROM infrastructure_costs WHERE project='vpn' ORDER BY month DESC LIMIT 1"
+        )
+        row_latest = pg_cur.fetchone()
+        if row_latest and row_latest[0] is not None:
+            current_server_cost = float(row_latest[0])
+        pg_cur.close()
+        pg_conn.close()
+    except Exception:
+        # Fallback to MySQL server_costs_monthly if PG connection fails
+        cur.execute("SELECT month, cost_eur, eur_rate FROM server_costs_monthly")
+        costs_rows = cur.fetchall()
+        for row in costs_rows:
+            monthly_costs_map[row["month"]] = float(row["cost_eur"] * row["eur_rate"])
+
     cur.close()
     conn.close()
 
-    # Server cost
-    server_cost = float(os.getenv("SERVER_MONTHLY_COST", "0"))
+    def get_monthly_cost(month_str: str) -> float:
+        return monthly_costs_map.get(month_str, current_server_cost)
 
     # Days running
     now = dt.now()
@@ -749,7 +973,14 @@ async def finance():
     except Exception:
         uptime_since = "?"
 
-    total_cost = server_cost * months_running if months_running else 0
+    # Calculate total server cost across all active months
+    total_cost = 0.0
+    if monthly:
+        for m in monthly:
+            total_cost += get_monthly_cost(m["month"])
+    else:
+        total_cost = current_server_cost * months_running if months_running else 0
+
     profit = total_revenue - total_cost
     roi = (total_revenue / total_cost * 100) if total_cost > 0 else 0
 
@@ -758,20 +989,21 @@ async def finance():
 
     return {
         "total_revenue": total_revenue,
-        "server_monthly_cost": server_cost,
+        "server_monthly_cost": round(current_server_cost, 2),
         "months_running": months_running,
         "days_running": days_running,
         "total_cost": round(total_cost, 2),
         "profit": round(profit, 2),
         "roi_percent": round(roi, 1),
         "avg_monthly_revenue": round(avg_monthly, 2),
-        "monthly_profit": round(avg_monthly - server_cost, 2),
+        "monthly_profit": round(avg_monthly - current_server_cost, 2),
         "uptime_since": uptime_since,
         "first_payment": first_payment.isoformat() if first_payment else None,
         "monthly": [{
             "month": m["month"],
             "payments": m["payments"],
             "revenue": float(m["revenue"]),
+            "server_cost": round(get_monthly_cost(m["month"]), 2),
         } for m in monthly],
     }
 
@@ -829,7 +1061,7 @@ async def dashboard():
     nl_proxy_routing = "de-to-nl-youtube"
     try:
         with open("/home/alvik/vpn-service/data/yt_nl_proxy_state", "r") as f:
-            nl_proxy_status = f.read().strip()
+            nl_proxy_status = f.read().strip().split(':')[0]
         logger.info(f"NL proxy state file: {nl_proxy_status}")
     except Exception as e:
         logger.warning(f"NL proxy state read error: {e}")
@@ -843,6 +1075,9 @@ async def dashboard():
         logger.info(f"NL proxy routing from config: {nl_proxy_routing}")
     except Exception as e:
         logger.warning(f"NL proxy config read error: {e}")
+
+    # Subscription status summary
+    sub_summary = admin_db.subscription_status_summary()
 
     return {
         "awg": {
@@ -879,6 +1114,8 @@ async def dashboard():
             "active": user_stats["active"],
             "active_sub": user_stats.get("active_sub", 0),
             "active_key_only": user_stats.get("active_key_only", 0),
+            "expiring_soon": sub_summary["expiring_soon_count"],
+            "recently_expired": sub_summary["recently_expired_count"],
         },
         "payments": {
             "total": pay_stats["total"],
@@ -889,7 +1126,9 @@ async def dashboard():
         "protocol_breakdown": protocol_stats,
         "discount_summary": discount_stats,
         "autopay_summary": autopay_stats,
+        "subscription_summary": _clean(sub_summary),
     }
+
 
 
 # ── AWG Server ───────────────────────────────────────────────────────────────
@@ -913,8 +1152,10 @@ async def xui_inbounds():
         inbounds = xui.get_inbounds()
         result = []
         for ib in inbounds:
-            settings = json.loads(ib.get("settings", "{}"))
-            stream = json.loads(ib.get("streamSettings", "{}"))
+            raw_settings = ib.get("settings", "{}")
+            settings = json.loads(raw_settings) if isinstance(raw_settings, str) else raw_settings
+            raw_stream = ib.get("streamSettings", "{}")
+            stream = json.loads(raw_stream) if isinstance(raw_stream, str) else raw_stream
             clients = settings.get("clients", [])
             stats = {cs["email"]: cs for cs in ib.get("clientStats", [])}
 
@@ -977,7 +1218,9 @@ async def xui_inbound_clients(inbound_id: int):
         for ib in inbounds:
             if ib["id"] != inbound_id:
                 continue
-            settings = json.loads(ib.get("settings", "{}"))
+            settings = ib.get("settings", {})
+            if isinstance(settings, str):
+                settings = json.loads(settings)
             clients = settings.get("clients", [])
 
             # Lookup first_name via vpn_keys → users
@@ -1013,7 +1256,7 @@ async def xui_inbound_clients(inbound_id: int):
                 expiry_str = ""
                 if expiry and expiry > 0:
                     try:
-                        expiry_str = datetime.fromtimestamp(expiry / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                        expiry_str = datetime.fromtimestamp(expiry / 1000, tz=YAKUTSK_TZ).strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         pass
 
@@ -1021,7 +1264,7 @@ async def xui_inbound_clients(inbound_id: int):
                 last_str = ""
                 if last_online and last_online > 0:
                     try:
-                        last_str = datetime.fromtimestamp(last_online / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                        last_str = datetime.fromtimestamp(last_online / 1000, tz=YAKUTSK_TZ).strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         pass
 
@@ -1353,8 +1596,8 @@ async def email_stats():
 # ── Winback Log ───────────────────────────────────────────────────────────────
 
 _WINBACK_MESSAGES = {
-    'zero_traffic': "👋 Привет!\nМы заметили, что вы ещё не подключились к VPN. Нужна помощь с настройкой?\n📱 Быстрый старт:\n1️⃣ Нажмите Мои конфиги\n2️⃣ Скопируйте ссылку подписки\n3️⃣ Вставьте в приложение (Happ, Hiddify, Streisand)\nЕсли что-то не получается — напишите нам 💬",
-    'low_traffic': "👋 Привет!\nПохоже, VPN подключение не заработало как нужно. Мы можем помочь!\nПопробуйте:\n• Обновите ссылку подписки\n• Используйте Happ или Hiddify\n• Включите/выключите VPN заново\nЕсли не помогло — напишите в поддержку 💬",
+    'zero_traffic': "👋 Привет!\nМы заметили, что вы ещё не подключились к VPN. Нужна помощь с настройкой?\n📱 Быстрый старт:\n1️⃣ Нажмите Мои конфиги\n2️⃣ Скопируйте ссылку подписки\n3️⃣ Вставьте в приложение (Shadowrocket, Happ, Hiddify)\nЕсли что-то не получается — напишите нам 💬",
+    'low_traffic': "👋 Привет!\nПохоже, VPN подключение не заработало как нужно. Мы можем помочь!\nПопробуйте:\n• Обновите ссылку подписки\n• Используйте Shadowrocket, Happ или Hiddify\n• Включите/выключите VPN заново\nЕсли не помогло — напишите в поддержку 💬",
     'expired_fresh': "⏰ Ваша подписка недавно истекла.\nПродлите сейчас!\n🎁 Персональный промокод со скидкой 10% (7 дней) создан автоматически.",
     'expired_old': "👋 Давно не виделись!\nМы обновили сервис — стало быстрее и стабильнее.\n🎁 Персональный промокод со скидкой 20% (14 дней) создан автоматически.",
     'test_no_purchase': "👋 Вы пробовали тестовый период.\nГотовы к полному доступу?\n🎁 Персональный промокод со скидкой 15% (7 дней) создан автоматически.",
@@ -1484,6 +1727,233 @@ async def user_autopay(tg_id: int):
     return row or {}
 
 
+@router.get("/users/{tg_id}/platforms")
+async def user_platforms(tg_id: int):
+    from api.db import get_user_platforms
+    return get_user_platforms(tg_id)
+
+
+@router.get("/users/{tg_id}/delete-preview")
+async def user_delete_preview(tg_id: int):
+    """Preview all user data that will be deleted."""
+    preview = admin_db.get_user_delete_preview(tg_id)
+    if not preview.get("found"):
+        raise HTTPException(status_code=404, detail="User not found")
+    return _clean(preview)
+
+
+@router.post("/users/{tg_id}/delete")
+async def user_delete(tg_id: int, request: Request):
+    """Fully delete a user across all systems: x-ui, AWG, DB tables."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    if not body.get("confirm"):
+        raise HTTPException(status_code=400, detail="Pass confirm: true in body to proceed")
+
+    client_name = f"tiin_{tg_id}"
+    del_result = {"xui_clients": 0, "awg_clients": 0}
+
+    # 1. Delete from x-ui (VLESS + Hysteria)
+    try:
+        from bot_xui.utils import XUIClient
+        from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
+        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        info = xui.get_client_by_email(client_name)
+        if info:
+            inbound_id = info.get("inbound_id")
+            if inbound_id:
+                xui.delete_client(inbound_id, client_name)
+                del_result["xui_clients"] += 1
+            # Also try all inboundIds if available
+            for iid in info.get("inboundIds", []):
+                if iid != inbound_id:
+                    xui.delete_client(iid, client_name)
+                    del_result["xui_clients"] += 1
+        # Handle hysteria variant
+        h_name = client_name + "_h"
+        h_info = xui.get_client_by_email(h_name)
+        if h_info:
+            h_id = h_info.get("inbound_id")
+            if h_id:
+                xui.delete_client(h_id, h_name)
+                del_result["xui_clients"] += 1
+    except Exception as e:
+        logger.warning(f"XUI deletion error for {client_name}: {e}")
+
+    # 2. Delete from x-ui SQLite client_traffics
+    try:
+        import sqlite3 as _sqlite3
+        _xdb = _sqlite3.connect("/etc/x-ui/x-ui.db")
+        _xdb.execute("DELETE FROM client_traffics WHERE email = ?", (client_name,))
+        _xdb.execute("DELETE FROM client_traffics WHERE email = ?", (client_name + "_h",))
+        _xdb.commit()
+        _xdb.close()
+    except Exception as e:
+        logger.warning(f"XUI SQLite deletion error: {e}")
+
+    # 3. Delete from AWG
+    try:
+        from awg_api import awg_manager
+        if awg_db.delete_client_by_name(client_name):
+            del_result["awg_clients"] = 1
+            awg_manager.write_server_conf()
+            if awg_manager.is_interface_up():
+                awg_manager.reload_interface()
+    except Exception as e:
+        logger.warning(f"AWG deletion error for {client_name}: {e}")
+
+    # 4. Create x-ui backup before DB deletion
+    backup_path = None
+    try:
+        backup_path = _run_xui_backup()
+    except Exception as e:
+        logger.warning(f"XUI backup before delete failed: {e}")
+
+    # 5. Delete from all MySQL tables
+    db_result = admin_db.delete_user_data(tg_id)
+
+    result = {
+        "status": "ok",
+        "backup_path": backup_path,
+        "deleted": {**del_result, **db_result},
+    }
+    return result
+
+
+@router.post("/users/create")
+async def admin_create_user(request: Request):
+    """Создать пользователя без tg_id, выдать VLESS+Hysteria на N дней."""
+    body = await request.json()
+    first_name = str(body.get("first_name", "")).strip()
+    last_name = str(body.get("last_name", "")).strip()
+    days = int(body.get("days", 3))
+
+    if not first_name:
+        raise HTTPException(status_code=400, detail="first_name is required")
+    if days < 1 or days > 3650:
+        raise HTTPException(status_code=400, detail="days must be between 1 and 3650")
+
+    from api.db import create_user, upsert_vpn_key, update_user_subscription_by_id
+    from config import (
+        XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
+        VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
+        VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+        HYSTERIA_PORT, HYSTERIA_SNI, HYSTERIA_INBOUND_ID,
+        VLESS_HTTP_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID, ACTIVE_INBOUND_IDS, XUI_SUB_PATH,
+    )
+    from bot_xui.utils import XUIClient, generate_vless_link, generate_hysteria2_link
+
+    user = create_user(first_name, last_name)
+    user_id = user["id"]
+    client_name = f"tiin_web_{user_id}"
+
+    import uuid as _uuid
+    xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+    client_uuid = str(_uuid.uuid4())
+
+    tz_tokyo = timezone(timedelta(hours=9))
+    raw_end = datetime.now(timezone.utc) + timedelta(days=days)
+    end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
+    expiry_time = int(end_tokyo.timestamp() * 1000)
+    expires_at = end_tokyo.astimezone(timezone.utc)
+
+    existing = xui.get_client_by_email(client_name)
+    if existing:
+        client_uuid = existing['client']['id']
+        sub_id = existing['client'].get('subId')
+        xui.extend_client_expiry(existing['inbound_id'], existing['client'], days * 86400 * 1000)
+    else:
+        result = xui.create_client(
+            email=client_name,
+            tg_id=0,
+            expiry_time=expiry_time,
+            inbound_ids=ACTIVE_INBOUND_IDS,
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=f"XUI create failed: {result.get('msg')}")
+        sub_id = result.get("subId")
+        if result.get("uuid"):
+            client_uuid = result["uuid"]
+
+    import secrets as _secrets
+    if not sub_id:
+        sub_id = _secrets.token_hex(8)
+
+    sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}"
+
+    vless_link = generate_vless_link(
+        client_id=client_uuid,
+        domain=VLESS_DOMAIN,
+        port=VLESS_PORT,
+        path=VLESS_PATH,
+        client_name=client_name,
+        pbk=VLESS_PBK,
+        sid=VLESS_SID,
+        sni=VLESS_SNI,
+        fp="chrome",
+        spx="/",
+        remark="TIIN | VLESS",
+    )
+
+    hysteria_link = generate_hysteria2_link(
+        auth=client_uuid,
+        domain=VLESS_DOMAIN,
+        port=HYSTERIA_PORT,
+        client_name=client_name,
+        sni=HYSTERIA_SNI,
+        insecure=0,
+    )
+
+    upsert_vpn_key(
+        tg_id=0,
+        payment_id=f"admin_{user_id}_{int(time.time())}",
+        client_id=client_uuid,
+        client_name=client_name,
+        client_ip="",
+        client_public_key="",
+        vless_link=vless_link,
+        xhttp_link=None,
+        hysteria_link=hysteria_link,
+        expires_at=expires_at,
+        vpn_type="vless",
+        subscription_link=sub_url,
+        user_id=user_id,
+    )
+
+    update_user_subscription_by_id(user_id, expires_at.replace(tzinfo=None))
+
+    return {
+        "user_id": user_id,
+        "first_name": first_name,
+        "last_name": last_name,
+        "web_token": user["web_token"],
+        "subscription_until": expires_at.isoformat(),
+        "vless_link": vless_link,
+        "hysteria_link": hysteria_link,
+        "subscription_link": sub_url,
+    }
+
+
+@router.patch("/users/{user_id}/link-tg")
+async def admin_link_tg(user_id: int, request: Request):
+    """Привязать tg_id к существующему пользователю (созданному без tg_id)."""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    body = await request.json()
+    tg_id = body.get("tg_id")
+    if not tg_id:
+        raise HTTPException(status_code=400, detail="tg_id is required")
+
+    from api.db import link_tg_id_to_user, get_user_by_id
+
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    link_tg_id_to_user(user_id, tg_id)
+    return {"status": "ok", "user_id": user_id, "tg_id": tg_id}
+
+
 @router.get("/funnel")
 async def conversion_funnel():
     """Воронка конверсий: регистрация → тест → подключение → оплата → повторная."""
@@ -1578,10 +2048,8 @@ async def conversion_funnel():
 
 # ── x-ui Backup ───────────────────────────────────────────────────────────────
 
-@router.post("/xui/backup")
-async def xui_backup():
-    """Create a full x-ui backup snapshot on the server."""
-    import sqlite3 as _sqlite3
+def _run_xui_backup() -> str:
+    """Create a full x-ui backup snapshot on the server. Returns the snapshot path."""
     import shutil
 
     backup_dir = "/var/backups/x-ui"
@@ -1589,32 +2057,34 @@ async def xui_backup():
     snapshot = os.path.join(backup_dir, timestamp)
     os.makedirs(snapshot, exist_ok=True)
 
-    # 1. x-ui SQLite database (inbounds, clients, settings)
     shutil.copy2("/etc/x-ui/x-ui.db", os.path.join(snapshot, "x-ui.db"))
 
-    # 2. system metrics
     metrics_src = "/etc/x-ui/system_metrics.gob"
     if os.path.exists(metrics_src):
         shutil.copy2(metrics_src, os.path.join(snapshot, "system_metrics.gob"))
 
-    # 3. Full /etc/x-ui archive
     subprocess.run(
         ["tar", "czf", os.path.join(snapshot, "x-ui-etc.tar.gz"), "-C", "/etc/x-ui", "."],
         capture_output=True, timeout=10,
     )
 
-    # 4. x-ui binary
     shutil.copy2("/usr/local/x-ui/x-ui", os.path.join(snapshot, "x-ui-bin"))
 
-    # Count total backups
     backups = sorted(os.listdir(backup_dir))
-
-    # Cleanup: keep last 10 snapshots
     while len(backups) > 10:
         old = os.path.join(backup_dir, backups[0])
         shutil.rmtree(old, ignore_errors=True)
         backups.pop(0)
 
+    return snapshot
+
+
+@router.post("/xui/backup")
+async def xui_backup():
+    """Create a full x-ui backup snapshot on the server."""
+    snapshot = _run_xui_backup()
+    backup_dir = "/var/backups/x-ui"
+    backups = sorted(os.listdir(backup_dir))
     return {"status": "ok", "path": snapshot, "total_backups": len(backups)}
 
 
@@ -1710,12 +2180,120 @@ def get_admin_page_route():
         _sessions[token] = datetime.now(timezone.utc).timestamp()
 
         response = HTMLResponse(html)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
         response.set_cookie(
             key="connect.sid", value=token,
             httponly=True, secure=True, samesite="lax", max_age=SESSION_MAX_AGE,
         )
         return response
     return admin_page
+
+
+# ── Refund Payment (YooKassa SDK + Deactivate VPN) ───────────────────────────
+
+@router.post("/payments/{payment_id}/refund")
+async def refund_payment(payment_id: str):
+    """Refund a succeeded payment via YooKassa SDK and deactivate user's VPN config."""
+    from yookassa import Configuration, Refund
+    import uuid
+    from api.db import get_payment_by_id, update_payment_status, log_message_sent, get_user_email
+    from api.webhook import process_refund, send_telegram_notification
+    from config import (
+        YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY,
+        YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
+    )
+
+    payment = get_payment_by_id(payment_id)
+    if not payment:
+        return JSONResponse({"error": "Payment not found"}, status_code=404)
+
+    if payment.get("status") == "refunded":
+        return JSONResponse({"error": "Payment has already been refunded"}, status_code=400)
+
+    if payment.get("status") != "paid":
+        return JSONResponse({"error": f"Cannot refund payment with status '{payment.get('status')}'"}, status_code=400)
+
+    is_test_payment = bool(payment.get("is_test"))
+    shop_id = YOO_KASSA_TEST_SHOP_ID if is_test_payment else YOO_KASSA_SHOP_ID
+    secret_key = YOO_KASSA_TEST_SECRET_KEY if is_test_payment else YOO_KASSA_SECRET_KEY
+
+    if not shop_id or not secret_key:
+        mode_str = "test" if is_test_payment else "production"
+        return JSONResponse({"error": f"YooKassa {mode_str} credentials not configured"}, status_code=500)
+
+    Configuration.account_id = shop_id
+    Configuration.secret_key = secret_key
+
+    amount_val = str(payment.get("amount", "0"))
+    idempotency_key = str(uuid.uuid4())
+
+    try:
+        refund_res = Refund.create({
+            "amount": {
+                "value": amount_val,
+                "currency": "RUB"
+            },
+            "payment_id": payment_id
+        }, idempotency_key)
+    except Exception as e:
+        logger.error(f"YooKassa refund failed for payment {payment_id}: {e}")
+        return JSONResponse({"error": f"YooKassa API refund failed: {str(e)}"}, status_code=500)
+
+    refund_status = getattr(refund_res, "status", None) or refund_res.get("status") if isinstance(refund_res, dict) else "unknown"
+    logger.info(f"YooKassa refund created for {payment_id}: id={getattr(refund_res, 'id', 'N/A')}, status={refund_status}")
+
+    # 1. Update payment status in DB
+    update_payment_status(payment_id, "refunded")
+
+    # 2. Deactivate VPN config/keys
+    vpn_deactivated = await process_refund(payment_id)
+
+    # 3. Notify user via Telegram
+    tg_id = payment.get("tg_id")
+    if tg_id:
+        msg_text = (
+            f"💸 Возврат платежа выполнен\n\n"
+            f"💳 ID платежа: {payment_id}\n"
+            f"💰 Сумма возврата: {amount_val} RUB\n\n"
+            f"Ваш VPN конфиг был деактивирован."
+        )
+        try:
+            await send_telegram_notification(tg_id, msg_text, source="admin_refund", scenario="payment_refunded")
+        except Exception as e:
+            logger.warning(f"Failed to send refund notification to tg_id {tg_id}: {e}")
+            log_message_sent(
+                tg_id=tg_id,
+                source="admin_refund",
+                scenario="payment_refunded",
+                message_text=msg_text,
+                status="error",
+                error_text=str(e)
+            )
+
+    # 4. Notify admin to verify configs
+    client_name = get_user_email(tg_id, payment_id=payment_id) if tg_id else None
+    admin_alert = (
+        f"💸 <b>Возврат средств (Панель)</b>\n\n"
+        f"Пользователь: <code>{tg_id or 'Unknown'}</code>" + (f" ({client_name})" if client_name else "") + f"\n"
+        f"Платёж: <code>{payment_id}</code>\n"
+        f"Сумма: {amount_val} RUB\n"
+        f"Статус деактивации: {'✅ Успешно' if vpn_deactivated else '⚠️ Ошибка деактивации'}\n\n"
+        f"⚠️ <i>Проверьте конфиги пользователя (3x-ui / AWG).</i>"
+    )
+    try:
+        await send_telegram_notification(ADMIN_TG_ID, admin_alert, source="admin_refund", scenario="admin_refund_alert")
+    except Exception as e:
+        logger.warning(f"Failed to send refund admin alert: {e}")
+
+    return JSONResponse({
+        "status": "success",
+        "message": f"Refund of {amount_val} RUB processed successfully",
+        "payment_id": payment_id,
+        "refund_status": refund_status,
+        "vpn_deactivated": vpn_deactivated
+    })
 
 
 # ── Test Payment (YooKassa → VLESS sub link) ────────────────────────────────
@@ -1871,6 +2449,35 @@ async def api_message_log_stats(
     return {"sources": admin_db.message_log_source_stats(days=days)}
 
 
+# ─────────────────────────────────────────────
+#  Inbounds Popularity & SNI Stats
+# ─────────────────────────────────────────────
+
+@router.get("/api/inbounds-stats")
+async def api_inbounds_popularity_stats(
+    request: Request,
+    days: int = Query(3, ge=1, le=90),
+):
+    """Get inbounds comparison with SNI, transport and traffic deltas for the specified period."""
+    _require_admin_session(request)
+    try:
+        return admin_db.get_inbounds_popularity_stats(days=days)
+    except Exception as e:
+        logger.error(f"Error fetching inbounds stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@router.get("/api/monitoring")
+async def api_monitoring_stats(request: Request):
+    """Return traffic stats and instagram probe stats for admin monitoring tab."""
+    _require_admin_session(request)
+    data = admin_db.get_monitoring_stats()
+    # Also broadcast real-time update to all connected WebSocket clients
+    await _broadcast_ws({"type": "monitoring", "data": data})
+    return data
+
+
 @router.get("/messages")
 async def message_log_page(request: Request):
     """Message log HTML page."""
@@ -1988,6 +2595,47 @@ const limit = 50;
 function badge(s){ return `<span class="badge badge-${s}">${s}</span>`; }
 function esc(s){ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
+function toUTC9Date(s) {
+  if (!s) return null;
+  if (s instanceof Date) return isNaN(s.getTime()) ? null : s;
+  if (typeof s === 'number') {
+    const ms = s < 1e11 ? s * 1000 : s;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof s === 'string') {
+    let str = s.trim();
+    if (!str) return null;
+    if (/^\\d{10,13}$/.test(str)) {
+      const num = parseInt(str, 10);
+      const ms = num < 1e11 ? num * 1000 : num;
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    if (!str.includes('T')) str = str.replace(' ', 'T');
+    if (!str.endsWith('Z') && !str.endsWith('z') && !/[+-]\\d{2}:?\\d{2}$/.test(str)) {
+      str += 'Z';
+    }
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+function fmtDateFull(s) {
+  const d = toUTC9Date(s);
+  if (!d) return '—';
+  return d.toLocaleString('ru-RU', {
+    timeZone: 'Asia/Yakutsk',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
 async function loadData(){
   offset = 0;
   await fetchData();
@@ -2014,7 +2662,7 @@ async function fetchData(){
     if(!d.items.length){ tbody.innerHTML='<tr><td colspan="8" class="loading">No messages found</td></tr>'; }
     else{
       tbody.innerHTML = d.items.map(m=>{
-        const ts = m.created_at ? new Date(m.created_at+'Z').toLocaleString('ru-RU') : '';
+        const ts = fmtDateFull(m.created_at);
         const msgPreview = esc((m.message_text||'').substring(0,100));
         const errText = esc((m.error_text||'').substring(0,80));
         return `<tr>

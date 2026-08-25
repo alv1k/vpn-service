@@ -179,7 +179,7 @@ if ss -tlnp | grep -q ':3129'; then
     MTG_METRICS=$(curl -s --connect-timeout 3 http://127.0.0.1:3129/metrics 2>/dev/null)
     if [ -n "$MTG_METRICS" ]; then
         MTG_CONN=$(echo "$MTG_METRICS" | grep "^mtg_client_connections{ip_family="ipv4"}" | awk '{print $2}')
-        MTG_TG_CONN=$(echo "$MTG_METRICS" | grep "^mtg_telegram_connections{dc="1"" | awk '{print $2}')
+        MTG_TG_CONN=$(echo "$MTG_METRICS" | grep "^mtg_telegram_connections{" | awk '{sum += $2} END {print sum}')
         MTG_REPLAY=$(echo "$MTG_METRICS" | grep "^mtg_replay_attacks " | awk '{print $2}')
         MTG_REPLAY=${MTG_REPLAY:-0}
 

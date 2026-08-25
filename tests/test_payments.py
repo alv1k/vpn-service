@@ -45,7 +45,7 @@ def test_create_payment(mock_get_pool):
     sql = mock_cursor.execute.call_args[0][0]
     params = mock_cursor.execute.call_args[0][1]
     assert "INSERT INTO payments" in sql
-    assert params == ("pay-abc-123", 123456, "monthly_30d", 199, "pending", 0)
+    assert params == ("pay-abc-123", 123456, None, "monthly_30d", 199, "pending", 0)
     mock_conn.commit.assert_called_once()
 
 
@@ -209,6 +209,8 @@ def _make_mock_query(user_id=123456, username="testuser"):
     query.from_user.username = username
     query.edit_message_text = AsyncMock()
     query.message.reply_text = AsyncMock()
+    for attr in ['photo', 'video', 'document', 'sticker', 'animation', 'poll', 'voice', 'video_note', 'audio', 'location', 'venue', 'contact', 'dice', 'game']:
+        setattr(query.message, attr, None)
     return query
 
 
@@ -282,4 +284,5 @@ async def test_process_payment_invalid_tariff(mock_test_mode):
 
     await process_payment(query, "nonexistent_tariff", "vless")
 
-    query.edit_message_text.assert_called_once_with("❌ Тариф не найден")
+    query.edit_message_text.assert_called_once()
+    assert "Тариф не найден" in query.edit_message_text.call_args[0][0]

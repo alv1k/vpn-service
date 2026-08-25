@@ -273,9 +273,10 @@ class TestHandleGetAWGConfig:
         doc = query.message.reply_document.call_args[1]["document"]
         assert doc.name.endswith(".conf")
 
+    @patch("bot_xui.vpn_factory.safe_edit_text", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @pytest.mark.asyncio
-    async def test_already_has_awg_shows_message(self, mock_keys):
+    async def test_already_has_awg_shows_message(self, mock_keys, mock_edit):
         """Если AWG уже есть — сообщение без создания."""
         from bot_xui.vpn_factory import handle_get_awg_config
 
@@ -284,14 +285,15 @@ class TestHandleGetAWGConfig:
 
         await handle_get_awg_config(query)
 
-        query.edit_message_text.assert_called_once()
-        text = query.edit_message_text.call_args[0][0]
+        mock_edit.assert_called_once()
+        text = mock_edit.call_args[0][1]
         assert "уже есть" in text
 
+    @patch("bot_xui.vpn_factory.safe_edit_text", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.get_subscription_until")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @pytest.mark.asyncio
-    async def test_no_subscription_shows_error(self, mock_keys, mock_sub):
+    async def test_no_subscription_shows_error(self, mock_keys, mock_sub, mock_edit):
         """Без активной подписки — ошибка."""
         from bot_xui.vpn_factory import handle_get_awg_config
 
@@ -301,13 +303,14 @@ class TestHandleGetAWGConfig:
 
         await handle_get_awg_config(query)
 
-        text = query.edit_message_text.call_args[0][0]
+        text = mock_edit.call_args[0][1]
         assert "нет активной подписки" in text
 
+    @patch("bot_xui.vpn_factory.safe_edit_text", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.get_subscription_until")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @pytest.mark.asyncio
-    async def test_no_subscription_at_all(self, mock_keys, mock_sub):
+    async def test_no_subscription_at_all(self, mock_keys, mock_sub, mock_edit):
         """subscription_until = None — ошибка."""
         from bot_xui.vpn_factory import handle_get_awg_config
 
@@ -317,7 +320,7 @@ class TestHandleGetAWGConfig:
 
         await handle_get_awg_config(query)
 
-        text = query.edit_message_text.call_args[0][0]
+        text = mock_edit.call_args[0][1]
         assert "нет активной подписки" in text
 
     @patch("bot_xui.vpn_factory.upsert_vpn_key")

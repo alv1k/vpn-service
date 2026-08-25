@@ -6,7 +6,7 @@ import logging
 import uuid
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from yookassa import Configuration, Payment
+from yookassa import Configuration, Payment, Refund
 
 from config import (
     YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY,
@@ -15,12 +15,79 @@ from config import (
 )
 from bot_xui.tariffs import TARIFFS
 from bot_xui.test_mode import is_test_mode
-from bot_xui.helpers import _log_message
+from bot_xui.helpers import _log_message, safe_edit_text, safe_edit_text_logged
 from api.db import create_payment, get_permanent_discount
 
 logger = logging.getLogger(__name__)
 
 _payment_lock = asyncio.Lock()
+
+
+async def show_tariff_info(
+    query,
+    tariff_id: str,
+    vpn_type: str = "vless",
+    is_renew: bool = False,
+    client_name: str | None = None,
+    inbound_id: int | None = None,
+    promo: dict | None = None,
+):
+    """Показывает информацию о тарифе и кнопку 'Оплатить' (callback).
+    Платёж НЕ создаётся — пользователь подтверждает выбор на следующем шаге."""
+    user_id = query.from_user.id
+    tariff = TARIFFS.get(tariff_id)
+
+    if not tariff:
+        await safe_edit_text(query, "❌ Тариф не найден")
+        return
+
+    price = tariff["price"]
+    promo_label = ""
+    perm_discount = get_permanent_discount(user_id)
+    from api.db import has_winback_discount
+    from config import WINBACK_DISCOUNT_PERCENT
+    winback_discount = WINBACK_DISCOUNT_PERCENT if has_winback_discount(user_id) else 0
+    onetime_discount = promo["value"] if promo and promo.get("value") else 0
+    effective_discount = max(perm_discount, onetime_discount, winback_discount)
+
+    if effective_discount > 0:
+        price = max(1, round(price * (100 - effective_discount) / 100))
+        if winback_discount >= perm_discount and winback_discount >= onetime_discount:
+            promo_label = f"\n🏷 Персональная скидка: <b>20%</b>"
+        elif onetime_discount >= perm_discount and promo:
+            promo_label = f"\n🏷 Промокод <b>{promo['code']}</b>: скидка {effective_discount}%"
+        else:
+            promo_label = f"\n🏷 Постоянная скидка: <b>{perm_discount}%</b>"
+
+    price_line = (
+        f"💰 Сумма: <s>{tariff['price']} ₽</s> → <b>{price} ₽</b>"
+        if effective_discount > 0
+        else f"💰 Сумма: {price} ₽"
+    )
+    text = (
+        f"💳 <b>Тариф {tariff['name']}</b>\n\n"
+        f"{price_line}\n"
+        f"⏱ Период: {tariff['period']}\n"
+        f"👥 Устройств: {tariff['device_limit']}\n"
+        f"{promo_label}\n\n"
+        f"Подтвердите оплату, чтобы перейти к платёжной системе."
+    )
+
+    suffix = "_renew" if is_renew else ""
+    callback_data = f"confirm_payment_{tariff_id}{suffix}"
+
+    back_btn = (
+        InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")
+        if is_renew
+        else InlineKeyboardButton("◀️ Назад к тарифам", callback_data="tariffs")
+    )
+
+    await safe_edit_text_logged(query, text, "buy_tariff",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Оплатить", callback_data=callback_data)],
+            [back_btn],
+        ]),
+    )
 
 
 async def process_payment(
@@ -37,19 +104,24 @@ async def process_payment(
     tariff  = TARIFFS.get(tariff_id)
 
     if not tariff:
-        await query.edit_message_text("❌ Тариф не найден")
+        await safe_edit_text(query, "❌ Тариф не найден")
         return
 
-    # Apply discount (permanent or one-time promo, whichever is higher)
+    # Apply discount (permanent, promo, or winback, whichever is higher)
     price = tariff["price"]
     promo_label = ""
     perm_discount = get_permanent_discount(user_id)
+    from api.db import has_winback_discount
+    from config import WINBACK_DISCOUNT_PERCENT
+    winback_discount = WINBACK_DISCOUNT_PERCENT if has_winback_discount(user_id) else 0
     onetime_discount = promo["value"] if promo and promo.get("value") else 0
-    effective_discount = max(perm_discount, onetime_discount)
+    effective_discount = max(perm_discount, onetime_discount, winback_discount)
 
     if effective_discount > 0:
         price = max(1, round(price * (100 - effective_discount) / 100))
-        if onetime_discount >= perm_discount and promo:
+        if winback_discount >= perm_discount and winback_discount >= onetime_discount:
+            promo_label = f"\n🏷 Персональная скидка: <b>20%</b>"
+        elif onetime_discount >= perm_discount and promo:
             promo_label = f"\n🏷 Промокод <b>{promo['code']}</b>: скидка {effective_discount}%"
         else:
             promo_label = f"\n🏷 Постоянная скидка: <b>{perm_discount}%</b>"
@@ -120,15 +192,12 @@ async def process_payment(
             f"После оплаты конфиг придёт автоматически."
         )
 
-        await query.edit_message_text(
-            text,
+        await safe_edit_text_logged(query, text, "buy_tariff",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("💳 Оплатить", url=payment.confirmation.confirmation_url)],
                 [back_btn],
             ]),
-            parse_mode="HTML",
         )
-        await _log_message(user_id, "bot_menu", "buy_tariff", text)
 
     except Exception as e:
         logger.error(f"Payment creation error: {e}")
@@ -138,3 +207,19 @@ async def process_payment(
                 [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
             ]),
         )
+
+
+def create_yookassa_refund(payment_id: str, amount: str) -> bool:
+    """Создаёт возврат платежа в YooKassa."""
+    try:
+        Configuration.account_id = YOO_KASSA_SHOP_ID
+        Configuration.secret_key = YOO_KASSA_SECRET_KEY
+        refund = Refund.create({
+            "payment_id": payment_id,
+            "amount": {"value": amount, "currency": "RUB"},
+        })
+        logger.info(f"YooKassa refund created: {refund.id} for payment {payment_id}")
+        return True
+    except Exception as e:
+        logger.error(f"YooKassa refund error for payment {payment_id}: {e}")
+        return False

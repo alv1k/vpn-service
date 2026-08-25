@@ -303,20 +303,23 @@ def tariff_emoji(days: int) -> str:
 
 
 async def safe_edit_text(query, text: str, reply_markup=None, parse_mode: str = "HTML") -> bool:
-    """
-    Для обычных сообщений — edit_message_text.
-    Для сообщений с медиа — заменяем медиа на текстовое сообщение через edit_message_media.
-    """
-    from telegram import InputMediaDocument
-
     if not text or not text.strip():
         logger.warning("safe_edit_text: empty text provided, skipping.")
         return False
 
-    if query.message.photo or query.message.video or query.message.document:
+    message = query.message
+    if message is None:
         try:
-            await query.message.delete()
-            await query.message.chat.send_message(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            await query.callback_query.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            return True
+        except Exception as e:
+            logger.warning(f"safe_edit_text no message fallback failed: {e}")
+            return False
+
+    if message.photo or message.video or message.document or message.sticker or message.animation or message.poll or message.voice or message.video_note or message.audio or message.location or message.venue or message.contact or message.dice or message.game:
+        try:
+            await message.delete()
+            await message.chat.send_message(text, reply_markup=reply_markup, parse_mode=parse_mode)
             return True
         except Exception as e:
             logger.warning(f"safe_edit_text media fallback failed: {e}")
@@ -326,6 +329,15 @@ async def safe_edit_text(query, text: str, reply_markup=None, parse_mode: str = 
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
         return True
     except Exception as e:
+        err_str = str(e).lower()
+        if "there is no text in the message to edit" in err_str:
+            try:
+                await message.delete()
+                await message.chat.send_message(text, reply_markup=reply_markup, parse_mode=parse_mode)
+                return True
+            except Exception as e2:
+                logger.warning(f"safe_edit_text no-text fallback failed: {e2}")
+                return False
         logger.warning(f"safe_edit_text edit failed: {e}")
         return False
 
@@ -358,7 +370,7 @@ async def reply_photo_logged(chat, photo, scenario: str, caption: str = None,
                                    parse_mode=parse_mode, **kwargs)
     tg_id = chat.id if hasattr(chat, 'id') else None
     if tg_id:
-        log_text = f"sent photo: {caption[:100]}" if caption else "sent photo"
+        log_text = caption or "sent photo"
         await _log_message(tg_id, "bot_menu", scenario, log_text)
     return result
 

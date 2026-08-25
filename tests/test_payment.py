@@ -12,6 +12,8 @@ def _make_query(user_id=12345, username="testuser"):
     query.from_user.username = username
     query.edit_message_text = AsyncMock()
     query.message.reply_text = AsyncMock()
+    for attr in ['photo', 'video', 'document', 'sticker', 'animation', 'poll', 'voice', 'video_note', 'audio', 'location', 'venue', 'contact', 'dice', 'game']:
+        setattr(query.message, attr, None)
     return query
 
 

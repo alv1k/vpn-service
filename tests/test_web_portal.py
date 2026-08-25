@@ -68,7 +68,7 @@ def test_sub_url_uses_proxy_endpoint(mock_get_user, mock_keys, mock_keys_uid, mo
     assert response.status_code == 200
     html = response.text
     # New behavior: sub URL is our proxy endpoint with the token
-    assert 'const SUB_URL = "https://344988.snk.wtf:2096/sub/token-with-sub"' in html
+    assert 'const SUB_URL = "https://344988.snk.wtf/sub/token-with-sub"' in html
     # Raw XUI URL must NOT leak to the user
     assert "xui.example.com" not in html
 
