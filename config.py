@@ -78,6 +78,13 @@ _DEFAULT_ACTIVE_INBOUNDS = "1,2,4,10,14"
 _RAW_ACTIVE_INBOUNDS = os.getenv("ACTIVE_INBOUND_IDS", _DEFAULT_ACTIVE_INBOUNDS)
 ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_ACTIVE_INBOUNDS.split(",") if x.strip().isdigit()]
 
+# RU Server (Secondary Node) 3x-ui API
+RU_XUI_HOST = os.getenv("RU_XUI_HOST", "https://139.100.207.18:2053/0ruabxwdsz96R7jSIN")
+RU_XUI_USERNAME = os.getenv("RU_XUI_USERNAME", XUI_USERNAME)
+RU_XUI_PASSWORD = os.getenv("RU_XUI_PASSWORD", XUI_PASSWORD)
+_RAW_RU_INBOUNDS = os.getenv("RU_ACTIVE_INBOUND_IDS", "1,2")
+RU_ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_RU_INBOUNDS.split(",") if x.strip().isdigit()]
+
 # Server location (for display in client apps)
 SERVER_LOCATION = os.getenv("SERVER_LOCATION", "Germany")
 
@@ -85,14 +92,19 @@ SERVER_LOCATION = os.getenv("SERVER_LOCATION", "Germany")
 WINBACK_DISCOUNT_PERCENT = int(os.getenv("WINBACK_DISCOUNT_PERCENT", "20"))
 WINBACK_GIFT_DAYS = int(os.getenv("WINBACK_GIFT_DAYS", "3"))
 
-# AmneziaWG
-AMNEZIA_CONTAINER = os.getenv("AMNEZIA_CONTAINER")
-
-
-
-
-
-
+# AmneziaWG (3x-ui Inbound)
+AWG_INBOUND_ID = int(os.getenv("AWG_INBOUND_ID", "17"))
+AWG_PORT = int(os.getenv("AWG_PORT", "443"))
+AWG_ENDPOINT = os.getenv("AWG_ENDPOINT", f"{VLESS_DOMAIN}:{AWG_PORT}")
+AWG_MTU = int(os.getenv("AWG_MTU", "1280"))
+AWG_ALLOWED_IPS = os.getenv(
+    "AWG_ALLOWED_IPS",
+    "1.1.1.1/32, 8.8.8.8/32, 10.8.1.0/24, 20.0.0.0/11, 31.13.0.0/16, 34.64.0.0/10, 45.64.40.0/22, 57.144.0.0/14, "
+    "64.233.160.0/19, 66.22.196.0/22, 66.220.144.0/20, 69.63.176.0/20, 69.171.224.0/19, 74.125.0.0/16, "
+    "104.16.0.0/12, 104.244.42.0/24, 108.177.0.0/17, 129.134.0.0/16, 142.250.0.0/15, 157.240.0.0/16, "
+    "162.158.0.0/15, 172.64.0.0/13, 172.217.0.0/16, 173.194.0.0/16, 185.89.216.0/22, 192.178.0.0/15, "
+    "199.16.0.0/12, 209.85.128.0/17, 216.58.192.0/19, 216.239.32.0/19"
+)
 # SMTP (for email auth codes)
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = os.getenv("SMTP_PORT", "587")

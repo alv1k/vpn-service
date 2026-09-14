@@ -500,62 +500,57 @@ class TestBuildMainMenuText:
 
     @patch("bot_xui.views.get_referral_count", return_value=0)
     @patch("bot_xui.views.get_web_token", return_value=None)
-    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info-block", False))
     @patch("bot_xui.views.get_keys_by_tg_id")
-    def test_active_key_shows_expires(self, mock_keys, mock_sub, mock_token, mock_ref):
-        """Active key shows '⏱ Истекает' label."""
+    def test_active_key_shows_expires(self, mock_keys, mock_token, mock_ref):
+        """Active key shows '⏳ Активен до:' label."""
         from bot_xui.views import build_main_menu_text
         future = datetime.utcnow() + timedelta(days=30)
         mock_keys.return_value = [
             {"client_name": "x", "vpn_type": "vless", "expires_at": future, "payment_id": "p1"},
         ]
         text = build_main_menu_text(tg_id=100)
-        assert "Истекает" in text
-        assert "Истекла" not in text
-        assert "sub-info-block" in text
+        assert "Активен до:" in text
+        assert "Истек:" not in text
 
     @patch("bot_xui.views.get_referral_count", return_value=0)
     @patch("bot_xui.views.get_web_token", return_value=None)
-    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info-block", False))
     @patch("bot_xui.views.get_keys_by_tg_id")
-    def test_expired_key_shows_expired_label(self, mock_keys, mock_sub, mock_token, mock_ref):
-        """Expired key shows '⏱ Истекла' + 'Подписка истекла' hint."""
+    def test_expired_key_shows_expired_label(self, mock_keys, mock_token, mock_ref):
+        """Expired key shows '⌛️ Истек:' + 'Подписка истекла' hint."""
         from bot_xui.views import build_main_menu_text
         past = datetime.utcnow() - timedelta(days=1)
         mock_keys.return_value = [
             {"client_name": "x", "vpn_type": "vless", "expires_at": past, "payment_id": "p1"},
         ]
         text = build_main_menu_text(tg_id=100)
-        assert "Истекла" in text
+        assert "Истек:" in text
         assert "Подписка истекла" in text
 
     @patch("bot_xui.views.get_referral_count", return_value=0)
     @patch("bot_xui.views.get_web_token", return_value="tok123")
-    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info", False))
     @patch("bot_xui.views.get_keys_by_tg_id")
-    def test_web_token_renders_guide_link(self, mock_keys, mock_sub, mock_token, mock_ref):
-        """If web_token exists, '🪄 Гид по подключению' link is shown."""
+    def test_web_token_renders_guide_link(self, mock_keys, mock_token, mock_ref):
+        """If web_token exists, 'Инструкция по настройке' link is shown."""
         from bot_xui.views import build_main_menu_text
         mock_keys.return_value = [
             {"client_name": "x", "vpn_type": "vless",
              "expires_at": datetime.utcnow() + timedelta(days=10), "payment_id": "p1"},
         ]
         text = build_main_menu_text(tg_id=100)
-        assert "Гид по подключению" in text
+        assert "Инструкция по настройке" in text
         assert "tok123" in text
 
     @patch("bot_xui.views.get_referral_count", return_value=0)
     @patch("bot_xui.views.get_web_token", return_value=None)
-    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info", False))
     @patch("bot_xui.views.get_keys_by_tg_id")
-    def test_block_order_sub_then_guide_then_referral(self, mock_keys, mock_sub, mock_token, mock_ref):
-        """sub-info appears before referral block (and guide if present)."""
+    def test_block_order_sub_then_guide_then_referral(self, mock_keys, mock_token, mock_ref):
+        """Active subscription appears before referral block."""
         from bot_xui.views import build_main_menu_text
         mock_keys.return_value = [
             {"client_name": "x", "vpn_type": "vless",
              "expires_at": datetime.utcnow() + timedelta(days=10), "payment_id": "p1"},
         ]
         text = build_main_menu_text(tg_id=100)
-        sub_pos = text.find("sub-info")
-        ref_pos = text.lower().find("бонус за друзей")
+        sub_pos = text.find("Активная подписка")
+        ref_pos = text.find("Бонусная программа")
         assert sub_pos < ref_pos

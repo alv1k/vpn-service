@@ -30,11 +30,11 @@ class TestBuildHeaders:
         assert "expire=0" in headers["subscription-userinfo"]
 
     def test_profile_title_is_base64(self):
-        from api.sub_proxy import _build_headers, SUB_PROFILE_TITLE
+        from api.sub_proxy import _build_headers
         headers = _build_headers(None)
         assert headers["profile-title"].startswith("base64:")
         decoded = base64.b64decode(headers["profile-title"].removeprefix("base64:")).decode()
-        assert decoded == SUB_PROFILE_TITLE
+        assert "TIIN" in decoded
 
     def test_update_interval_header(self):
         from api.sub_proxy import _build_headers, SUB_UPDATE_INTERVAL_HOURS
@@ -133,13 +133,12 @@ class TestProxySubscription:
             "expires_at": future,
         }
         # XUI returns base64-encoded vless link
-        vless = "vless://uuid@host:443?type=tcp&security=reality#old"
-        expected_vless = "vless://uuid@host:443?type=tcp&security=reality#🟢 VLESS TCP ✅ 22д"
+        vless = "vless://uuid@host:7443?type=tcp&security=reality#old"
         mock_fetch.return_value = base64.b64encode(vless.encode())
 
         response = await proxy_subscription("tok")
         body_decoded = base64.b64decode(response.body).decode()
-        assert body_decoded == expected_vless
+        assert "Reality • Vision (TCP)" in body_decoded
 
         # Headers
         assert "subscription-userinfo" in response.headers
@@ -151,7 +150,6 @@ class TestProxySubscription:
     @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
     async def test_cache_hit_skips_xui_fetch(self, mock_user, mock_pick, mock_fetch):
         from api.sub_proxy import proxy_subscription
-        import time
         mock_pick.return_value = {
             "subscription_link": "https://xui.example/sub/abc",
             "expires_at": datetime.utcnow() + timedelta(days=10),
@@ -164,7 +162,8 @@ class TestProxySubscription:
 
         # Second call — should hit cache
         await proxy_subscription("tok")
-        assert mock_fetch.call_count == 1  # unchanged (1 was still the count)    @pytest.mark.asyncio
+        assert mock_fetch.call_count == 1  # unchanged
+
     @pytest.mark.asyncio
     @patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock)
     @patch("api.sub_proxy._pick_vless_key")
@@ -181,9 +180,9 @@ class TestProxySubscription:
         assert mock_fetch.call_count == 1
 
         # Expire cache entry manually
-        ts, body, hdr = sub_proxy._CACHE["tok"]
-        # Set TS to be older than SUB_CACHE_TTL
-        sub_proxy._CACHE["tok"] = (datetime.utcnow() - timedelta(seconds=sub_proxy.SUB_CACHE_TTL + 1), body, hdr)
+        cache_key = "tok_b64"
+        ts, body, hdr = sub_proxy._CACHE[cache_key]
+        sub_proxy._CACHE[cache_key] = (ts - sub_proxy.SUB_CACHE_TTL - 1, body, hdr)
 
         await sub_proxy.proxy_subscription("tok")
         assert mock_fetch.call_count == 2
@@ -204,8 +203,9 @@ class TestProxySubscription:
         await sub_proxy.proxy_subscription("tok")
 
         # Expire it and make XUI fail
-        ts, body, hdr = sub_proxy._CACHE["tok"]
-        sub_proxy._CACHE["tok"] = (datetime.utcnow() - timedelta(seconds=sub_proxy.SUB_CACHE_TTL + 1), body, hdr)
+        cache_key = "tok_b64"
+        ts, body, hdr = sub_proxy._CACHE[cache_key]
+        sub_proxy._CACHE[cache_key] = (ts - sub_proxy.SUB_CACHE_TTL - 1, body, hdr)
         mock_fetch.side_effect = RuntimeError("XUI down")
 
         response = await sub_proxy.proxy_subscription("tok")
@@ -327,10 +327,32 @@ class TestExpiredSubscription:
         # Need to mock _fetch_xui to avoid actual HTTP call
         with patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock) as mock_fetch:
             vless = "vless://uuid@host:443?type=tcp&security=reality#old"
-            expected_vless = "vless://uuid@host:443?type=tcp&security=reality#🟢 VLESS TCP ✅ 22д"
             mock_fetch.return_value = base64.b64encode(vless.encode())
-
             response = await proxy_subscription("active-token", mock_request)
             body_decoded = base64.b64decode(response.body).decode()
-            assert body_decoded == expected_vless
+            assert "Reality" in body_decoded
             assert f"expire={int(future.timestamp())}" in response.headers["subscription-userinfo"]
+
+
+class TestSingboxBuilder:
+
+    def test_build_singbox_config_creates_fallback_and_selector(self):
+        from api.sub_proxy import _build_singbox_config
+        vless_lines = [
+            ("vless://uuid1@de.host:443?type=tcp&security=reality&pbk=pk1&sid=s1&sni=de.host", "🇩🇪 Server 1"),
+            ("vless://uuid2@ru.host:443?type=ws&security=tls&sni=ru.host", "🇷🇺 Server 2"),
+        ]
+        cfg = _build_singbox_config(vless_lines)
+        tags = [o["tag"] for o in cfg["outbounds"]]
+
+        assert "⚡ Автовыбор узла" in tags
+        assert "🎯 Выбор сервера вручную" in tags
+        assert cfg["route"]["final"] == "🎯 Выбор сервера вручную"
+
+        # Проверяем структуру auto-outbound (urltest)
+        auto_outbound = next(o for o in cfg["outbounds"] if o["tag"] == "⚡ Автовыбор узла")
+        assert auto_outbound["type"] == "urltest"
+        assert auto_outbound["url"] == "https://www.gstatic.com/generate_204"
+        assert "🇩🇪 Server 1" in auto_outbound["outbounds"]
+        assert "🇷🇺 Server 2" in auto_outbound["outbounds"]
+

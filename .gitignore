@@ -71,3 +71,4 @@ website_dist/
 
 # Docker compose только в docker/amneziawg/
 
+*.bak*

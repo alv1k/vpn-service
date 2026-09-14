@@ -222,16 +222,19 @@ HAPP_ROUTING_CONFIG = {
         "geosite:mailru", "geosite:vk",
         "domain:ru", "domain:su", "domain:xn--p1ai",
         "vk.com", "vk.cc", "vk.me", "cdn-vk.net",
-        "tbank-online.com", "tinkoff.ru",
-        "sberbank.ru", "online.sberbank.ru",
-        "yandex.ru", "yandex.net", "yandex.com",
-        "mail.ru", "list.ru", "inbox.ru",
+        "tbank.ru", "t-bank.ru", "tbank-online.ru", "tbank-online.com", "t-invest.ru", "tinkoff.ru",
+        "sberbank.ru", "online.sberbank.ru", "sber.ru", "sberprime.ru",
+        "vtb.ru", "online.vtb.ru", "alfabank.ru", "gazprombank.ru", "rshb.ru", "raiffeisen.ru",
+        "nspk.ru", "sbp.nspk.ru", "mir-pay.ru", "mironline.ru",
+        "yandex.ru", "ya.ru", "yandex.net", "yandex.com", "yandexcloud.net",
+        "mail.ru", "list.ru", "inbox.ru", "bk.ru", "internet.ru",
         "ok.ru", "odnoklassniki.ru",
-        "avito.ru", "ozon.ru",
-        "wildberries.ru", "wb.ru",
-        "gosuslugi.ru", "mos.ru",
-        "lenta.com", "lenta.tech",
-        "kinopoisk.ru", "ivi.ru", "rutube.ru",
+        "avito.ru", "ozon.ru", "ozonru.me", "ozon-st.ru",
+        "wildberries.ru", "wb.ru", "wbstatic.net", "market.yandex.ru",
+        "gosuslugi.ru", "mos.ru", "nalog.gov.ru", "pfr.gov.ru", "sfr.gov.ru",
+        "lenta.com", "lenta.tech", "magnit.ru", "x5.ru",
+        "kinopoisk.ru", "ivi.ru", "rutube.ru", "premier.one", "kion.ru", "okko.tv",
+        "2gis.ru", "2gis.com", "max.ru",
     ],
     "dnshosts": {"cloudflare-dns.com": "1.1.1.1", "dns.google": "8.8.8.8"},
     "domainstrategy": "IPIfNonMatch",
@@ -1026,8 +1029,9 @@ def _render_wizard(sub_url, happ_routing_link="", awg_link="", awg_download_link
 
     <!-- VLESS-only manual import -->
     <div id="vlessExtras">
-        <p class="note" style="margin-top:1.2rem">Или добавьте вручную — скопируйте ссылку:</p>
-        <div class="sub-link" onclick="copyLink()">{html_mod.escape(sub_url)}</div>
+        <p class="note" style="margin-top:1.2rem">Если кнопка не открыла приложение — скопируйте ссылку подписки и вставьте в приложении через <b>«+ ➔ Импорт из буфера обмена»</b>:</p>
+        <div class="sub-link" onclick="copyLink()" title="Нажмите, чтобы скопировать">{html_mod.escape(sub_url)}</div>
+        <button type="button" class="connect-btn secondary" onclick="copyLink()" style="margin-top:.4rem; padding:.6rem; font-size:.85rem;">📋 Скопировать ссылку подписки</button>
     </div>
 
     <!-- AmneziaVPN-only manual import -->

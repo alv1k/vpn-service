@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TIIN VPN Admin</title>
-  <link rel="icon" type="image/png" href="/tiin_admin_panel/favicon.png">
+  <link rel="icon" type="image/png" href="/tiin_admin_panel/favicon.png?v=20260828">
   <style>
     :root {
       --bg: #0a0a0a;
@@ -339,12 +339,12 @@
       <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('2.26.76.210');this.textContent='copied!';setTimeout(()=>this.textContent='2.26.76.210',1000)" title="Click to copy NL IP">2.26.76.210</span>
       <!-- http://2.26.76.210:40649/q8gIb3co6oD2rHbtFc/panel/clients -->
       <span style="color:#a78bfa;font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer;font-weight:600" onclick="navigator.clipboard.writeText('139.100.207.18');this.textContent='copied!';setTimeout(()=>this.textContent='139.100.207.18',1000)" title="Click to copy RU VPS IP">🇷🇺 139.100.207.18</span>
+      <span style="color:#38bdf8;font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('tiin.connect.flow@outlook.com');this.textContent='copied!';setTimeout(()=>this.textContent='✉️ tiin.connect.flow@outlook.com',1000)" title="Click to copy Primary Service Email">✉️ tiin.connect.flow@outlook.com</span>
+      <span style="color:#a5a5c7;font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('gladis1503@proton.me');this.textContent='copied!';setTimeout(()=>this.textContent='✉️ gladis1503@proton.me (резерв)',1000)" title="Click to copy Backup Email">✉️ gladis1503@proton.me (резерв)</span>
       <div class="nav-tabs">
         <button onclick="showTab('dashboard')" id="tab-dashboard" class="active">Dashboard</button>
         <button onclick="showTab('monitoring')" id="tab-monitoring">📊 Monitoring</button>
         <button onclick="showTab('inbounds')" id="tab-inbounds">⚡ Inbounds & SNI</button>
-        <button onclick="showTab('awg')" id="tab-awg">AWG</button>
-        <button onclick="showTab('vless')" id="tab-vless">VLESS</button>
         <button onclick="showTab('users')" id="tab-users">Users</button>
         <button onclick="showTab('proxy')" id="tab-proxy">MTProxy</button>
         <button onclick="showTab('testpay')" id="tab-testpay">Test Pay</button>
@@ -441,22 +441,28 @@
 
 
 
-      <h3 class="mb" style="color:var(--muted)">
-        ONLINE NOW <span id="online-count" style="color:var(--green)"></span>
-      </h3>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <h3 style="color:var(--muted);margin:0">
+          ONLINE NOW <span id="online-count" style="color:var(--green)"></span>
+        </h3>
+        <div id="online-filter-bar" style="display:flex;gap:6px">
+          <button class="btn active" id="btn-filter-all" onclick="setOnlineFilter('all')" style="font-size:11px;padding:3px 8px;font-weight:600">Все (<span id="count-filter-all">0</span>)</button>
+          <button class="btn" id="btn-filter-de" onclick="setOnlineFilter('de')" style="font-size:11px;padding:3px 8px">🇩🇪 Германия (<span id="count-filter-de">0</span>)</button>
+          <button class="btn" id="btn-filter-ru" onclick="setOnlineFilter('ru')" style="font-size:11px;padding:3px 8px">🇷🇺 Россия (<span id="count-filter-ru">0</span>)</button>
+        </div>
+      </div>
       <div class="table-wrap mb">
         <table>
            <thead>
               <tr>
-                <th>Type</th>
+                <th>Инбаунд / Узел</th>
                 <th>First Name</th>
                 <th>Names</th>
-                <th>Last Speed</th>
-               <th>Speed</th>
-               <th>IPs</th>
-               <th>Expires</th>
-               <th>Platform</th>
-             </tr>
+                <th>Speed</th>
+                <th>IPs</th>
+                <th>Expires</th>
+                <th>Клиент / ОС</th>
+              </tr>
             </thead>
             <tbody id="dash-online"></tbody>
         </table>
@@ -480,8 +486,28 @@
         </table>
       </div>
 
+      <details class="mb" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
+        <summary style="cursor:pointer;color:var(--muted);font-weight:600;font-size:13px;user-select:none">
+          🛠️ ТЕСТОВЫЕ / АДМИНСКИЕ АККАУНТЫ БЕЗ EXPIRES <span id="offline-admin-count" style="color:var(--muted);font-size:12px"></span>
+        </summary>
+        <div class="table-wrap" style="margin-top:10px">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Names</th>
+                <th>Protocols</th>
+                <th>Last Seen</th>
+                <th>Expires</th>
+              </tr>
+            </thead>
+            <tbody id="dash-offline-admin"></tbody>
+          </table>
+        </div>
+      </details>
+
       <h3 class="mb" style="color:var(--muted)">
-        NEW USERS TODAY <span style="font-size:11px;font-weight:400;color:var(--muted)">(UTC+9)</span> <span id="new-users-count" style="color:var(--green)"></span>
+        NEW USERS (LAST 24H) <span id="new-users-count" style="color:var(--green)"></span>
       </h3>
       <div class="table-wrap mb">
         <table>
@@ -583,61 +609,7 @@
       <div id="dash-monthly" class="mb"></div>
     </div>
 
-    <!-- AWG -->
-    <div id="s-awg" class="section">
-      <div class="cards" id="awg-params"></div>
-      <div class="toolbar">
-        <b>Clients</b>
-        <span style="flex:1"></span>
-        <button class="btn" onclick="loadAWG()">Refresh</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>First Name</th>
-              <th>Name</th>
-              <th>Address</th>
-              <th>Enabled</th>
-              <th class="col-created">Created</th>
-              <th>Expiry</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="awg-clients"></tbody>
-        </table>
-      </div>
-    </div>
 
-    <!-- VLESS -->
-    <div id="s-vless" class="section">
-      <div class="toolbar">
-        <b>Inbounds</b>
-        <select id="vless-ib-select" onchange="loadVlessClients()"
-                style="background:var(--card); color:var(--text); border:1px solid var(--border); padding:6px; border-radius:4px">
-        </select>
-        <span style="flex:1"></span>
-        <button class="btn" onclick="loadVLESS()">Refresh</button>
-      </div>
-      <div class="cards mb" id="vless-ib-info"></div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>First Name</th>
-              <th class="col-uuid">UUID</th>
-              <th>Upload</th>
-              <th>Download</th>
-              <th>Expiry</th>
-              <th class="col-last-online">Last Online</th>
-              <th>On</th>
-            </tr>
-          </thead>
-          <tbody id="vless-clients"></tbody>
-        </table>
-      </div>
-    </div>
 
     <!-- MTProxy -->
     <div id="s-proxy" class="section">
@@ -922,8 +894,6 @@
     const B = '/tiin_admin_panel';
     const PORTAL = 'https://344988.snk.wtf/my/';
     let _cookie = false;
-    let _vlessInbounds = [];
-    let _vlessClients = [];
     let _onlineUsers = [];
     let _debounceTimers = {};
 
@@ -981,8 +951,6 @@
       if (id === 'dashboard') loadDashboard();
       if (id === 'monitoring') loadMonitoring();
       if (id === 'inbounds') loadInboundsPopularity();
-      if (id === 'awg') loadAWG();
-      if (id === 'vless') loadVLESS();
       if (id === 'proxy') loadProxy();
       if (id === 'testpay') { /* static UI, no load needed */ }
       if (id === 'messages') loadMsgLog(true);
@@ -1488,66 +1456,140 @@
       return 'pending';
     }
 
-    function _typeLabelFromInbound(ib) {
+    let _onlineFilter = 'all';
+
+    function setOnlineFilter(f) {
+      _onlineFilter = f;
+      ['all', 'de', 'ru'].forEach(id => {
+        const btn = document.getElementById(`btn-filter-${id}`);
+        if (btn) {
+          if (id === f) {
+            btn.classList.add('active');
+            btn.style.fontWeight = '600';
+            btn.style.borderColor = 'var(--accent)';
+          } else {
+            btn.classList.remove('active');
+            btn.style.fontWeight = 'normal';
+            btn.style.borderColor = 'var(--border)';
+          }
+        }
+      });
+      _renderOnline();
+    }
+
+    function _isRuBridgeInbound(ib) {
+      if (!ib) return false;
+      const tag = (ib.tag || '').toLowerCase();
+      const remark = (ib.remark || '').toLowerCase();
+      const port = ib.port || 0;
+      const ibId = ib.id ? Number(ib.id) : 0;
+      return ibId === 201 || ibId === 202 ||
+             port === 8443 ||
+             tag.includes('ru-') || tag.includes('selectel') || tag.includes('🇷🇺') ||
+             remark.includes('ru-') || remark.includes('selectel') || remark.includes('🇷🇺');
+    }
+
+    function _formatInboundBadge(ib) {
       const tag = (ib && ib.tag) || '';
       const port = (ib && ib.port) || 0;
-      const ibId = (ib && ib.id) ? ib.id : null;
-      const idPrefix = ibId ? `#${ibId} ` : '';
+      const ibId = (ib && ib.id) ? Number(ib.id) : null;
+      const remark = (ib && ib.remark) || '';
+      const isRu = _isRuBridgeInbound(ib) || Boolean(ib && ib.is_ru);
+      const flag = isRu ? '🇷🇺' : '🇩🇪';
 
-      if (tag.includes('4443') || tag.includes('35443') || port === 4443 || port === 35443 || (ib.protocol && ib.protocol.includes('hysteria'))) {
-        return `${idPrefix || (port === 35443 ? '#16 ' : '#4 ')}HYST2`;
+      let protoName = 'VLESS';
+      let cls = 'on';
+
+      if (port === 4443 || port === 35443 || (ib.protocol && ib.protocol.includes('hysteria')) || tag.includes('hyst')) {
+        protoName = 'HYST2';
+        cls = 'hyst';
+      } else if (port === 7443 || tag.includes('7443')) {
+        protoName = 'Reality';
+        cls = 'on';
+      } else if (port === 47447 || tag.includes('47447')) {
+        protoName = 'xHTTP';
+        cls = 'on';
+      } else if (port === 38745 || tag.includes('38745')) {
+        protoName = 'Ultra';
+        cls = 'on';
+      } else if (port === 48745 || tag.includes('48745')) {
+        protoName = 'Armor';
+        cls = 'on';
+      } else if (port === 8443 || (isRu && ib.protocol === 'vless')) {
+        protoName = 'VLESS';
+        cls = 'on';
+      } else if (port === 51822 || tag.includes('awg')) {
+        protoName = 'AWG';
+        cls = 'awg';
+      } else if (tag.includes('14715') || port === 14715) {
+        protoName = 'WS';
+        cls = 'on';
       }
-      if (tag.includes('7443') || port === 7443 || port === 53151 || tag.includes('53151')) {
-        return `${idPrefix || (port === 53151 ? '#10 ' : '#1 ')}V|TCP`;
-      }
-      if (tag.includes('14715') || port === 14715) {
-        return `${idPrefix || '#9 '}V|WS`;
-      }
-      if (tag.includes('47447') || tag.includes('38745') || tag.includes('48745') || tag.includes('8081') || port === 47447 || port === 38745 || port === 48745 || port === 8081 || (tag && tag.toLowerCase().includes('xhttp'))) {
-        let fallbackId = '';
-        if (port === 47447) fallbackId = '#2 ';
-        else if (port === 38745) fallbackId = '#14 ';
-        else if (port === 48745) fallbackId = '#15 ';
-        else if (port === 8081) fallbackId = '#5 ';
-        return `${idPrefix || fallbackId}V|XHTTP`;
-      }
-      if (tag.toLowerCase().includes('tcp')) return `${idPrefix}V|TCP`;
-      return idPrefix ? `${idPrefix}VLESS` : null;
+
+      const shortLabel = `${flag} ${protoName}`;
+      const idTag = ibId ? `#${ibId}` : '';
+      const portStr = port ? `:${port}` : '';
+      const fullLabel = `${flag} ${protoName} ${idTag}${portStr}`.trim();
+      const title = (isRu ? '[🇷🇺 RU Gateway] ' : '[🇩🇪 DE Direct] ') + (remark ? `${fullLabel} — ${remark}` : fullLabel);
+
+      return `<span class="badge ${cls}" style="margin-right:4px;font-size:11px;padding:2px 6px;${isRu ? 'border:1px solid rgba(255,255,255,0.4);font-weight:600' : ''}" title="${esc(title)}">${shortLabel}</span>`;
     }
 
     function _renderOnline() {
-      const online = [..._onlineUsers].sort((a, b) =>
-        (a.first_name || '').localeCompare(b.first_name || '', undefined, { sensitivity: 'base' })
-      );
+      const totalAll = _onlineUsers.length;
+      let countDe = 0;
+      let countRu = 0;
+
+      _onlineUsers.forEach(u => {
+        const inbounds = u.inbounds || [];
+        const hasRu = inbounds.some(ib => _isRuBridgeInbound(ib));
+        if (hasRu) countRu++;
+        else countDe++;
+      });
+
+      const countAllEl = document.getElementById('count-filter-all');
+      const countDeEl = document.getElementById('count-filter-de');
+      const countRuEl = document.getElementById('count-filter-ru');
       const countEl = document.getElementById('online-count');
       const tableEl = document.getElementById('dash-online');
 
-      if (countEl) countEl.textContent = `(${online.length})`;
+      if (countAllEl) countAllEl.textContent = totalAll;
+      if (countDeEl) countDeEl.textContent = countDe;
+      if (countRuEl) countRuEl.textContent = countRu;
+      if (countEl) countEl.textContent = `(${totalAll})`;
+
+      let filtered = _onlineUsers;
+      if (_onlineFilter === 'de') {
+        filtered = _onlineUsers.filter(u => !(u.inbounds || []).some(ib => _isRuBridgeInbound(ib)));
+      } else if (_onlineFilter === 'ru') {
+        filtered = _onlineUsers.filter(u => (u.inbounds || []).some(ib => _isRuBridgeInbound(ib)));
+      }
+
+      const online = [...filtered].sort((a, b) =>
+        (a.first_name || '').localeCompare(b.first_name || '', undefined, { sensitivity: 'base' })
+      );
+
       if (tableEl) {
         tableEl.innerHTML = online.length
           ? online.map(u => {
               const inbounds = u.inbounds || [];
               const protos = u.protocols || (u.type ? [u.type] : []);
-              let badges;
+              let badges = '';
               if (inbounds.length > 0) {
                 const seen = new Set();
                 badges = inbounds.map(ib => {
-                  const label = _typeLabelFromInbound(ib);
-                  if (!label || seen.has(label)) return '';
-                  seen.add(label);
-                  const cls = label.includes('V|') || label.includes('VLESS') ? 'on' : 'hyst';
-                  const title = ib.remark ? `${ib.remark} (Port ${ib.port || '—'})` : (ib.port ? `Port ${ib.port}` : '');
-                  return `<span class="badge ${cls}" style="margin-right:2px" title="${esc(title)}">${label}</span>`;
+                  const key = (ib.id || '') + '-' + (ib.port || '') + '-' + (ib.tag || '');
+                  if (seen.has(key)) return '';
+                  seen.add(key);
+                  return _formatInboundBadge(ib);
                 }).filter(Boolean).join('');
               } else {
                 badges = protos.map(p => {
-                  const label = p === 'awg' ? '#100 AWG' : p[0].toUpperCase();
-                  return `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:2px">${label}</span>`;
+                  const label = p === 'awg' ? '🇩🇪 AWG #100' : `🇩🇪 ${p.toUpperCase()}`;
+                  return `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:4px;font-size:11px;padding:2px 6px">${label}</span>`;
                 }).join('');
               }
-              const lastSpeed = u.last_speed_mbps > 0
-                  ? '<span style="color:var(--muted)">' + u.last_speed_mbps + '<span class="speed-unit"> Mbps</span></span>'
-                  : '<span style="color:var(--muted)">—</span>';
+
               const platforms = u.platforms || [];
               const platformIcons = {
                 'android': '📱',
@@ -1556,12 +1598,16 @@
                 'windows': '🪟',
                 'linux': '🐧',
               };
-              const platformHtml = platforms.length
-                ? platforms.map(p => {
-                    const icon = platformIcons[p.platform] || '❓';
-                    return `<span title="${p.platform}${p.client_app ? ' / ' + p.client_app : ''} (×${p.seen_count})" style="cursor:help">${icon}</span>`;
-                  }).join('')
-                : '<span style="color:var(--muted);font-size:0.85em">—</span>';
+              const activePlatform = platforms[0];
+              let platformHtml = '<span style="color:var(--muted);font-size:0.85em">—</span>';
+              if (activePlatform) {
+                const icon = platformIcons[activePlatform.platform] || '📱';
+                const appName = activePlatform.client_app || activePlatform.platform || 'Client';
+                const ver = activePlatform.client_version ? ` <span style="color:var(--muted);font-size:10px">v${activePlatform.client_version}</span>` : '';
+                const title = `${activePlatform.platform}${activePlatform.client_app ? ' / ' + activePlatform.client_app : ''} (seen ×${activePlatform.seen_count})`;
+                platformHtml = `<span title="${esc(title)}" style="cursor:help;white-space:nowrap">${icon} <b>${esc(appName)}</b>${ver}</span>`;
+              }
+
               const uniqueNames = Array.from(new Set(u.names || []));
               const namesHtml = uniqueNames
                 .map(n => `<span onclick="copyText(this)" style="cursor:copy" title="Click to copy">${n}</span>`)
@@ -1569,22 +1615,26 @@
               const paidTag = u.has_paid
                 ? ' <span class="badge paid" style="font-size:0.65em;padding:1px 4px;margin-left:2px" title="Оплачивал подписку">💳 PAID</span>'
                 : '';
+
+              const speedHtml = u.speed_mbps > 0
+                ? `<span style="color:var(--green);font-weight:600">${u.speed_mbps}<span class="speed-unit"> Mbps</span></span>`
+                : (u.last_speed_mbps > 0
+                    ? `<span style="color:var(--muted)">${u.last_speed_mbps}<span class="speed-unit"> Mbps</span></span>`
+                    : '<span style="color:var(--muted)">—</span>');
+
               return `<tr>
-                <td><span class="pulse-dot"></span>${badges}</td>
-                <td>${portalLink(u.web_token, u.first_name)}${paidTag}</td>
+                <td style="white-space:nowrap"><span class="pulse-dot"></span>${badges}</td>
+                <td style="font-weight:500">${portalLink(u.web_token, u.first_name)}${paidTag}</td>
                 <td class="mono" style="font-size:0.85em">${namesHtml}</td>
-                <td class="mono">${lastSpeed}</td>
-                <td class="mono">${u.speed_mbps > 0
-                    ? '<span style="color:var(--green)">' + u.speed_mbps + '<span class="speed-unit"> Mbps</span></span>'
-                    : '<span style="color:var(--muted)">—</span>'}</td>
+                <td class="mono">${speedHtml}</td>
                 <td>${u.ip_count > 1
-                    ? '<span style="color:var(--orange)">' + u.ip_count + '</span>'
+                    ? '<span style="color:var(--orange);font-weight:600">' + u.ip_count + '</span>'
                     : u.ip_count}</td>
                 <td>${u.expires ? fmtDate(u.expires) + (u.is_test ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>' : '') : '—'}</td>
-                <td class="mono" style="font-size:1.1em">${platformHtml}</td>
+                <td>${platformHtml}</td>
               </tr>`;
             }).join('')
-          : '<tr><td colspan="8" style="color:var(--muted);text-align:center">No active connections</td></tr>';
+          : '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:16px">Нет активных подключений в данной категории</td></tr>';
       }
     }
 
@@ -1601,42 +1651,54 @@
     function renderOffline(users) {
       const countEl = document.getElementById('offline-count');
       const tableEl = document.getElementById('dash-offline');
-      if (countEl) countEl.textContent = `(${users.length})`;
-      if (!tableEl) return;
+      const adminCountEl = document.getElementById('offline-admin-count');
+      const adminTableEl = document.getElementById('dash-offline-admin');
 
       users.sort((a, b) => (b.last_seen_ts || 0) - (a.last_seen_ts || 0));
 
-      tableEl.innerHTML = users.length
-        ? users.map(u => {
-            const now = Date.now();
-            const lastTs = u.last_seen_ts || 0;
-            const hoursAgo = lastTs ? (now - lastTs) / 3600000 : Infinity;
-            let dot;
-            if (hoursAgo < 2) dot = '<span class="pulse-dot" style="background:var(--green)"></span>';
-            else if (hoursAgo < 24) dot = '<span style="color:var(--orange);font-size:18px">◉</span>';
-            else dot = '<span style="color:var(--red);font-size:18px">◉</span>';
+      const withExpires = users.filter(u => !!u.expires);
+      const withoutExpires = users.filter(u => !u.expires);
 
-            const displayName = u.first_name || (u.names && u.names[0]) || '—';
-            const badges = (u.protocols || [])
-              .map(p => `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:2px">${p[0].toUpperCase()}</span>`)
-              .join(' ');
-            const testTag = u.is_test
-              ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>'
-              : '';
+      if (countEl) countEl.textContent = `(${withExpires.length})`;
+      if (adminCountEl) adminCountEl.textContent = `(${withoutExpires.length})`;
 
-            const uniqueNames = Array.from(new Set(u.names || []));
-            const namesHtml = uniqueNames
-              .map(n => `<span onclick="copyText(this)" style="cursor:copy" title="Click to copy">${n}</span>`)
-              .join(', ') || '—';
-            return `<tr>
-              <td>${dot} ${portalLink(u.web_token, displayName)}${testTag}</td>
-              <td class="mono" style="font-size:0.85em">${namesHtml}</td>
-              <td>${badges}</td>
-              <td class="mono">${u.last_seen || '—'}</td>
-              <td class="mono">${u.expires ? fmtDate(u.expires) : '—'}</td>
-            </tr>`;
-          }).join('')
-        : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No users</td></tr>';
+      function _renderRows(list) {
+        if (!list || !list.length) {
+          return '<tr><td colspan="5" style="color:var(--muted);text-align:center">Нет пользователей</td></tr>';
+        }
+        return list.map(u => {
+          const now = Date.now();
+          const lastTs = u.last_seen_ts || 0;
+          const hoursAgo = lastTs ? (now - lastTs) / 3600000 : Infinity;
+          let dot;
+          if (hoursAgo < 2) dot = '<span class="pulse-dot" style="background:var(--green)"></span>';
+          else if (hoursAgo < 24) dot = '<span style="color:var(--orange);font-size:18px">◉</span>';
+          else dot = '<span style="color:var(--red);font-size:18px">◉</span>';
+
+          const displayName = u.first_name || (u.names && u.names[0]) || '—';
+          const badges = (u.protocols || [])
+            .map(p => `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:2px">${p[0].toUpperCase()}</span>`)
+            .join(' ');
+          const testTag = u.is_test
+            ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>'
+            : '';
+
+          const uniqueNames = Array.from(new Set(u.names || []));
+          const namesHtml = uniqueNames
+            .map(n => `<span onclick="copyText(this)" style="cursor:copy" title="Click to copy">${n}</span>`)
+            .join(', ') || '—';
+          return `<tr>
+            <td>${dot} ${portalLink(u.web_token, displayName)}${testTag}</td>
+            <td class="mono" style="font-size:0.85em">${namesHtml}</td>
+            <td>${badges}</td>
+            <td class="mono">${u.last_seen || '—'}</td>
+            <td class="mono">${u.expires ? fmtDate(u.expires) : '—'}</td>
+          </tr>`;
+        }).join('');
+      }
+
+      if (tableEl) tableEl.innerHTML = _renderRows(withExpires);
+      if (adminTableEl) adminTableEl.innerHTML = _renderRows(withoutExpires);
     }
 
     function copyText(el) {
@@ -1908,14 +1970,6 @@
 
       document.getElementById('dash-cards').innerHTML = `
         <div class="card">
-          <h3>AWG Clients</h3>
-          <div class="val">${d.awg.clients_enabled}/${d.awg.clients_total}</div>
-          <div class="sub">
-            <span class="dot ${d.awg.interface_up ? 'on' : 'off'}"></span>
-            awg0 ${d.awg.interface_up ? 'UP' : 'DOWN'}
-          </div>
-        </div>
-        <div class="card">
           <h3>VLESS Clients</h3>
           <div class="val">${d.xui.clients}</div>
           <div class="sub">
@@ -2163,7 +2217,7 @@
                 : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${fmtDate(u.created_at)}</td>
             </tr>`).join('')
-        : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No new users today</td></tr>';
+        : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No new users in last 24 hours</td></tr>';
 
        // Promocodes
       const promos = await api('/api/admin/promocodes');
@@ -2414,79 +2468,7 @@
         <button class="btn mt" onclick="closeModal()">Close</button>`);
     }
 
-    // ── VLESS ──────────────────────────────────────────────────────────────────
 
-    async function loadVLESS() {
-      _vlessInbounds = await api('/api/admin/xui/inbounds');
-      const sel = document.getElementById('vless-ib-select');
-      const defaultIb = _vlessInbounds.find(ib => ib.enable) || _vlessInbounds[0];
-
-      sel.innerHTML = _vlessInbounds.map(ib =>
-        `<option value="${ib.id}" ${defaultIb && ib.id === defaultIb.id ? 'selected' : ''}>
-          ${ib.remark} (:${ib.port}) [${ib.protocol}] ${ib.enable ? '' : '⛔'}
-        </option>`
-      ).join('');
-
-      loadVlessClients();
-    }
-
-    async function loadVlessClients() {
-      const ibId = document.getElementById('vless-ib-select').value;
-      if (!ibId) return;
-
-      await refreshOnline();
-      const ib = _vlessInbounds.find(i => i.id == ibId);
-
-      document.getElementById('vless-ib-info').innerHTML = ib
-        ? `<div class="card">
-             <h3>${ib.remark}</h3>
-             <div class="sub">${ib.protocol} / ${ib.network} / ${ib.security}</div>
-             <div class="sub">↑${ib.traffic_up_fmt} ↓${ib.traffic_down_fmt}</div>
-             <div class="sub">
-               <span class="badge ${ib.enable ? 'on' : 'off'}">${ib.enable ? 'active' : 'disabled'}</span>
-               ${ib.client_count} clients
-             </div>
-           </div>`
-        : '';
-
-      const clients = await api(`/api/admin/xui/inbounds/${ibId}/clients`);
-      _vlessClients = clients;
-      document.getElementById('vless-clients').innerHTML = clients.map((c, i) => `
-        <tr style="cursor:pointer" onclick="showVlessClient(${i})">
-          <td>${onlineDot(c.email, 'vless')}${c.email}</td>
-          <td>${portalLink(c.web_token, c.first_name)}</td>
-          <td class="mono col-uuid">
-            <span class="trunc" title="${c.uuid}">${c.uuid.slice(0, 8)}…</span>
-          </td>
-          <td>${c.up_fmt}</td>
-          <td>${c.down_fmt}</td>
-          <td>${c.expiry || '∞'}</td>
-          <td class="col-last-online">${c.last_online || '—'}</td>
-          <td>${c.enable ? '🟢' : '🔴'}</td>
-        </tr>`).join('');
-    }
-
-    function showVlessClient(idx) {
-      const c = _vlessClients[idx];
-      if (!c) return;
-      const online = isOnline(c.email, 'vless');
-      openModal(`
-        <h2>${c.email} ${online ? '<span class="pulse-dot"></span>' : ''}</h2>
-        <table class="sub-table">
-          <tr><td style="color:var(--muted)">First Name</td><td>${portalLink(c.web_token, c.first_name)}</td></tr>
-          <tr><td style="color:var(--muted)">TG ID</td><td class="mono">${c.tg_id_db || c.tgId || '—'}</td></tr>
-          <tr><td style="color:var(--muted)">UUID</td><td class="mono" style="word-break:break-all">${c.uuid}</td></tr>
-          <tr><td style="color:var(--muted)">Sub ID</td><td class="mono">${c.subId || '—'}</td></tr>
-          <tr><td style="color:var(--muted)">Flow</td><td class="mono">${c.flow || '—'}</td></tr>
-          <tr><td style="color:var(--muted)">Status</td><td>${c.enable ? '<span style="color:var(--green)">Enabled</span>' : '<span style="color:var(--red)">Disabled</span>'}</td></tr>
-          <tr><td style="color:var(--muted)">Upload</td><td>${c.up_fmt} <span style="color:var(--muted)">(${c.up.toLocaleString()} B)</span></td></tr>
-          <tr><td style="color:var(--muted)">Download</td><td>${c.down_fmt} <span style="color:var(--muted)">(${c.down.toLocaleString()} B)</span></td></tr>
-          <tr><td style="color:var(--muted)">Expiry</td><td>${c.expiry || '∞'}</td></tr>
-          <tr><td style="color:var(--muted)">Last Online</td><td>${c.last_online || '—'}</td></tr>
-          <tr><td style="color:var(--muted)">IP Limit</td><td>${c.limitIp || 'unlimited'}</td></tr>
-        </table>
-      `);
-    }
 
     function fmtBytes(b) {
       if (!b) return '0 B';

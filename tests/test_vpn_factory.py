@@ -157,49 +157,31 @@ class TestCreateAwgConfig:
 
         fixed_name = "awg-test-fixed"
 
-        async def mock_handler(request: httpx.Request):
-            if "/api/session" in str(request.url):
-                return httpx.Response(200, json={"ok": True})
-            if request.method == "POST" and "/api/wireguard/client" in str(request.url):
-                return httpx.Response(200, json={"ok": True})
-            if request.method == "GET" and str(request.url).endswith("/api/wireguard/client"):
-                return httpx.Response(200, json=[
-                    {"name": fixed_name, "id": "cid-1", "address": "10.0.0.5"}
-                ])
-            if "/configuration" in str(request.url):
-                return httpx.Response(200, text="[Interface]\nPrivateKey=abc\n[Peer]\nEndpoint=1.2.3.4")
-            return httpx.Response(404)
+        from bot_xui.vpn_factory import create_awg_config
 
-        transport = httpx.MockTransport(mock_handler)
-        mock_client = httpx.AsyncClient(transport=transport)
+        mock_res = {
+            "client_name": fixed_name,
+            "client_id": "cid-1",
+            "client_ip": "10.8.1.5/32",
+            "config": "[Interface]\nPrivateKey=abc\n[Peer]\nEndpoint=1.2.3.4",
+            "private_key": "abc",
+            "public_key": "def"
+        }
 
-        with patch("bot_xui.vpn_factory.httpx.AsyncClient", return_value=mock_client):
+        with patch("bot_xui.awg_manager.get_or_create_3xui_awg_client", return_value=mock_res):
             result = await create_awg_config(555, client_name=fixed_name)
 
         assert result["client_id"] == "cid-1"
-        assert result["client_ip"] == "10.0.0.5"
+        assert result["client_ip"] == "10.8.1.5/32"
         assert "[Interface]" in result["config"]
 
     @pytest.mark.asyncio
     async def test_client_not_found_raises(self):
-        """Raises RuntimeError if client not found after creation."""
+        """Raises RuntimeError if database error or inbound missing."""
         from bot_xui.vpn_factory import create_awg_config
-        import httpx
 
-        async def mock_handler(request: httpx.Request):
-            if "/api/session" in str(request.url):
-                return httpx.Response(200, json={"ok": True})
-            if request.method == "POST":
-                return httpx.Response(200, json={"ok": True})
-            if request.method == "GET" and str(request.url).endswith("/api/wireguard/client"):
-                return httpx.Response(200, json=[])  # empty — client not found
-            return httpx.Response(404)
-
-        transport = httpx.MockTransport(mock_handler)
-        mock_client = httpx.AsyncClient(transport=transport)
-
-        with patch("bot_xui.vpn_factory.httpx.AsyncClient", return_value=mock_client):
-            with pytest.raises(RuntimeError, match="не найден"):
+        with patch("bot_xui.awg_manager.get_or_create_3xui_awg_client", side_effect=RuntimeError("Database not found")):
+            with pytest.raises(RuntimeError, match="Database not found"):
                 await create_awg_config(555)
 
 

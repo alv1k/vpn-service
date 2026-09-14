@@ -34,52 +34,13 @@ logger = logging.getLogger(__name__)
 
 
 
-async def create_awg_config(tg_id: int, client_name: str = None) -> dict:
+async def create_awg_config(tg_id: int, client_name: str = None, expiry_ms: int = 0) -> dict:
     """
-    Создаёт клиента в AmneziaWG и возвращает dict с полями:
-        client_name, client_id, client_ip, config
-    Бросает RuntimeError при любой ошибке.
+    Создаёт или получает клиента AmneziaWG в 3x-ui (Inbound 17)
+    и возвращает dict с полями: client_name, client_id, client_ip, config
     """
-    if client_name is None:
-        client_name = f"test-{tg_id}-{uuid.uuid4().hex[:8]}"
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(
-            f"{AMNEZIA_WG_API_URL}/api/session",
-            json={"password": AMNEZIA_WG_API_PASSWORD},
-        )
-        r.raise_for_status()
-
-        r = await client.post(
-            f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
-            json={"name": client_name},
-        )
-        r.raise_for_status()
-
-        r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
-        r.raise_for_status()
-
-        client_id = client_ip = None
-        for c in r.json():
-            if c.get("name") == client_name:
-                client_id = c["id"]
-                client_ip = c.get("address")
-                break
-
-        if not client_id:
-            raise RuntimeError("Клиент не найден после создания")
-
-        r = await client.get(
-            f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration"
-        )
-        r.raise_for_status()
-
-        config_text = r.text
-        if not config_text:
-            raise RuntimeError("Пустая конфигурация AWG")
-
-    return {"client_name": client_name, "client_id": client_id,
-            "client_ip": client_ip, "config": config_text}
+    from bot_xui.awg_manager import get_or_create_3xui_awg_client
+    return get_or_create_3xui_awg_client(tg_id=tg_id, expiry_ms=expiry_ms, client_name=client_name)
 
 
 def _get_dynamic_remark(expires_at: datetime) -> str:
@@ -196,6 +157,20 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
         network="xhttp",
     )
 
+    # Sync client to RU secondary node (gateway)
+    try:
+        from bot_xui.multi_node import sync_client_to_ru_node
+        sync_client_to_ru_node(
+            email=client_email,
+            expiry_ms=expiry_ms,
+            enable=True,
+            uuid_str=client_uuid,
+            sub_id=sub_id,
+            tg_id=tg_id,
+        )
+    except Exception as ru_err:
+        logger.warning(f"Failed to sync client {client_email} to RU node in create_xui_multi_config: {ru_err}")
+
     return {
         "client_email": client_email,
         "client_uuid": client_uuid,
@@ -261,6 +236,17 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
             new_expiry_ms = result
             new_expiry_dt = datetime.fromtimestamp(new_expiry_ms / 1000, tz=timezone.utc)
             sync_expiry(tg_id, new_expiry_dt)
+
+            try:
+                from bot_xui.multi_node import sync_client_to_ru_node
+                sync_client_to_ru_node(
+                    email=existing['client']['email'],
+                    expiry_ms=new_expiry_ms,
+                    enable=True,
+                    tg_id=tg_id,
+                )
+            except Exception as ru_err:
+                logger.warning(f"Failed to sync referral extension to RU node: {ru_err}")
 
             logger.info(f"Referral: extended VPN for {tg_id} by {days} days")
             return {"action": "extended", "days": days}
@@ -547,6 +533,14 @@ async def handle_test_vless(query, xui: XUIClient):
 
         from config import SERVER_LOCATION
         instr_url = f"https://344988.snk.wtf/my/{web_token}" if web_token else ""
+        connect_url = f"https://344988.snk.wtf/go-connect/{web_token}" if web_token else ""
+        buttons = []
+        if connect_url:
+            buttons.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=connect_url)])
+        if instr_url:
+            buttons.append([InlineKeyboardButton("📖 Инструкция", url=instr_url)])
+        buttons.append([InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")])
+
         await query.message.reply_photo(
             photo=bio,
             caption=(
@@ -563,10 +557,7 @@ async def handle_test_vless(query, xui: XUIClient):
                 f"💬 Поддержка: кнопка «Написать нам» в меню"
             ),
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📖 Инструкция", url=instr_url)],
-                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
-            ]),
+            reply_markup=InlineKeyboardMarkup(buttons),
         )
 
         set_vless_test_activated(tg_id)
@@ -664,7 +655,7 @@ async def activate_test_period(query, xui):
             pass
         await query.message.chat.send_message(
             "❌ Тестовый период уже был активирован ранее.\n\n"
-            "Ты можешь приобрести тариф, чтобы продолжить пользоваться VPN.",
+            "Вы можете оформить тариф, чтобы продолжить пользоваться VPN.",
             reply_markup=make_back_keyboard()
         )
         return
@@ -679,8 +670,8 @@ async def activate_test_period(query, xui):
         except Exception:
             pass
         await query.message.chat.send_message(
-            "✅ У тебя уже есть активная подписка!\n\n"
-            "Ты можешь посмотреть свои конфиги в разделе «🔑 Мои конфиги».",
+            "✅ У вас уже есть активная подписка!\n\n"
+            "Вы можете посмотреть свои конфигурации в разделе «🔑 Мои конфиги».",
             reply_markup=make_back_keyboard()
         )
         return
@@ -729,15 +720,20 @@ async def activate_test_period(query, xui):
         f'📖 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция</a>'
     )
     try:
+        connect_url = f"https://344988.snk.wtf/go-connect/{web_token}" if web_token else ""
+        buttons = []
+        if connect_url:
+            buttons.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=connect_url)])
+        if web_token:
+            buttons.append([InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{web_token}")])
+        buttons.append([InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")])
+        buttons.append([InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")])
+
         await query.message.reply_photo(
             photo=bio,
             caption=caption_text,
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{web_token}")],
-                [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
-                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
-            ])
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
         sent_text = caption_text
     except Exception as e:

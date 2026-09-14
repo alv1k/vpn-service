@@ -103,8 +103,11 @@ def update_xray_routing():
     """Ensure xray config has RU split-tunneling rules (geoip:ru + geosite:ru -> direct)."""
     import json as _json
 
-    with open(XRAY_CONFIG) as f:
-        cfg = _json.load(f)
+    res = subprocess.run(
+        ["sudo", "cat", XRAY_CONFIG],
+        capture_output=True, text=True, check=True
+    )
+    cfg = _json.loads(res.stdout)
 
     routing = cfg.setdefault("routing", {})
     rules = routing.setdefault("rules", [])
@@ -141,9 +144,16 @@ def update_xray_routing():
         log.info("Added geosite:ru -> direct rule to xray config")
 
     if changed:
-        with open(XRAY_CONFIG, "w") as f:
-            _json.dump(cfg, f, indent=2)
-        log.info("Updated xray config with RU split-tunneling rules")
+        updated_json = _json.dumps(cfg, indent=2)
+        subprocess.run(
+            ["sudo", "tee", XRAY_CONFIG],
+            input=updated_json, text=True, capture_output=True, check=True
+        )
+        subprocess.run(
+            ["sudo", "/bin/systemctl", "restart", "x-ui"],
+            check=True, capture_output=True, text=True
+        )
+        log.info("Updated xray config with RU split-tunneling rules and restarted x-ui")
     else:
         log.info("xray config already has RU split-tunneling rules")
 
@@ -211,6 +221,8 @@ def main():
             f.write(f"{net}\n")
     log.info(f"Saved {len(ru_networks)} CIDRs to {RU_CIDRS_FILE}")
 
+    errors = []
+
     # Обновить sing-box rule-set для Happ
     try:
         subprocess.run(
@@ -227,8 +239,6 @@ def main():
     except Exception as e:
         log.error(f"xray routing update failed: {e}")
         errors.append(f"xray: {e}")
-
-    errors = []
 
     try:
         update_amneziawg(ru_networks)

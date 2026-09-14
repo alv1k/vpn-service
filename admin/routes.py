@@ -18,53 +18,28 @@ from sse_starlette.sse import EventSourceResponse
 # Add project root for imports
 sys.path.insert(0, "/home/alvik/vpn-service")
 
-from awg_api import db as awg_db
-from admin import db as admin_db
-from awg_api.config import (
+from config import (
     MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
 )
+from admin import db as admin_db
+from admin.auth import (
+    _sessions, SESSION_MAX_AGE, _require_admin_session, _ws_authenticate,
+)
+
+try:
+    from awg_api import db as awg_db
+except Exception:
+    awg_db = None
 
 logger = logging.getLogger("admin")
 
-SESSION_MAX_AGE = 604800  # 7 days
 YAKUTSK_TZ = timezone(timedelta(hours=9))
-
-
-def _require_admin_session(request: Request):
-    """Verify connect.sid session cookie — reuses AWG API session store."""
-    from awg_api.main import _sessions
-    token = request.cookies.get("connect.sid")
-    if not token or token not in _sessions:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    from datetime import timezone
-    created = _sessions[token]
-    now = datetime.now(timezone.utc).timestamp()
-    if now - created > SESSION_MAX_AGE:
-        del _sessions[token]
-        raise HTTPException(status_code=401, detail="Session expired")
-    # Sliding window: refresh session on each request
-    _sessions[token] = now
 
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(_require_admin_session)])
 
 # ── WebSocket connections ──────────────────────────────────────────────────────
 _admin_ws_connections: set[WebSocket] = set()
-
-
-async def _ws_authenticate(websocket: WebSocket) -> bool:
-    """Verify session cookie for WebSocket handshake."""
-    from awg_api.main import _sessions
-    cookie = websocket.cookies.get("connect.sid")
-    if not cookie or cookie not in _sessions:
-        return False
-    created = _sessions[cookie]
-    now = datetime.now(timezone.utc).timestamp()
-    if now - created > SESSION_MAX_AGE:
-        del _sessions[cookie]
-        return False
-    _sessions[cookie] = now
-    return True
 
 
 async def _broadcast_ws(msg: dict):
@@ -84,6 +59,7 @@ async def _broadcast_ws(msg: dict):
 
 # XUI client (lazy init)
 _xui = None
+_ru_xui = None
 
 # Speed tracking: {(name, type): {"bytes": int, "ts": float, "speed": float}}
 _prev_traffic: dict[tuple[str, str], dict] = {}
@@ -97,6 +73,19 @@ def _get_xui():
         from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
         _xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
     return _xui
+
+
+def _get_ru_xui():
+    global _ru_xui
+    if _ru_xui is None:
+        try:
+            from bot_xui.utils import XUIClient
+            from config import RU_XUI_HOST, RU_XUI_USERNAME, RU_XUI_PASSWORD
+            if RU_XUI_HOST:
+                _ru_xui = XUIClient(RU_XUI_HOST, RU_XUI_USERNAME, RU_XUI_PASSWORD)
+        except Exception as e:
+            logger.warning(f"Failed to init RU XUI client: {e}")
+    return _ru_xui
 
 
 def _ping_telegram_dc() -> Optional[int]:
@@ -185,7 +174,7 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
     For hysteria _h entries, also tries base vless name as fallback."""
     if not names:
         return {}
-    conn = awg_db._get_conn()
+    conn = admin_db._get_conn()
     cur = conn.cursor(dictionary=True)
     placeholders = ",".join(["%s"] * len(names))
     cur.execute(f"""
@@ -378,6 +367,46 @@ def _get_online_users() -> tuple[list[dict], set]:
             for cs in ib.get("clientStats", []):
                 email = cs.get("email", "")
                 traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
+
+        # Also query RU node inbounds for active connections and traffic
+        ru_xui = _get_ru_xui()
+        if ru_xui:
+            try:
+                ru_inbounds = ru_xui.get_inbounds()
+                ru_now_str = time.strftime("%H:%M:%S")
+                for ib in ru_inbounds:
+                    ib_id = ib.get("id")
+                    ib_tag = ib.get("tag") or f"ru-{ib.get('remark', '')}"
+                    ib_port = ib.get("port") or 0
+                    ib_protocol = ib.get("protocol") or "vless"
+                    ib_remark = ib.get("remark") or "RU-Node"
+                    for cs in ib.get("clientStats", []):
+                        email = cs.get("email", "")
+                        if not email:
+                            continue
+                        # Merge traffic for speed calculation
+                        traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
+                        
+                        last_online = cs.get("lastOnline", 0) or 0
+                        is_enable = cs.get("enable", False)
+                        if is_enable and last_online > cutoff_ms:
+                            is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol.lower()
+                            raw_entries.append({
+                                "name": email,
+                                "ip_count": 1,
+                                "type": "hysteria" if is_hysteria else "vless",
+                                "inbound_id": ib_id,
+                                "inbound_tag": ib_tag,
+                                "inbound_port": ib_port,
+                                "inbound_protocol": ib_protocol,
+                                "inbound_remark": ib_remark,
+                                "is_ru": True,
+                                "last_seen": ru_now_str,
+                                "last_online_ts": last_online / 1000.0,
+                            })
+            except Exception as e:
+                logger.warning(f"RU node inbounds fetch error: {e}")
+
         for e in raw_entries:
             if e["name"] in traffic:
                 proto = "hysteria" if e["name"].endswith("_h") else "vless"
@@ -470,7 +499,7 @@ def _get_online_users() -> tuple[list[dict], set]:
         # Prefer real-time inbound from access log over SQLite config
         email = e["name"]
         log_tags_dict = log_inbounds.get(email, {})
-        if log_tags_dict:
+        if log_tags_dict and not e.get("is_ru"):
             # Sort tags by timestamp ascending (earliest connected first, newer second/third)
             sorted_tags = sorted(log_tags_dict.items(), key=lambda item: item[1])
             for tag, ts in sorted_tags:
@@ -490,7 +519,7 @@ def _get_online_users() -> tuple[list[dict], set]:
                 else:
                     entry["inbounds"].append(info)
         else:
-            inbound_info = {"ts": time.time()}
+            inbound_info = {"ts": e.get("last_online_ts") or time.time()}
             ib_tag = e.get("inbound_tag")
             meta = inbound_map.get(ib_tag, {}) if ib_tag else {}
             if e.get("inbound_id") or meta.get("id"):
@@ -499,11 +528,13 @@ def _get_online_users() -> tuple[list[dict], set]:
                 inbound_info["tag"] = ib_tag
             if e.get("inbound_port") or meta.get("port"):
                 inbound_info["port"] = e.get("inbound_port") or meta.get("port")
-            if meta.get("protocol"):
-                inbound_info["protocol"] = meta.get("protocol")
-            if meta.get("remark"):
-                inbound_info["remark"] = meta.get("remark")
-            if not any(x.get("id") == inbound_info.get("id") and x.get("tag") == inbound_info.get("tag") for x in entry["inbounds"]):
+            if meta.get("protocol") or e.get("inbound_protocol"):
+                inbound_info["protocol"] = meta.get("protocol") or e.get("inbound_protocol")
+            if meta.get("remark") or e.get("inbound_remark"):
+                inbound_info["remark"] = meta.get("remark") or e.get("inbound_remark")
+            if e.get("is_ru"):
+                inbound_info["is_ru"] = True
+            if not any(x.get("id") == inbound_info.get("id") and x.get("port") == inbound_info.get("port") and x.get("tag") == inbound_info.get("tag") for x in entry["inbounds"]):
                 entry["inbounds"].append(inbound_info)
 
         # Sort inbounds list chronologically (first connected ➔ later connected)
@@ -780,7 +811,21 @@ async def offline_users():
             entry["last_seen_ts"] = e.get("last_seen_ts", 0)
             entry["last_seen"] = e.get("last_seen", "")
 
-    offline = list(merged.values())
+    offline = []
+    now_utc = datetime.now(timezone.utc)
+    for u in merged.values():
+        exp_str = u.get("expires")
+        if exp_str:
+            try:
+                # If subscription has expired in the past, do not show in active offline users
+                exp_dt = datetime.fromisoformat(exp_str)
+                if exp_dt.tzinfo is None:
+                    exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                if exp_dt < now_utc:
+                    continue
+            except Exception:
+                pass
+        offline.append(u)
 
     # Sort: most recently seen first, never-seen at the end
     offline.sort(key=lambda u: u.get("last_seen_ts", 0), reverse=True)
@@ -798,7 +843,7 @@ async def speed_users(
     """Per-user traffic summary: protocol, IPs, total traffic over period."""
     _require_admin_session(request)
 
-    conn = awg_db._get_conn()
+    conn = admin_db._get_conn()
     cur = conn.cursor(dictionary=True)
 
     since_dt = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
@@ -894,7 +939,7 @@ async def finance():
     """Server financials: revenue, costs, profitability."""
     from datetime import datetime as dt
 
-    conn = awg_db._get_conn()
+    conn = admin_db._get_conn()
     cur = conn.cursor(dictionary=True)
 
     # Total revenue
@@ -1066,12 +1111,23 @@ async def dashboard():
     except Exception as e:
         logger.warning(f"NL proxy state read error: {e}")
     try:
-        with open("/usr/local/x-ui/bin/config.json", "r") as f:
-            xcfg = json.load(f)
+        xcfg = {}
+        if os.path.exists("/usr/local/x-ui/bin/config.json") and os.access("/usr/local/x-ui/bin/config.json", os.R_OK):
+            with open("/usr/local/x-ui/bin/config.json", "r") as f:
+                xcfg = json.load(f)
+        elif os.path.exists("/etc/x-ui/x-ui.db"):
+            import sqlite3 as _sqlite3
+            with _sqlite3.connect("/etc/x-ui/x-ui.db") as xconn:
+                cur = xconn.cursor()
+                cur.execute("SELECT value FROM settings WHERE key = 'xrayTemplateConfig'")
+                row = cur.fetchone()
+                xcfg = json.loads(row[0]) if row and row[0] else {}
         for rule in xcfg.get("routing", {}).get("rules", []):
             if any(d in rule.get("domain", []) for d in ["youtube.com", "geosite:youtube"]):
-                nl_proxy_routing = rule.get("outboundTag", "unknown")
-                break
+                outbound = rule.get("outboundTag", "")
+                if outbound and outbound not in ("direct", "blocked") and rule.get("enabled", True) is not False:
+                    nl_proxy_routing = outbound
+                    break
         logger.info(f"NL proxy routing from config: {nl_proxy_routing}")
     except Exception as e:
         logger.warning(f"NL proxy config read error: {e}")
@@ -1152,15 +1208,25 @@ async def xui_inbounds():
         inbounds = xui.get_inbounds()
         result = []
         for ib in inbounds:
-            raw_settings = ib.get("settings", "{}")
-            settings = json.loads(raw_settings) if isinstance(raw_settings, str) else raw_settings
-            raw_stream = ib.get("streamSettings", "{}")
-            stream = json.loads(raw_stream) if isinstance(raw_stream, str) else raw_stream
-            clients = settings.get("clients", [])
-            stats = {cs["email"]: cs for cs in ib.get("clientStats", [])}
+            raw_settings = ib.get("settings") or "{}"
+            settings = json.loads(raw_settings) if isinstance(raw_settings, str) else (raw_settings or {})
+            if not isinstance(settings, dict):
+                settings = {}
 
-            total_up = sum(cs.get("up", 0) for cs in ib.get("clientStats", []))
-            total_down = sum(cs.get("down", 0) for cs in ib.get("clientStats", []))
+            raw_stream = ib.get("streamSettings") or "{}"
+            stream = json.loads(raw_stream) if isinstance(raw_stream, str) else (raw_stream or {})
+            if not isinstance(stream, dict):
+                stream = {}
+
+            clients = settings.get("clients", [])
+            client_stats = ib.get("clientStats") or []
+            if not isinstance(client_stats, list):
+                client_stats = []
+
+            stats = {cs["email"]: cs for cs in client_stats if isinstance(cs, dict) and "email" in cs}
+
+            total_up = sum(cs.get("up", 0) for cs in client_stats if isinstance(cs, dict))
+            total_down = sum(cs.get("down", 0) for cs in client_stats if isinstance(cs, dict))
 
             result.append({
                 "id": ib["id"],
@@ -1170,7 +1236,7 @@ async def xui_inbounds():
                 "enable": ib.get("enable"),
                 "network": stream.get("network"),
                 "security": stream.get("security"),
-                "client_count": len(clients),
+                "client_count": len(clients) if isinstance(clients, list) else 0,
                 "traffic_up": total_up,
                 "traffic_up_fmt": _fmt_bytes(total_up),
                 "traffic_down": total_down,
@@ -1190,8 +1256,12 @@ async def xui_inbound_clients(inbound_id: int):
 
         # Build global stats map across ALL inbounds (email -> aggregated stats)
         global_stats: dict[str, dict] = {}
-        for _ib in inbounds:
-            for cs in _ib.get("clientStats", []):
+        for _ib in (inbounds or []):
+            if not isinstance(_ib, dict):
+                continue
+            for cs in (_ib.get("clientStats") or []):
+                if not isinstance(cs, dict):
+                    continue
                 email = cs.get("email", "")
                 if email in global_stats:
                     global_stats[email]["up"] += cs.get("up", 0)
@@ -1218,9 +1288,11 @@ async def xui_inbound_clients(inbound_id: int):
         for ib in inbounds:
             if ib["id"] != inbound_id:
                 continue
-            settings = ib.get("settings", {})
+            settings = ib.get("settings") or {}
             if isinstance(settings, str):
                 settings = json.loads(settings)
+            if not isinstance(settings, dict):
+                settings = {}
             clients = settings.get("clients", [])
 
             # Lookup first_name via vpn_keys → users
@@ -1230,7 +1302,7 @@ async def xui_inbound_clients(inbound_id: int):
             token_map: dict[str, str] = {}  # email -> web_token
             if emails:
                 try:
-                    conn = awg_db._get_conn()
+                    conn = admin_db._get_conn()
                     cur = conn.cursor(dictionary=True)
                     ph = ",".join(["%s"] * len(emails))
                     cur.execute(
@@ -1292,21 +1364,6 @@ async def xui_inbound_clients(inbound_id: int):
     except Exception as e:
         logger.error(f"XUI clients error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-
-
-
-    """Ping Telegram DC2 and return latency in ms."""
-    try:
-        r = subprocess.run(
-            ["ping", "-c", "1", "-W", "2", "149.154.167.51"],
-            capture_output=True, text=True, timeout=5,
-        )
-        match = re.search(r"time=([\d.]+)", r.stdout)
-        if match:
-            return round(float(match.group(1)), 1)
-    except Exception:
-        pass
-    return None
 
 
 def _parse_mtg_metrics() -> dict:
@@ -1396,7 +1453,7 @@ async def users_today():
     if not tg_ids and not user_ids:
         return cleaned
 
-    conn = awg_db._get_conn()
+    conn = admin_db._get_conn()
     cur = conn.cursor(dictionary=True)
     conditions = []
     params: list = []
@@ -1790,16 +1847,16 @@ async def user_delete(tg_id: int, request: Request):
     except Exception as e:
         logger.warning(f"XUI SQLite deletion error: {e}")
 
-    # 3. Delete from AWG
+    # 3. Delete from AWG (if legacy awg_api is configured)
     try:
-        from awg_api import awg_manager
+        from awg_api import awg_manager, db as awg_db
         if awg_db.delete_client_by_name(client_name):
             del_result["awg_clients"] = 1
             awg_manager.write_server_conf()
             if awg_manager.is_interface_up():
                 awg_manager.reload_interface()
     except Exception as e:
-        logger.warning(f"AWG deletion error for {client_name}: {e}")
+        logger.debug(f"AWG legacy deletion skipped or failed for {client_name}: {e}")
 
     # 4. Create x-ui backup before DB deletion
     backup_path = None
@@ -2168,7 +2225,7 @@ def get_admin_page_route():
         # nginx auth_basic already protects this path — skip session check
         # Pre-create a session cookie so JS doesn't need the API password
         import secrets as _secrets
-        from awg_api.main import _sessions, SESSION_MAX_AGE
+        from admin.auth import _sessions, SESSION_MAX_AGE
 
         html_path = os.path.join(os.path.dirname(__file__), "static", "admin.html")
         with open(html_path) as f:

@@ -36,14 +36,59 @@ _CACHE_LOCK = asyncio.Lock()
 
 import json
 import urllib.parse
+from pathlib import Path
+
+
+def _get_active_sni(inbound_key: str = "1") -> str:
+    """Возвращает текущий активный и проверенный SNI для конкретного инбаунда."""
+    defaults = {
+        "1": "tile.openstreetmap.org",
+        "2": "www.speedtest.net",
+        "14": "www.speedtest.net",
+    }
+    try:
+        state_file = Path(__file__).resolve().parent.parent / "data" / "active_sni.json"
+        if state_file.exists():
+            with open(state_file, "r", encoding="utf-8") as sf:
+                data = json.load(sf)
+                return data.get(f"active_sni_{inbound_key}") or defaults.get(inbound_key, "tile.openstreetmap.org")
+    except Exception:
+        pass
+    return defaults.get(inbound_key, "tile.openstreetmap.org")
+
+
+def _get_active_reality_sni() -> str:
+    return _get_active_sni("1")
 
 
 def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
-    """Конвертирует vless:// URI в outbound объект sing-box."""
+    """Конвертирует vless:// или hysteria2:// URI в outbound объект sing-box."""
     try:
         if '#' in vless_link:
             vless_link = vless_link.split('#')[0]
         parsed = urllib.parse.urlparse(vless_link)
+        
+        if parsed.scheme in ("hysteria2", "hy2"):
+            user_host_port = parsed.netloc
+            auth, host_port = user_host_port.split('@', 1) if '@' in user_host_port else ('', user_host_port)
+            server, port_str = host_port.rsplit(':', 1) if ':' in host_port else (host_port, '443')
+            params = dict(urllib.parse.parse_qsl(parsed.query))
+            sni = params.get('sni', server)
+            insecure = params.get('insecure', '0') == '1'
+            return {
+                "type": "hysteria2",
+                "tag": remark or "Hysteria2",
+                "server": server,
+                "server_port": int(port_str),
+                "password": auth,
+                "tls": {
+                    "enabled": True,
+                    "server_name": sni,
+                    "insecure": insecure,
+                    "alpn": ["h3"]
+                }
+            }
+
         if parsed.scheme != "vless":
             return None
         user_host_port = parsed.netloc
@@ -121,22 +166,46 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
         outbounds.append({"type": "direct", "tag": "direct"})
         outbound_tags.append("direct")
 
-    default_proxy = outbound_tags[0]
+    # Создаем группы отказоустойчивости и выбора
+    proxy_groups = []
+    if len(outbound_tags) > 1:
+        auto_group_tag = "⚡ Автовыбор узла"
+        manual_group_tag = "🎯 Выбор сервера вручную"
+        auto_outbound = {
+            "type": "urltest",
+            "tag": auto_group_tag,
+            "outbounds": list(outbound_tags),
+            "url": "https://www.gstatic.com/generate_204",
+            "interval": "2m",
+            "tolerance": 100,
+            "idle_timeout": "30m",
+        }
+        select_outbound = {
+            "type": "selector",
+            "tag": manual_group_tag,
+            "outbounds": [auto_group_tag] + list(outbound_tags),
+            "default": auto_group_tag,
+        }
+        proxy_groups.extend([select_outbound, auto_outbound])
+        default_proxy = manual_group_tag
+    else:
+        default_proxy = outbound_tags[0]
 
     # Системные аутбаунды
-    outbounds.append({"type": "direct", "tag": "direct"})
-    outbounds.append({"type": "block", "tag": "block"})
-    outbounds.append({"type": "dns", "tag": "dns-out"})
+    all_outbounds = proxy_groups + outbounds + [
+        {"type": "direct", "tag": "direct"},
+        {"type": "block", "tag": "block"},
+        {"type": "dns", "tag": "dns-out"},
+    ]
 
     return {
         "dns": {
             "servers": [
                 {"tag": "dns-remote", "address": "8.8.8.8", "detour": default_proxy},
-                {"tag": "dns-direct", "address": "77.88.8.1", "detour": "direct"},
+                {"tag": "dns-direct", "address": "77.88.8.8", "detour": "direct"},
             ],
             "rules": [
-                {"geosite": ["ru", "category-gov-ru"], "server": "dns-direct"},
-                {"geoip": ["ru"], "server": "dns-direct"},
+                {"geosite": ["category-ru", "category-gov-ru", "mailru", "vk"], "server": "dns-direct"},
             ],
             "final": "dns-remote",
         },
@@ -150,14 +219,13 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
                 "sniff": True,
             }
         ],
-        "outbounds": outbounds,
+        "outbounds": all_outbounds,
         "route": {
             "rules": [
                 {"protocol": "dns", "outbound": "dns-out"},
                 {"ip_is_private": True, "outbound": "direct"},
-                {"geosite": ["ru", "category-gov-ru", "yandex"], "outbound": "direct"},
+                {"geosite": ["category-ru", "category-gov-ru", "mailru", "vk"], "outbound": "direct"},
                 {"geoip": ["ru"], "outbound": "direct"},
-                {"domain_suffix": [".ru", ".xn--p1ai", ".su"], "outbound": "direct"},
             ],
             "final": default_proxy,
             "auto_detect_interface": True,
@@ -168,19 +236,24 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
 def _build_headers(expires_at: datetime | None, is_json: bool = False) -> dict[str, str]:
     expire_ts = int(expires_at.timestamp()) if expires_at else 0
     now_dt = datetime.utcnow()
-    days_left = (expires_at - now_dt).days if expires_at and expires_at > now_dt else 0
     
-    if days_left > 7:
-        status_emoji = "✅"
-    elif days_left >= 1:
-        status_emoji = "⚠️"
-    else:
-        status_emoji = "❌"
-
-    if expires_at:
-        title = f"🐿 TIIN  {status_emoji} {days_left}д"
-    else:
+    if not expires_at:
         title = "🐿 TIIN"
+    elif expires_at <= now_dt:
+        title = "🐿 TIIN  ❌ Истекла"
+    else:
+        seconds_left = (expires_at - now_dt).total_seconds()
+        days_left = int(seconds_left // 86400)
+        hours_left = int(seconds_left // 3600)
+        
+        if days_left > 7:
+            status_tag = f"✅ {days_left}д"
+        elif days_left >= 1:
+            status_tag = f"⚠️ {days_left}д"
+        else:
+            status_tag = f"⏳ Сегодня ({hours_left}ч)" if hours_left > 0 else "⏳ Заканчивается"
+        
+        title = f"🐿 TIIN  {status_tag}"
 
     title_b64 = base64.b64encode(title.encode("utf-8")).decode("ascii")
     content_type = "application/json; charset=utf-8" if is_json else "text/plain; charset=utf-8"
@@ -248,8 +321,8 @@ async def go_happ_redirect(token: str, request: Request = None):
         user_agent=ua,
     )
 
-    xui_url = key["subscription_link"]
-    happ_link = f"happ://add/{xui_url}"
+    sub_url = f"https://344988.snk.wtf/sub/{token}"
+    happ_link = f"happ://add/{sub_url}"
 
     return f"""<!DOCTYPE html>
 <html><head>
@@ -270,15 +343,15 @@ async def go_happ_redirect(token: str, request: Request = None):
   <p>Нажмите кнопку, чтобы открыть подписку в приложении:</p>
   <a class="btn" href="{happ_link}">⚡ Открыть в Happ</a>
   <p class="note">Если кнопка не сработала — скопируйте ссылку подписки в Happ вручную:<br>
-  <code style="word-break:break-all;font-size:12px">{xui_url}</code></p>
+  <code style="word-break:break-all;font-size:12px">{sub_url}</code></p>
 </div>
 <script>window.location.href="{happ_link}"</script>
 </body></html>"""
 
 
-@sub_router.get("/go-shadowrocket/{token}", response_class=HTMLResponse)
-async def go_shadowrocket_redirect(token: str, request: Request = None):
-    """Redirect to shadowrocket:// deep link for Telegram buttons."""
+@sub_router.get("/go-connect/{token}", response_class=HTMLResponse)
+async def go_connect_smart_redirect(token: str, request: Request = None):
+    """Универсальная страница быстрого подключения и импорта в 1 клик для всех ОС."""
     user = get_user_by_web_token(token)
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
@@ -287,44 +360,230 @@ async def go_shadowrocket_redirect(token: str, request: Request = None):
     if not key:
         raise HTTPException(status_code=404, detail="No active subscription")
 
-    ua = request.headers.get("user-agent") if request else None
+    ua = request.headers.get("user-agent", "") if request else ""
     platform, _, ver = detect_platform(ua)
-    if platform == 'unknown':
-        platform = 'ios'
     log_user_platform(
         tg_id=user.get("tg_id"), user_id=user.get("id"),
-        platform=platform, client_app='Shadowrocket', client_version=ver,
+        platform=platform, client_app="SmartConnect", client_version=ver,
         user_agent=ua,
     )
 
-    xui_url = key["subscription_link"]
+    # Используем ссылку подписки из Личного кабинета (через наш прокси со всеми шлюзами и SNI)
+    sub_url = f"https://344988.snk.wtf/sub/{token}"
     import base64
-    b64_url = base64.urlsafe_b64encode(xui_url.encode()).decode().rstrip("=")
+    b64_url = base64.urlsafe_b64encode(sub_url.encode()).decode().rstrip("=")
+    
+    happ_link = f"happ://add/{sub_url}"
+    streisand_link = f"streisand://import/{sub_url}"
+    v2rayng_link = f"v2rayng://install-config?url={urllib.parse.quote(sub_url, safe='')}"
     shadowrocket_link = f"shadowrocket://add/sub://{b64_url}"
+    singbox_link = f"sing-box://import-remote-profile?url={urllib.parse.quote(sub_url, safe='')}#%F0%9F%90%BF%20TIIN%20VPN"
+    cabinet_link = f"https://344988.snk.wtf/my/{token}"
 
     return f"""<!DOCTYPE html>
-<html><head>
+<html lang="ru">
+<head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Открыть в Shadowrocket</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Подключение • тииҥ VPN 🐿</title>
 <style>
-  body{{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;
-        align-items:center;min-height:100vh;margin:0;background:#0a0a0a;color:#fff;text-align:center}}
-  .c{{padding:2rem}}
-  .btn{{display:inline-block;padding:16px 32px;background:#007aff;color:white;
-        border-radius:12px;text-decoration:none;font-size:18px;margin-top:1rem}}
-  .note{{color:#888;font-size:14px;margin-top:1rem}}
+  :root {{
+    --bg: #0d0f17;
+    --card-bg: rgba(26, 31, 46, 0.85);
+    --border: rgba(255, 255, 255, 0.08);
+    --accent: #6366f1;
+    --accent-hover: #4f46e5;
+    --text-main: #f8fafc;
+    --text-muted: #94a3b8;
+    --radius: 16px;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+  body {{
+    background: radial-gradient(circle at 50% 0%, #1e1e38 0%, var(--bg) 70%);
+    color: var(--text-main);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px 16px;
+  }}
+  .card {{
+    background: var(--card-bg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 32px 24px;
+    width: 100%;
+    max-width: 440px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    text-align: center;
+  }}
+  .badge {{
+    display: inline-block;
+    padding: 4px 12px;
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    color: #a5b4fc;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 99px;
+    margin-bottom: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }}
+  h1 {{ font-size: 22px; font-weight: 700; margin-bottom: 8px; color: #fff; }}
+  p.subtitle {{ font-size: 14px; color: var(--text-muted); margin-bottom: 24px; line-height: 1.5; }}
+  .btn-group {{ display: flex; flex-direction: column; gap: 12px; }}
+  .btn {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 14px 18px;
+    border-radius: var(--radius);
+    text-decoration: none;
+    font-size: 15px;
+    font-weight: 600;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    border: none;
+  }}
+  .btn-primary {{
+    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+  }}
+  .btn-primary:active {{ transform: scale(0.98); opacity: 0.9; }}
+  .btn-secondary {{
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    color: var(--text-main);
+  }}
+  .btn-secondary:active {{ background: rgba(255, 255, 255, 0.1); }}
+  .divider {{
+    display: flex;
+    align-items: center;
+    margin: 20px 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }}
+  .divider::before, .divider::after {{ content: ''; flex: 1; height: 1px; background: var(--border); }}
+  .divider span {{ padding: 0 10px; }}
+  .sub-box {{
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    margin-top: 14px;
+    text-align: left;
+  }}
+  .sub-box-title {{ font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }}
+  .sub-url-row {{ display: flex; gap: 8px; align-items: center; }}
+  .sub-url {{
+    font-family: monospace;
+    font-size: 11px;
+    color: #cbd5e1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    user-select: all;
+  }}
+  .btn-copy {{
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+  }}
+  .footer-link {{
+    margin-top: 20px;
+    display: inline-block;
+    color: #818cf8;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+  }}
+  .footer-link:hover {{ text-decoration: underline; }}
+  .ios-only, .android-only, .pc-only {{ display: none; }}
 </style>
-</head><body>
-<div class="c">
-  <h2>Открыть в Shadowrocket</h2>
-  <p>Нажмите кнопку, чтобы открыть подписку в приложении:</p>
-  <a class="btn" href="{shadowrocket_link}">🚀 Открыть в Shadowrocket</a>
-  <p class="note">Если кнопка не сработала — скопируйте ссылку подписки в Shadowrocket вручную:<br>
-  <code style="word-break:break-all;font-size:12px">{xui_url}</code></p>
+</head>
+<body>
+<div class="card">
+  <div class="badge">🚀 Быстрый старт в 1 клик</div>
+  <h1>Подключение к тииҥ VPN</h1>
+  <p class="subtitle">Нажмите кнопку установленного у вас приложения — настройки подтянутся автоматически:</p>
+
+  <div class="btn-group">
+    <!-- Кнопки приложений -->
+    <a class="btn btn-primary" href="{happ_link}">
+      <span>⚡</span> Открыть в Happ Proxy
+    </a>
+    
+    <a class="btn btn-secondary" id="btn-streisand" href="{streisand_link}">
+      <span>🛡️</span> Открыть в Streisand
+    </a>
+    
+    <a class="btn btn-secondary" id="btn-v2rayng" href="{v2rayng_link}">
+      <span>🤖</span> Открыть в v2rayNG
+    </a>
+
+    <a class="btn btn-secondary" id="btn-shadowrocket" href="{shadowrocket_link}">
+      <span>🚀</span> Открыть в Shadowrocket
+    </a>
+  </div>
+
+  <div class="divider"><span>или скопируйте ссылку</span></div>
+
+  <div class="sub-box">
+    <div class="sub-box-title">Прямая ссылка подписки:</div>
+    <div class="sub-url-row">
+      <div class="sub-url" id="subUrlText">{sub_url}</div>
+      <button class="btn-copy" onclick="copySub()">Копировать</button>
+    </div>
+  </div>
+
+  <div>
+    <a class="footer-link" href="{cabinet_link}">📖 Открыть подробную инструкцию и QR-код</a>
+  </div>
 </div>
-<script>window.location.href="{shadowrocket_link}"</script>
-</body></html>"""
+
+<script>
+function copySub() {{
+  const text = document.getElementById('subUrlText').innerText;
+  navigator.clipboard.writeText(text).then(() => {{
+    const btn = event.target;
+    const old = btn.innerText;
+    btn.innerText = 'Скопировано!';
+    btn.style.background = '#10b981';
+    btn.style.borderColor = '#10b981';
+    setTimeout(() => {{
+      btn.innerText = old;
+      btn.style.background = '';
+      btn.style.borderColor = '';
+    }}, 2000);
+  }}).catch(() => {{
+    alert('Ссылка: ' + text);
+  }});
+}}
+
+// Попытка авто-редиректа на Happ (если поддерживается)
+window.addEventListener('load', () => {{
+  const ua = navigator.userAgent.toLowerCase();
+  const isIOS = /iphone|ipad|ipod/.test(ua);
+  const isAndroid = /android/.test(ua);
+}});
+</script>
+</body>
+</html>"""
+
 
 
 @sub_router.get("/sub/{token}")
@@ -413,47 +672,116 @@ async def proxy_subscription(token: str, request: Request = None):
             else:
                 base_link = line
 
-            if line.startswith("hysteria2://") or line.startswith("hysteria://"):
-                if ":35443" in line:
-                    remark = "🚀 Hysteria2 • Armor-M1"
-                elif ":4443" in line:
-                    remark = "🚀 Hysteria2 • Turbo"
-                else:
-                    remark = "🚀 Hysteria2"
-            elif line.startswith("tuic://"):
-                remark = "🌐 TUIC"
-            elif line.startswith("ss://"):
-                remark = "🛡 Shadowsocks"
-            elif "type=grpc" in line:
-                remark = "🟣 VLESS • gRPC"
-            elif ":8081" in line or "x_padding_bytes=100-1000" in line or "amd.com" in line:
-                remark = "🛡 Anti-DPI • Enhanced"
+            # Исключаем нерабочие/отключенные узлы по запросу
+            if "type=ws" in line or ":14715" in line:
+                continue  # WebSocket • MUX
             elif ":48745" in line or ("type=xhttp" in line and "update.microsoft.com" in line):
-                remark = "🛡️ xHTTP • Armor-M1"
-            elif ":38745" in line or ("type=xhttp" in line and "microsoft.com" in line):
-                remark = "🛡️ xHTTP • Ultra"
-            elif ":47447" in line or ("type=xhttp" in line and ("nvidia.com" in line or "samsung.com" in line)):
-                remark = "🟠 xHTTP • Stream"
-            elif ":28745" in line or ("type=xhttp" in line and "google.com" in line):
-                remark = "🟠 xHTTP • Standard"
-            elif "type=xhttp" in line:
-                remark = "🟠 xHTTP"
-            elif "type=ws" in line or ":14715" in line:
-                remark = "⚡ WebSocket • MUX"
-                if "mux=" not in base_link:
-                    join_char = "&" if "?" in base_link else "?"
-                    base_link = f"{base_link}{join_char}mux=8"
+                continue  # xHTTP • Armor-M1
             elif ":53151" in line or ("security=reality" in line and "amazon.com" in line):
-                remark = "🟢 Reality • Standard"
-            elif ":7443" in line or ("security=reality" in line and "apple.com" in line):
-                remark = "🟢 Reality • Main"
+                continue  # Reality • Standard
+
+            if ":7443" in line:
+                active_sni = _get_active_reality_sni()
+                if "sni=" in base_link:
+                    import re
+                    base_link = re.sub(r'sni=[^&]+', f'sni={active_sni}', base_link)
+                else:
+                    base_link = f"{base_link}&sni={active_sni}"
+                remark = "🇩🇪 👁️ Reality • Vision (TCP)"
+            elif line.startswith("hysteria2://") or line.startswith("hysteria://"):
+                if ":35443" in line:
+                    remark = "🇩🇪 ⚔️ Hysteria2 • Armor-M1"
+                elif ":4443" in line:
+                    remark = "🇩🇪 🚀 Hysteria2 • Turbo"
+                else:
+                    remark = "🇩🇪 🚀 Hysteria2"
+            elif line.startswith("tuic://"):
+                remark = "🇩🇪 🌐 TUIC"
+            elif line.startswith("ss://"):
+                remark = "🇩🇪 🛡️ Shadowsocks"
+            elif "type=grpc" in line:
+                remark = "🇩🇪 🟣 VLESS • gRPC"
+            elif ":8081" in line or "x_padding_bytes=100-1000" in line or "amd.com" in line:
+                remark = "🇩🇪 🛡️ Anti-DPI • Enhanced"
+            elif ":47447" in line or ("type=xhttp" in line and ("nvidia.com" in line or "samsung.com" in line)):
+                active_sni_2 = _get_active_sni("2")
+                import re
+                if "sni=" in base_link:
+                    base_link = re.sub(r'sni=[^&]+', f'sni={active_sni_2}', base_link)
+                else:
+                    base_link = f"{base_link}&sni={active_sni_2}"
+                if "host=" in base_link:
+                    base_link = re.sub(r'host=[^&]+', f'host={active_sni_2}', base_link)
+                else:
+                    base_link = f"{base_link}&host={active_sni_2}"
+                # Сброс несовместимого flow и post-quantum encryption
+                base_link = re.sub(r'flow=[^&]+&?', '', base_link)
+                base_link = re.sub(r'encryption=[^&]+', 'encryption=none', base_link)
+                base_link = base_link.rstrip('?&')
+                remark = "🇩🇪 🌊 xHTTP • Stream"
+            elif ":38745" in line or ("type=xhttp" in line and "microsoft.com" in line):
+                active_sni_14 = _get_active_sni("14")
+                import re
+                if "sni=" in base_link:
+                    base_link = re.sub(r'sni=[^&]+', f'sni={active_sni_14}', base_link)
+                else:
+                    base_link = f"{base_link}&sni={active_sni_14}"
+                if "host=" in base_link:
+                    base_link = re.sub(r'host=[^&]+', f'host={active_sni_14}', base_link)
+                else:
+                    base_link = f"{base_link}&host={active_sni_14}"
+                base_link = re.sub(r'flow=[^&]+&?', '', base_link)
+                base_link = re.sub(r'encryption=[^&]+', 'encryption=none', base_link)
+                base_link = base_link.rstrip('?&')
+                remark = "🇩🇪 💎 xHTTP • Ultra"
+            elif ":28745" in line or ("type=xhttp" in line and "google.com" in line):
+                remark = "🇩🇪 🟠 xHTTP • Standard"
+            elif "type=xhttp" in line:
+                remark = "🇩🇪 🟠 xHTTP"
             elif "security=reality" in line:
-                remark = "🟢 Reality"
+                remark = "🇩🇪 👁️ Reality"
             else:
-                remark = "🟢 TCP"
+                remark = "🇩🇪 🟢 TCP"
 
             new_lines.append(f"{base_link}#{remark}")
             vless_entries.append((base_link, remark))
+
+        # Сортируем немецкие серверы по надежности: xHTTP Ultra -> Hysteria2 -> Reality
+        def _server_sort_key(entry):
+            _, remark = entry
+            if "xHTTP • Ultra" in remark: return 1
+            if "Hysteria2 • Armor" in remark: return 2
+            if "Reality • Vision" in remark: return 3
+            return 10
+        vless_entries.sort(key=_server_sort_key)
+        new_lines = [f"{link}#{remark}" for link, remark in vless_entries]
+
+        # Добавляем Российский шлюз (СПб ➔ Германия) для всех пользователей
+        client_uuid = key.get("client_id")
+        if client_uuid:
+            # Извлекаем точный auth/password для Hysteria из оригинальной подписки
+            real_hy2_auth = None
+            for v_link, _ in vless_entries:
+                if v_link.startswith("hysteria2://") or v_link.startswith("hy2://"):
+                    try:
+                        import urllib.parse
+                        p = urllib.parse.urlparse(v_link)
+                        real_hy2_auth = p.netloc.split('@')[0]
+                        if real_hy2_auth:
+                            break
+                    except Exception:
+                        pass
+            
+            client_auth = real_hy2_auth or client_uuid.replace('-', '')
+            ru_hy2_link = f"hysteria2://{client_auth}@ru-server.tiinservice.online:35443?alpn=h3&fp=chrome&security=tls&sni=ru-server.tiinservice.online"
+            ru_hy2_remark = "🇷🇺 ⚡ Hysteria2 • Шлюз (РФ ➔ DE)"
+            new_lines.insert(0, f"{ru_hy2_link}#{ru_hy2_remark}")
+            vless_entries.insert(0, (ru_hy2_link, ru_hy2_remark))
+
+            ru_vless_link = f"vless://{client_uuid}@ru-server.tiinservice.online:8443?type=ws&security=tls&sni=ru-server.tiinservice.online&path=%2Fapi%2Fv1%2Fws"
+            ru_vless_remark = "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
+            new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
+            vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
 
         if wants_singbox:
             singbox_cfg = _build_singbox_config(vless_entries)

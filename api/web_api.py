@@ -422,7 +422,6 @@ async def test_extend(req: TestExtendRequest):
         logger.warning(f"Failed to update XUI expiry: {e}")
 
     # Update vpn_keys expires_at
-    from api.db import execute_query
     execute_query(
         "UPDATE vpn_keys SET expires_at = %s WHERE user_id = %s AND vpn_type = 'vless'",
         (new_until, user["id"]),
