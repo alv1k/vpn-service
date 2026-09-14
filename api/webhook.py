@@ -39,7 +39,6 @@ from api.db import (
     get_user_by_web_token,
     sync_expiry,
 )
-from api.wireguard import AmneziaWGClient
 from bot_xui.tariffs import TARIFFS
 from bot_xui.utils import XUIClient, generate_hysteria2_link
 
@@ -232,7 +231,13 @@ async def amnezia_get_config(client: httpx.AsyncClient, client_id: str) -> str:
     return r.text
 
 def deactivate_xui_client(client_name: str) -> bool:
-    """Деактивирует клиента в 3x-ui по email (client_name)."""
+    """Деактивирует клиента в 3x-ui по email (client_name) на основном сервере и на RU-ноде."""
+    try:
+        from bot_xui.multi_node import deactivate_ru_client
+        deactivate_ru_client(client_name)
+    except Exception as e:
+        logger.warning(f"Failed to deactivate client on RU node: {e}")
+
     try:
         xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
         info = xui.get_client_by_email(client_name)
@@ -260,7 +265,7 @@ def get_subid_from_xui_db(client_email: str) -> str | None:
         return None
 
 async def process_refund(payment_id: str) -> bool:
-    """Деактивирует VPN конфиг при возврате платежа"""
+    """Деактивирует VPN конфиг (3x-ui + AWG) при возврате платежа"""
     try:
         payment_data = get_payment_by_id(payment_id)
         if not payment_data:
@@ -274,13 +279,36 @@ async def process_refund(payment_id: str) -> bool:
             logger.error(f"No client_name for refund: {payment_id}")
             return False
 
-        # Деактивируем в XUI
+        # 1. Деактивируем в 3x-ui (Main + RU node)
         xui_success = deactivate_xui_client(client_name)
         if not xui_success:
             logger.error(f"Failed to deactivate XUI client: {client_name}")
             return False
 
-        # Деактивируем в БД
+        # 2. Деактивируем AWG, если есть
+        try:
+            from awg_api import db as awg_db
+            from awg_api import awg_manager
+            awg_keys = execute_query(
+                "SELECT client_id, client_name FROM vpn_keys WHERE (tg_id = %s OR payment_id = %s) AND vpn_type = 'awg'",
+                (tg_id, payment_id),
+                fetch="all",
+            ) or []
+            awg_changed = False
+            for k in awg_keys:
+                c_id = k.get("client_id")
+                if c_id:
+                    awg_db.update_client_enabled(c_id, False)
+                    logger.info(f"🔴 AWG disabled on refund: {k.get('client_name')} ({c_id})")
+                    awg_changed = True
+            if awg_changed:
+                awg_manager.write_server_conf()
+                if awg_manager.is_interface_up():
+                    awg_manager.reload_interface()
+        except Exception as e:
+            logger.error(f"Failed to deactivate AWG on refund: {e}")
+
+        # 3. Деактивируем в БД
         deactivate_key_by_payment(payment_id)
 
         logger.info(f"Refund processed: {payment_id}, client: {client_name}")
@@ -578,6 +606,20 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                         headers={"Content-Type": "application/json"}
                     )
                     logger.info(f"Re-synced 3x-ui expiry to {subscription_until}")
+
+                    # Sync to RU Node as well
+                    try:
+                        from bot_xui.multi_node import sync_client_to_ru_node
+                        sync_client_to_ru_node(
+                            email=email,
+                            expiry_ms=sub_until_ms,
+                            enable=True,
+                            tg_id=tg_id,
+                            uuid_str=client_id,
+                            sub_id=existing_xui['client'].get('subId'),
+                        )
+                    except Exception as ru_err:
+                        logger.warning(f"Failed to sync client to RU node during payment: {ru_err}")
 
         # ===== 7. Сохранение в БД (UPSERT: обновляем существующий ключ или создаём новый) =====
         upsert_vpn_key(

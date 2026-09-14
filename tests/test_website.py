@@ -204,3 +204,57 @@ def test_send_code_rate_limited(mock_code, client):
         "email": "user@example.com",
     })
     assert response.status_code == 429
+
+
+# ─────────────────────────────────────────────
+#  Test subscription extend (/test/extend)
+# ─────────────────────────────────────────────
+
+@patch("api.web_api.execute_query")
+def test_extend_user_not_found_by_email(mock_exec, client):
+    """Продление по email: пользователь не найден -> 404."""
+    mock_exec.return_value = None
+    response = client.post("/api/web/test/extend", json={
+        "email": "notfound@example.com",
+    })
+    assert response.status_code == 404
+
+
+@patch("api.web_api.execute_query")
+def test_extend_not_activated(mock_exec, client):
+    """Продление по email: тест не был активирован -> ok=False."""
+    mock_exec.return_value = {
+        "id": 10,
+        "web_token": "tok-123",
+        "subscription_until": None,
+        "test_vless_activated": 0,
+    }
+    response = client.post("/api/web/test/extend", json={
+        "email": "user@example.com",
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is False
+    assert "не была активирована" in data["message"]
+
+
+@patch("api.notifications.send_test_extended_email")
+@patch("api.db.update_user_subscription_by_id")
+@patch("api.web_api.execute_query")
+def test_extend_success_by_email(mock_exec, mock_update, mock_email, client):
+    """Продление по email успешно без UnboundLocalError."""
+    mock_exec.return_value = {
+        "id": 10,
+        "web_token": "tok-123",
+        "subscription_until": None,
+        "test_vless_activated": 1,
+    }
+    response = client.post("/api/web/test/extend", json={
+        "email": "user@example.com",
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert "продлена" in data["message"]
+    mock_update.assert_called_once()
+

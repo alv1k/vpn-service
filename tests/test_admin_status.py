@@ -3,11 +3,10 @@ from unittest.mock import patch, MagicMock
 from admin.routes import _get_online_users
 
 # Mocking the dependencies for `offline_users`
-@patch("admin.routes.awg_db")
 @patch("admin.routes.admin_db")
 @patch("admin.routes.subprocess")
 @patch("admin.routes.time")
-def test_offline_user_filtering(mock_time, mock_subprocess, mock_admin_db, mock_awg_db):
+def test_offline_user_filtering(mock_time, mock_subprocess, mock_admin_db):
     """
     Test that offline_users correctly filters out users present in online_identities.
     """

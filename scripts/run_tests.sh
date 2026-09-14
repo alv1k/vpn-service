@@ -16,66 +16,31 @@ send_tg() {
         -d parse_mode="HTML" > /dev/null 2>&1
 }
 
-TEST_SUITES=(
-    "tests/test_db.py|DB"
-    "tests/test_payments.py|Payments"
-    "tests/test_promocodes.py|Promocodes"
-    "tests/test_referrals.py|Referrals"
-    "tests/test_subscriptions.py|Subscriptions"
-    "tests/test_webhook.py|Webhook"
-    "tests/test_awg.py|AWG"
-    "tests/test_website.py|Website"
-    "tests/test_notifications.py|Notifications"
-    "tests/test_helpers.py|Helpers"
-    "tests/test_utils.py|Utils"
-    "tests/test_tariffs.py|Tariffs"
-    "tests/test_awg_manager.py|AWG-Manager"
-    "tests/test_payment.py|Payment"
-    "tests/test_registration.py|Registration"
-    "tests/test_web_portal.py|Web-Portal"
-    "tests/test_web_referrals.py|Web-Referrals"
-    "tests/test_session.py|Session"
-    "tests/test_trial_activation.py|Trial-Activation"
-    "tests/test_security.py|Security"
-    "tests/test_autopay.py|Autopay"
-    "tests/test_vpn_factory.py|VPN-Factory"
-    "tests/test_refund.py|Refund"
-    "tests/test_create_order.py|Create-Order"
-    "tests/test_messaging.py|Messaging"
-    "tests/test_views.py|Views"
-    "tests/test_sharing_monitor.py|Sharing-Monitor"
-    "tests/test_bot_handler.py|Bot-Handler"
-)
+# 1. Run all tests in a single process using venv pytest
+START_TIME=$(date +%s)
+OUTPUT=$(venv/bin/pytest tests/ -v --tb=short 2>&1)
+RC=$?
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
 
-ALL_OK=1
-REPORT=""
+# Extract summary line (e.g., "485 passed, 15 warnings in 4.78s" or "1 error in 0.88s")
+SUMMARY=$(echo "$OUTPUT" | grep -E "^=.*(passed|failed|error)" | tail -1 | sed 's/=/ /g' | xargs)
+[ -z "$SUMMARY" ] && SUMMARY="Exit code $RC"
 
-for entry in "${TEST_SUITES[@]}"; do
-    FILE="${entry%%|*}"
-    LABEL="${entry##*|}"
-
-    OUTPUT=$(python3 -m pytest "$FILE" -v 2>&1)
-    RC=$?
-    SUMMARY=$(echo "$OUTPUT" | tail -1)
-
-    if [ $RC -eq 0 ]; then
-        REPORT+="✅ <b>${LABEL}</b>: ${SUMMARY}
-"
-    else
-        ALL_OK=0
-        FAILURES=$(echo "$OUTPUT" | grep "FAILED" | head -5)
-        REPORT+="❌ <b>${LABEL}</b>: ${SUMMARY}
-<pre>${FAILURES}</pre>
-"
-    fi
-done
-
-if [ $ALL_OK -eq 1 ]; then
-    HEADER="✅ All tests OK"
+if [ $RC -eq 0 ]; then
+    HEADER="✅ <b>All tests OK</b> (${DURATION}s)"
+    MSG="<b>${HEADER}</b> — ${TIMESTAMP}
+📊 <code>${SUMMARY}</code>"
 else
-    HEADER="❌ Some tests FAILED"
+    HEADER="❌ <b>Tests FAILED</b> (${DURATION}s)"
+    FAILURES=$(echo "$OUTPUT" | grep -E "(FAILED|ERROR) tests/" | head -10)
+    [ -z "$FAILURES" ] && FAILURES=$(echo "$OUTPUT" | tail -10)
+    MSG="<b>${HEADER}</b> — ${TIMESTAMP}
+📊 <code>${SUMMARY}</code>
+
+<b>Failures:</b>
+<pre>${FAILURES}</pre>"
 fi
 
-send_tg "<b>${HEADER}</b> — ${TIMESTAMP}
+send_tg "${MSG}"
 
-${REPORT}"

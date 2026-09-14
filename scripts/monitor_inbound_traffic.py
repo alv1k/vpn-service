@@ -61,6 +61,22 @@ def collect_and_store():
         except Exception as e:
             logging.error(f"Error reading awg0 stats: {e}")
 
+    # 3. Получаем статистику с РУ-сервера (Selectel) через постоянный мультиплексированный канал
+    try:
+        import subprocess, json
+        cmd = ["ssh", "-o", "ConnectTimeout=4", "ru-server", "python3 -c \"import sqlite3, json; conn=sqlite3.connect('/etc/x-ui/x-ui.db'); print(json.dumps([(r[0], r[1], r[2], r[3], r[4], r[5]) for r in conn.cursor().execute('SELECT id, remark, port, protocol, up, down FROM inbounds WHERE enable = 1').fetchall()]))\""]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=6)
+        if res.returncode == 0 and res.stdout.strip():
+            ru_inbounds = json.loads(res.stdout.strip())
+            for r in ru_inbounds:
+                ru_id, ru_remark, ru_port, ru_proto, ru_up, ru_down = r
+                # Маппим виртуальные ID 200+
+                mapped_id = 200 + int(ru_id)
+                mapped_remark = f"🇷🇺 {ru_remark}" if not ru_remark.startswith("🇷🇺") else ru_remark
+                inbounds.append((mapped_id, mapped_remark, ru_port, ru_proto, ru_up or 0, ru_down or 0))
+    except Exception as e:
+        logging.error(f"Error reading RU server inbounds: {e}")
+
     mysql_conn = get_mysql_conn()
     with mysql_conn.cursor() as cur_mysql:
         for ib in inbounds:

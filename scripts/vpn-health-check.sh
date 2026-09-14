@@ -156,19 +156,19 @@ else
     fi
 fi
 
-# Test 10: AmneziaWG API on port 51821
+# Test 10: Admin Panel API on port 51821
 AWG_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://127.0.0.1:51821/ 2>/dev/null)
 if [ "$AWG_CODE" -ge 200 ] && [ "$AWG_CODE" -lt 500 ]; then
-    log "✅ AWG API on 51821: HTTP $AWG_CODE"
-    RESULTS+="✅ AWG API 51821: OK\n"
+    log "✅ Admin Panel API on 51821: HTTP $AWG_CODE"
+    RESULTS+="✅ Admin Panel API 51821: OK\n"
 else
-    try_restart "AWG API" "sudo systemctl restart awg-api" "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 http://127.0.0.1:51821/ 2>/dev/null | grep -qE '^[2-4]'"
+    try_restart "Admin Panel API" "sudo systemctl restart admin-panel" "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 http://127.0.0.1:51821/ 2>/dev/null | grep -qE '^[2-4]'"
     if [ "$TRY_RESTART_OK" -eq 1 ]; then
-        RESULTS+="✅ AWG API 51821: OK [auto-recovered]\n"
-        RECOVERED+="AWG-API "
+        RESULTS+="✅ Admin Panel API 51821: OK [auto-recovered]\n"
+        RECOVERED+="Admin-Panel "
     else
-        log "❌ AWG API on 51821: DOWN"
-        RESULTS+="❌ AWG API 51821: DOWN\n"
+        log "❌ Admin Panel API on 51821: DOWN"
+        RESULTS+="❌ Admin Panel API 51821: DOWN\n"
         FAILED=1
     fi
 fi
@@ -223,21 +223,6 @@ else
     fi
 fi
 
-# Test 10b: AmneziaWG interface
-if ip link show awg0 2>/dev/null | grep -qE "state UP|state UNKNOWN"; then
-    log "✅ AmneziaWG awg0: UP"
-    RESULTS+="✅ AmneziaWG awg0: UP\n"
-else
-    try_restart "AmneziaWG" "sudo systemctl restart awg-interface" "ip link show awg0 2>/dev/null | grep -qE 'state UP|state UNKNOWN'"
-    if [ "$TRY_RESTART_OK" -eq 1 ]; then
-        RESULTS+="✅ AmneziaWG awg0: UP [auto-recovered]\n"
-        RECOVERED+="AmneziaWG "
-    else
-        log "❌ AmneziaWG awg0: DOWN"
-        RESULTS+="❌ AmneziaWG awg0: DOWN\n"
-        FAILED=1
-    fi
-fi
 
 # Test 11: Telegram Bot service
 if systemctl is-active --quiet bot.service; then

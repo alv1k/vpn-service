@@ -250,8 +250,11 @@ def make_main_keyboard(tg_id: int | None = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("✉️ Поддержка", callback_data="feedback"),
         ],
         [
-            InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service"),
+            InlineKeyboardButton("ℹ️ Информация", callback_data="info_menu"),
             InlineKeyboardButton("🔗 Прокси TG", callback_data="proxy_file"),
+        ],
+        [
+            InlineKeyboardButton("📢 Наш канал", url="https://t.me/tiin_service"),
         ],
     ]
     if tg_id is not None:
@@ -282,11 +285,12 @@ def make_main_keyboard(tg_id: int | None = None) -> InlineKeyboardMarkup:
 # )
 
 MAIN_MENU_TEXT = (
-    "⚡️ <b> тииҥ VPN 🐿</b>\n\n"
+    "⚡️ <b>Личный кабинет • тииҥ VPN 🐿</b>\n\n"
     "Добро пожаловать!\n\n"
-    "🎁 <b>Попробуй VPN бесплатно</b>\n"
-    "У тебя есть возможность активировать тестовый период.\n\n"
-    "👇 Нажми на кнопку ниже, чтобы начать"
+    "<blockquote>🎁 <b>Бесплатный тестовый период</b>\n"
+    "Вам доступно бесплатное тестирование сервиса.\n"
+    "Подключение настраивается за 1 минуту.</blockquote>\n\n"
+    "👇 Нажмите <b>«🎁 Активировать тест»</b> ниже, чтобы получить доступ:"
 )
 
 def tariff_emoji(days: int) -> str:

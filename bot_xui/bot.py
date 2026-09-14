@@ -60,7 +60,6 @@ from bot_xui.views    import (
 from bot_xui.payment     import process_payment, show_tariff_info, create_yookassa_refund
 from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_get_awg_config, handle_get_awg_config_v2, grant_referral_vpn, activate_test_period
 from bot_xui.messaging   import send_message_by_tg_id
-from bot_xui.receipt     import process_receipt_photo, receipt_callback_handler, init_finance_api
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 load_dotenv()
@@ -252,7 +251,6 @@ async def _refer_text(context, tg_id: int) -> tuple[str, str]:
 
 
 async def post_init(application):
-    await init_finance_api()
     await application.bot.set_my_commands([
         BotCommand("start", "Начать взаимодействие с ботом"),
         BotCommand("refer", "Реферальная ссылка и статистика"),
@@ -293,8 +291,15 @@ async def post_init(application):
         timezone=pytz.timezone("Asia/Tokyo"),
     )
 
+    scheduler.add_job(
+        check_and_send_15m_test_reminders,
+        trigger="interval",
+        minutes=3,
+        args=[application.bot],
+    )
+
     scheduler.start()
-    logger.info("[NOTIFY] Subscription expiry + autopay + IP cleanup + session cleanup scheduler started")
+    logger.info("[NOTIFY] Subscription expiry + autopay + IP cleanup + session cleanup + 15m onboarding reminder scheduler started")
 
 
 async def send_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -719,7 +724,8 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
 
     # Ответ админа на пересланное сообщение или тикет с веб-портала
     if tg_id == ADMIN_TG_ID and update.message.reply_to_message:
-        reply_text = update.message.reply_to_message.text or ""
+        reply_msg = update.message.reply_to_message
+        reply_text = (reply_msg.text or reply_msg.caption or "")
         import re
         ticket_match = re.search(r"[Тт]икет #(\d+)", reply_text, re.IGNORECASE)
         if ticket_match:
@@ -817,6 +823,109 @@ async def handle_feedback_message(update: Update, context: ContextTypes.DEFAULT_
     )
 
 
+async def handle_feedback_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка входящего фото/скриншота от пользователя или ответ админа фото."""
+    if not update.effective_user or not update.message:
+        return
+    tg_id = update.effective_user.id
+    caption = update.message.caption or ""
+
+    # Ответ админа фото/скриншотом на пересланное сообщение
+    if tg_id == ADMIN_TG_ID and update.message.reply_to_message:
+        reply_msg = update.message.reply_to_message
+        reply_text = (reply_msg.text or reply_msg.caption or "")
+        if "ID:" in reply_text:
+            try:
+                target_id = int(reply_text.split("ID:")[1].split(")")[0].strip())
+                reply_caption = f"💬 <b>Ответ от поддержки:</b>\n\n{caption}" if caption else "💬 <b>Ответ от поддержки</b>"
+                if update.message.photo:
+                    photo_id = update.message.photo[-1].file_id
+                    await context.bot.send_photo(
+                        chat_id=target_id,
+                        photo=photo_id,
+                        caption=reply_caption,
+                        parse_mode="HTML"
+                    )
+                elif update.message.document:
+                    doc_id = update.message.document.file_id
+                    await context.bot.send_document(
+                        chat_id=target_id,
+                        document=doc_id,
+                        caption=reply_caption,
+                        parse_mode="HTML"
+                    )
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(
+                        tg_id=target_id,
+                        source="admin_send",
+                        scenario="support_reply_photo",
+                        message_text=f"[Фото] {caption}".strip(),
+                        status="sent"
+                    )
+                except Exception:
+                    pass
+                await log_and_reply_text(update, "✅ Фото отправлено пользователю")
+                return
+            except (ValueError, IndexError):
+                pass
+
+    # Логируем входящий скриншот/фото
+    try:
+        from api.db import log_message_sent
+        log_message_sent(
+            tg_id=tg_id,
+            source="user_message",
+            scenario="incoming_photo",
+            message_text=f"[Скриншот] {caption}".strip() if caption else "[Скриншот]",
+            status="sent"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to log user photo: {e}")
+
+    WAITING_FEEDBACK.pop(tg_id, None)
+
+    user = update.effective_user
+    name = user.first_name or ""
+    if user.last_name:
+        name += f" {user.last_name}"
+    username = f"@{user.username}" if user.username else "нет"
+
+    caption_text = f"\n\n💬 {caption}" if caption else ""
+    admin_caption = (
+        f"📸 <b>Скриншот от пользователя</b>\n\n"
+        f"👤 {name} ({username}, ID: {tg_id}){caption_text}\n\n"
+        f"<i>Ответьте на это сообщение, чтобы ответить пользователю</i>"
+    )
+
+    try:
+        if update.message.photo:
+            photo_id = update.message.photo[-1].file_id
+            await context.bot.send_photo(
+                chat_id=ADMIN_TG_ID,
+                photo=photo_id,
+                caption=admin_caption,
+                parse_mode="HTML"
+            )
+        elif update.message.document:
+            doc_id = update.message.document.file_id
+            await context.bot.send_document(
+                chat_id=ADMIN_TG_ID,
+                document=doc_id,
+                caption=admin_caption,
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Failed to forward photo to admin: {e}")
+
+    await log_and_reply_text(
+        update,
+        "✅ Ваш скриншот отправлен в поддержку! Мы ответим в ближайшее время.",
+        reply_markup=make_main_keyboard(tg_id),
+        parse_mode="HTML",
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Главный диспетчер callback
 # ──────────────────────────────────────────────────────────────────────────────
@@ -908,6 +1017,66 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=ADMIN_TG_ID, text=alert_text, parse_mode="HTML")
             except Exception as e:
                 logger.warning(f"Failed to send winback bad rating alert: {e}")
+
+    elif data == "wb_activate_gift":
+        tg_id = query.from_user.id
+        from api.db import execute_query, sync_expiry, get_subscription_until
+        from datetime import datetime, timedelta
+
+        already = execute_query(
+            "SELECT id, sent_at FROM winback_log WHERE tg_id = %s AND scenario = 'loyalty_gift_activated' LIMIT 1",
+            (tg_id,), fetch='one'
+        )
+        if already:
+            sub_until = get_subscription_until(tg_id)
+            if sub_until and sub_until > datetime.utcnow():
+                sub_msk = (sub_until + timedelta(hours=3)).strftime('%d.%m.%Y %H:%M')
+                reply_text = (
+                    "ℹ️ <b>Ваш подарочный доступ уже активен!</b>\n\n"
+                    f"Подписка действует до <b>{sub_msk} МСК</b>.\n"
+                    "Все ваши ключи доступны в разделе «Мои конфиги»."
+                )
+            else:
+                reply_text = (
+                    "ℹ️ <b>Вы уже использовали этот подарок.</b>\n\n"
+                    "Для продления доступа выберите подходящий тариф в разделе «Тарифы»."
+                )
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+            ])
+            await safe_edit_text_logged(query, reply_text, "loyalty_gift_already_used", reply_markup=markup)
+            return
+
+        new_expiry = datetime.utcnow() + timedelta(days=3)
+        new_expiry_msk = (new_expiry + timedelta(hours=3)).strftime('%d.%m.%Y %H:%M')
+        sync_expiry(tg_id, new_expiry)
+        execute_query(
+            "INSERT INTO winback_log (tg_id, scenario) VALUES (%s, %s)",
+            (tg_id, "loyalty_gift_activated")
+        )
+        reply_text = (
+            "🎉 <b>Подарок успешно активирован!</b>\n\n"
+            f"Вам начислено <b>3 дня бесплатного доступа</b> до <b>{new_expiry_msk} МСК</b>.\n"
+            "Все ваши протоколы и ключи снова активны 🚀\n\n"
+            "Приятного пользования!"
+        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
+            [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+        ])
+        await safe_edit_text_logged(query, reply_text, "loyalty_gift_activated", reply_markup=markup)
+
+        try:
+            alert_text = (
+                f"🎁 <b>Пользователь активировал подарок +3 дня (Winback)!</b>\n\n"
+                f"👤 Пользователь: {query.from_user.full_name}\n"
+                f"🆔 TG ID: <code>{tg_id}</code>\n"
+                f"⏳ Доступ активен до: {new_expiry_msk} МСК"
+            )
+            await context.bot.send_message(chat_id=ADMIN_TG_ID, text=alert_text, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"Failed to send admin notification for loyalty gift activation: {e}")
 
     elif data == "my_configs":
         await show_configs(query, xui)
@@ -1064,6 +1233,68 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+    elif data == "info_menu":
+        text = (
+            "ℹ️ <b>База знаний и информация о TIIN VPN</b>\n\n"
+            "Выберите интересующий раздел:"
+        )
+        await safe_edit_text_logged(query, text, "info_menu",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❓ Частые вопросы (ЧаВо)", callback_data="info_faq")],
+                [InlineKeyboardButton("📱 Приложения и установка в РФ", callback_data="info_apps")],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")],
+            ]),
+        )
+
+    elif data == "info_faq":
+        text = (
+            "❓ <b>Часто задаваемые вопросы (ЧаВо)</b>\n\n"
+            "<b>1. Что за сервис?</b>\n"
+            "Отказоустойчивый VPN нового поколения на протоколах VLESS Reality (XHTTP Ultra), Hysteria2 и AmneziaWG, маскирующихся под обычный веб-трафик.\n\n"
+            "<b>2. Как подключиться?</b>\n"
+            "В разделе «🔑 Мои конфиги» или Личном кабинете скопируйте ссылку подписки или нажмите кнопку импорта в 1 клик.\n\n"
+            "<b>3. Оплата и возврат:</b>\n"
+            "Оплата картами РФ / СБП (ЮKassa). При технических проблемах гарантируем возврат средств.\n\n"
+            "<b>4. Безлимит и РУ-шлюз:</b>\n"
+            "Честный безлимит без ограничений скорости. При блокировках прямого трафика работает шлюз через дата-центр Selectel (СПб ➔ DE ➔ NL).\n\n"
+            "<b>5. Почему нет «обхода белых списков»?</b>\n"
+            "В режиме изоляции провайдер блокирует все внешние IP. В таких условиях трафик проходит через наш сервер внутри РФ (Selectel).\n\n"
+            "<b>6. До 10 устройств:</b>\n"
+            "Одну подписку можно использовать на 10 одновременно активных устройствах всей семьи.\n\n"
+            "<b>7. Работают ли Сбер / Госуслуги?</b>\n"
+            "Да, благодаря Split Routing сайты РФ банков и госсервисов открываются напрямую без капч."
+        )
+        await safe_edit_text_logged(query, text, "info_faq",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📱 Приложения и установка", callback_data="info_apps")],
+                [InlineKeyboardButton("◀️ Назад в информацию", callback_data="info_menu")],
+            ]),
+        )
+
+    elif data == "info_apps":
+        text = (
+            "📱 <b>Приложения для всех платформ (РФ)</b>\n\n"
+            "<b>🍏 iOS (iPhone / iPad):</b>\n"
+            "• <b>Happ Proxy</b> — доступен в RU App Store\n"
+            "• <b>Karing</b> — доступен в RU App Store\n"
+            "• <b>Shadowrocket / Streisand</b> — через не-RU Apple ID\n\n"
+            "<b>🤖 Android:</b>\n"
+            "• <b>Happ Proxy</b> — в Google Play / APK\n"
+            "• <b>v2rayNG / NekoBox</b> — прямой APK (без Google Play)\n"
+            "• <b>AmneziaWG</b> — RuStore / прямой APK\n\n"
+            "<b>📺 Android TV / Smart TV:</b>\n"
+            "• <b>v2rayNG (TV mode)</b> — удобное управление с пульта (ставится через Downloader / флешку)\n\n"
+            "<b>💻 Windows / macOS:</b>\n"
+            "• <b>Hiddify / NekoRay / v2rayN / AmneziaVPN</b> — прямые инсталляторы (.exe / .dmg)\n\n"
+            "💡 <i>Все ссылки и быстрая настройка доступны в разделе «🔑 Мои конфиги» ➔ Личный кабинет.</i>"
+        )
+        await safe_edit_text_logged(query, text, "info_apps",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❓ Частые вопросы", callback_data="info_faq")],
+                [InlineKeyboardButton("◀️ Назад в информацию", callback_data="info_menu")],
+            ]),
+        )
+
     elif data == "proxy_file":
         text = (
             "🔗 <b>Прокси для Telegram</b>\n\n"
@@ -1099,6 +1330,98 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                              scenario="proxy_download", status='sent')
         except Exception:
             pass
+
+    elif data in ("setup_win_ok", "setup_win_fail"):
+        user = query.from_user
+        user_info = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        if user.username:
+            user_info += f" (@{user.username})"
+        user_info += f" [ID: <code>{user.id}</code>]"
+
+        if data == "setup_win_ok":
+            user_reply = "🎉 <b>Отлично!</b> Приятного пользования быстрым интернетом!"
+            admin_notice = (
+                f"✅ <b>Настройка Happ (Windows) успешна!</b>\n\n"
+                f"👤 <b>Пользователь:</b> {user_info}"
+            )
+            await safe_edit_text_logged(query, user_reply, "setup_win_reply",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+                ])
+            )
+        else:
+            import time as _time
+            WAITING_FEEDBACK[user.id] = _time.time()
+            user_reply = (
+                "😔 <b>Поняли, давайте поможем!</b>\n\n"
+                "Опишите, что именно пошло не так (или пришлите скриншот) — "
+                "мы ответим и поможем всё настроить."
+            )
+            admin_notice = (
+                f"⚠️ <b>Проблема с настройкой Happ (Windows)</b>\n\n"
+                f"👤 <b>Пользователь:</b> {user_info}\n"
+                f"📌 Нажал «Не получилось»"
+            )
+            await safe_edit_text_logged(query, user_reply, "setup_win_reply",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+                ])
+            )
+
+        if str(user.id) != str(ADMIN_TG_ID):
+            await send_message_by_tg_id(
+                tg_id=ADMIN_TG_ID,
+                text=admin_notice,
+                parse_mode="HTML",
+                source="bot_system",
+                scenario="setup_win_admin_notice",
+            )
+
+    elif data in ("happ_check_ok", "happ_check_help"):
+        user = query.from_user
+        user_info = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        if user.username:
+            user_info += f" (@{user.username})"
+        user_info += f" [ID: <code>{user.id}</code>]"
+
+        if data == "happ_check_ok":
+            user_reply = "🎉 <b>Отлично!</b> Приятного пользования быстрым интернетом!"
+            admin_notice = (
+                f"✅ <b>Пользователь подтвердил работу Happ!</b>\n\n"
+                f"👤 <b>Пользователь:</b> {user_info}"
+            )
+            await safe_edit_text_logged(query, user_reply, "happ_check_reply",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+                ])
+            )
+        else:
+            import time as _time
+            WAITING_FEEDBACK[user.id] = _time.time()
+            user_reply = (
+                "🤝 <b>Давайте поможем всё настроить!</b>\n\n"
+                "Напишите прямо сюда в чат, что именно не получается (или пришлите скриншот экрана) — "
+                "мы сразу подскажем и поможем решить вопрос."
+            )
+            admin_notice = (
+                f"⚠️ <b>Запрос помощи по Happ</b>\n\n"
+                f"👤 <b>Пользователь:</b> {user_info}\n"
+                f"📌 Нажал(а) «Нужна помощь»"
+            )
+            await safe_edit_text_logged(query, user_reply, "happ_check_reply",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+                ])
+            )
+
+        if str(user.id) != str(ADMIN_TG_ID):
+            await send_message_by_tg_id(
+                tg_id=ADMIN_TG_ID,
+                text=admin_notice,
+                parse_mode="HTML",
+                source="bot_system",
+                scenario="happ_check_admin_notice",
+            )
 
     elif data in ("yt_check_yes", "yt_check_no"):
         status_text = "🟢 Всё работает" if data == "yt_check_yes" else "🔴 Да, соединения нет"
@@ -1553,6 +1876,129 @@ async def notify_expiring_subscriptions(bot):
             except Exception:
                 pass
 
+
+async def check_and_send_15m_test_reminders(bot):
+    """
+    Проверяет пользователей, активировавших тест 15-60 минут назад,
+    но не импортировавших подписку и не начавших передавать трафик.
+    Отправляет заботливое напоминание с ссылкой на Мастер настройки и подключение в 1 клик.
+    """
+    import sqlite3
+    from api.db import execute_query
+
+    # Ищем пользователей с активированным тестом в окне [15 мин, 75 мин]
+    candidate_users = execute_query(
+        """SELECT u.id, u.tg_id, u.first_name, u.web_token, u.created_at
+           FROM users u
+           WHERE (u.test_vless_activated = 1 OR u.test_awg_activated = 1)
+             AND u.tg_id IS NOT NULL AND u.tg_id > 0
+             AND u.bot_blocked = 0
+             AND u.web_token IS NOT NULL
+             AND NOT EXISTS (
+                 SELECT 1 FROM message_log ml
+                 WHERE ml.tg_id = u.tg_id AND ml.scenario = 'test_15m_setup'
+             )
+             AND EXISTS (
+                 SELECT 1 FROM vpn_keys vk
+                 WHERE vk.tg_id = u.tg_id
+                   AND vk.created_at <= NOW() - INTERVAL 15 MINUTE
+                   AND vk.created_at >= NOW() - INTERVAL 75 MINUTE
+             )
+        """,
+        fetch="all"
+    )
+
+    if not candidate_users:
+        return
+
+    # Подключаемся к XUI DB для проверки реального использования
+    xui_stats = {}
+    try:
+        xui_conn = sqlite3.connect('/etc/x-ui/x-ui.db')
+        xui_conn.row_factory = sqlite3.Row
+        cur_x = xui_conn.cursor()
+        cur_x.execute('SELECT email, up, down, total, last_sub_fetch FROM client_traffics')
+        for r in cur_x.fetchall():
+            xui_stats[r['email']] = {
+                'total': (r['up'] or 0) + (r['down'] or 0) + (r['total'] or 0),
+                'last_sub_fetch': r['last_sub_fetch'] or 0,
+            }
+        xui_conn.close()
+    except Exception as e:
+        logger.warning(f"[15M-REMINDER] Could not read XUI db: {e}")
+
+    for user in candidate_users:
+        tg_id = user["tg_id"]
+        web_token = user["web_token"]
+        name = user["first_name"] or "друг"
+
+        # Проверяем, заходил ли в веб-кабинет или пользовался клиентом
+        email_key = f"tiin_{tg_id}"
+        stats = xui_stats.get(email_key, {})
+        has_traffic = stats.get('total', 0) > 0
+        has_sub_fetched = stats.get('last_sub_fetch', 0) > 0
+
+        # Если трафика/подписки нет в XUI, дополнительно проверяем платформы
+        platforms = None
+        if not (has_traffic or has_sub_fetched):
+            platforms = execute_query(
+                "SELECT 1 FROM user_platforms WHERE tg_id = %s LIMIT 1",
+                (tg_id,), fetch="one"
+            )
+
+        if has_traffic or has_sub_fetched or platforms:
+            # Пользователь уже подключился — помечаем в message_log, чтобы не спамить
+            try:
+                from api.db import log_message_sent
+                log_message_sent(
+                    tg_id=tg_id, source="bot_system", scenario="test_15m_setup",
+                    message_text="[SKIPPED: User already connected]", status="skipped"
+                )
+            except Exception:
+                pass
+            continue
+
+        msg = (
+            f"👋 <b>{name}, возникли сложности с подключением?</b>\n\n"
+            f"Мы заметили, что вы активировали бесплатный тест, но ещё не настроили VPN на устройстве.\n\n"
+            f"Вот кнопка <b>«Инструкция»</b> — нажмите на неё, и наш мастер настройки пошагово подскажет, "
+            f"какое приложение скачать и как включить VPN в 2 клика 👇"
+        )
+
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Подключить в 1 клик", url=f"https://344988.snk.wtf/go-connect/{web_token}")],
+            [InlineKeyboardButton("📖 Инструкция и мастер настройки", url=f"https://344988.snk.wtf/my/{web_token}")],
+            [InlineKeyboardButton("✉️ Написать в поддержку", callback_data="feedback")],
+            [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")],
+        ])
+
+        try:
+            await bot.send_message(
+                chat_id=tg_id,
+                text=msg,
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+            logger.info(f"[15M-REMINDER] Sent 15m onboarding reminder to tg:{tg_id}")
+            try:
+                from api.db import log_message_sent
+                log_message_sent(
+                    tg_id=tg_id, source="bot_system", scenario="test_15m_setup",
+                    message_text=msg, status="sent"
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning(f"[15M-REMINDER] Failed to send to tg:{tg_id}: {e}")
+            try:
+                from api.db import log_message_sent
+                log_message_sent(
+                    tg_id=tg_id, source="bot_system", scenario="test_15m_setup",
+                    message_text=msg, status="failed", error_text=str(e)[:255]
+                )
+            except Exception:
+                pass
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Автопродление
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1645,8 +2091,7 @@ def main():
     app.add_handler(CommandHandler("promos",    promos))
     app.add_handler(CommandHandler("autopay",   autopay_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_feedback_message))
-    app.add_handler(MessageHandler(filters.PHOTO, process_receipt_photo))
-    app.add_handler(CallbackQueryHandler(receipt_callback_handler, pattern="^rcpt_"))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_feedback_photo))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(error_handler)
 

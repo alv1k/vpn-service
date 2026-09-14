@@ -767,7 +767,7 @@ def deactivate_key_by_payment(payment_id: str):
     )
 
 def sync_expiry(tg_id: int, expires_at_utc: datetime):
-    """Sync expiry across users.subscription_until and all vpn_keys.expires_at."""
+    """Sync expiry across users.subscription_until, all vpn_keys.expires_at, and RU node."""
     # Ensure naive UTC datetime for MySQL
     if expires_at_utc.tzinfo is not None:
         expires_at_utc = expires_at_utc.astimezone(timezone.utc).replace(tzinfo=None)
@@ -778,9 +778,45 @@ def sync_expiry(tg_id: int, expires_at_utc: datetime):
     )
     logger.info(f"Synced expiry for tg_id={tg_id} to {expires_at_utc}")
 
+    try:
+        # Re-enable in Main 3x-ui
+        from bot_xui.utils import XUIClient
+        from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
+        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        vk = execute_query(
+            "SELECT client_name, client_id FROM vpn_keys WHERE tg_id = %s AND vpn_type = 'vless' LIMIT 1",
+            (tg_id,), fetch='one'
+        )
+        email = vk['client_name'] if vk and vk.get('client_name') else f"tiin_{tg_id}"
+        existing = xui.get_client_by_email(email)
+        exp_ms = int(expires_at_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        if existing:
+            xui.update_client_expiry(existing['inbound_id'], existing['client'], exp_ms)
+
+        # Re-enable in RU 3x-ui
+        from bot_xui.multi_node import sync_client_to_ru_node
+        uuid_val = vk.get('client_id') if vk else None
+        sync_client_to_ru_node(email=email, expiry_ms=exp_ms, enable=True, tg_id=tg_id, uuid_str=uuid_val)
+
+        # Re-enable in AWG if exists
+        from awg_api import db as awg_db
+        from awg_api import awg_manager
+        awg_vk = execute_query(
+            "SELECT client_id, client_name FROM vpn_keys WHERE tg_id = %s AND vpn_type = 'awg' LIMIT 1",
+            (tg_id,), fetch='one'
+        )
+        if awg_vk and awg_vk.get("client_id"):
+            awg_db.update_client_enabled(awg_vk["client_id"], True)
+            awg_manager.write_server_conf()
+            if awg_manager.is_interface_up():
+                awg_manager.reload_interface()
+            logger.info(f"🟢 Re-enabled AWG for tg_id={tg_id}")
+    except Exception as e:
+        logger.debug(f"sync_expiry: node sync skipped or failed: {e}")
+
 
 def sync_expiry_by_user_id(user_id: int, expires_at_utc: datetime):
-    """Sync expiry for web-only users (by user_id) to vpn_keys and users table."""
+    """Sync expiry for web-only users (by user_id) to vpn_keys, users table, and RU node."""
     if expires_at_utc.tzinfo is not None:
         expires_at_utc = expires_at_utc.astimezone(timezone.utc).replace(tzinfo=None)
     execute_query(
@@ -792,6 +828,44 @@ def sync_expiry_by_user_id(user_id: int, expires_at_utc: datetime):
         (expires_at_utc, user_id)
     )
     logger.info(f"Synced expiry for user_id={user_id} to {expires_at_utc}")
+
+    try:
+        from bot_xui.utils import XUIClient
+        from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
+        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        vk = execute_query(
+            "SELECT client_name, client_id, tg_id FROM vpn_keys WHERE user_id = %s AND vpn_type = 'vless' LIMIT 1",
+            (user_id,), fetch='one'
+        )
+        exp_ms = int(expires_at_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        if vk and vk.get('client_name'):
+            email = vk['client_name']
+            existing = xui.get_client_by_email(email)
+            if existing:
+                xui.update_client_expiry(existing['inbound_id'], existing['client'], exp_ms)
+
+            from bot_xui.multi_node import sync_client_to_ru_node
+            sync_client_to_ru_node(
+                email=email,
+                expiry_ms=exp_ms,
+                enable=True,
+                tg_id=vk.get('tg_id', 0),
+                uuid_str=vk.get('client_id')
+            )
+
+        from awg_api import db as awg_db
+        from awg_api import awg_manager
+        awg_vk = execute_query(
+            "SELECT client_id FROM vpn_keys WHERE user_id = %s AND vpn_type = 'awg' LIMIT 1",
+            (user_id,), fetch='one'
+        )
+        if awg_vk and awg_vk.get("client_id"):
+            awg_db.update_client_enabled(awg_vk["client_id"], True)
+            awg_manager.write_server_conf()
+            if awg_manager.is_interface_up():
+                awg_manager.reload_interface()
+    except Exception as e:
+        logger.debug(f"sync_expiry_by_user_id: node sync skipped or failed: {e}")
 
 
 def update_vless_link(tg_id: int, vless_link: str):

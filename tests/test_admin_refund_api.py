@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 
-from awg_api.main import _sessions
+from admin.auth import _sessions
 _sessions["test_session_token"] = 9999999999.0
 
 from api.webhook import app

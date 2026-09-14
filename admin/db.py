@@ -6,9 +6,18 @@ import sqlite3
 import time
 from datetime import datetime
 
-from awg_api.db import _get_conn
+import mysql.connector
+from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
 
 logger = logging.getLogger(__name__)
+
+
+def _get_conn():
+    return mysql.connector.connect(
+        host=MYSQL_HOST, port=MYSQL_PORT,
+        user=MYSQL_USER, password=MYSQL_PASSWORD,
+        database=MYSQL_DATABASE,
+    )
 
 
 def list_users(search: str = None, limit: int = 100) -> list[dict]:
@@ -186,8 +195,7 @@ def new_users_today() -> list[dict]:
     cur.execute("""
         SELECT id, tg_id, COALESCE(NULLIF(first_name,''), old_first_name) AS first_name, last_name, email, created_at, web_token
         FROM users
-        WHERE DATE(CONVERT_TZ(created_at, '+00:00', '+09:00'))
-            = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+09:00'))
+        WHERE created_at >= UTC_TIMESTAMP() - INTERVAL 24 HOUR
         ORDER BY created_at DESC
     """)
     rows = cur.fetchall()
@@ -737,6 +745,9 @@ def get_monitoring_stats() -> dict:
         logger.error(f"Error fetching x-ui inbounds for monitoring: {e}")
 
     active_inbounds[100] = {"remark": "AmneziaWG-awg0", "port": 51888, "protocol": "amneziawg"}
+    # Российские инбаунды (СПб, Selectel)
+    active_inbounds[201] = {"remark": "🇷🇺 RU-VLESS (WS TLS)", "port": 8443, "protocol": "vless"}
+    active_inbounds[202] = {"remark": "🇷🇺 RU-Hysteria2 (TLS)", "port": 35443, "protocol": "hysteria2"}
 
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)

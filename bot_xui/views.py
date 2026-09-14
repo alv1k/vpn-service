@@ -50,32 +50,63 @@ def build_main_menu_text(tg_id: int) -> str:
         key=lambda k: k.get("expires_at") or datetime.min,
     )
 
-    sub_info, is_test = _build_subscription_info(tg_id, key)
+    user = get_user_by_tg_id(tg_id)
+    first_name = (user or {}).get("first_name") or ""
+
+    # Определяем тариф через payment_id
+    tariff_name = ""
+    device_limit = 10
+    is_test = False
+    payment_id = key.get("payment_id")
+    if not payment_id:
+        for k in keys:
+            if k.get("payment_id"):
+                payment_id = k["payment_id"]
+                break
+    if payment_id:
+        payment = get_payment_by_id(payment_id)
+        if payment:
+            tariff_key = payment.get("tariff", "")
+            tariff = TARIFFS.get(tariff_key)
+            if tariff:
+                tariff_name = tariff["name"]
+                device_limit = tariff.get("device_limit", 10)
+                is_test = tariff.get("is_test", False)
+
     is_active = bool(key.get("expires_at") and key["expires_at"] > datetime.utcnow())
-    expiry_label = "⏱ Истекает" if is_active else "⏱ Истекла"
+    expiry_date_str = _format_date_long(key.get('expires_at'))
+    expiry_status = f"⏳ Активен до: {expiry_date_str}" if is_active else f"⌛️ Истек: {expiry_date_str}"
 
     ref_count = get_referral_count(tg_id)
     ref_days = ref_count * REFERRAL_REWARD_DAYS
+    ref_link = f"https://t.me/{BOT_USERNAME}?start={tg_id}"
+
+    greeting = f"Рады видеть, <b>{first_name} 💫</b>\n\n" if first_name else ""
 
     text = (
-        f"⚡️ <b> тииҥ VPN 🐿</b>\n\n"
-        f"{sub_info}\n"
-        f"{expiry_label} {_format_date_long(key.get('expires_at'))}\n\n"
+        f"⚡️ <b>Личный кабинет • тииҥ VPN 🐿</b>\n\n"
+        f"{greeting}"
+        f"<blockquote>💎 <b>Активная подписка</b>\n"
+        f"├ 📦 <b>План:</b> {tariff_name or 'Базовый'}\n"
+        f"├ 📊 <b>Трафик:</b> {'10 ГБ' if is_test else '♾️ Не ограничен'}\n"
+        f"├ 📱 <b>Лимит:</b> до {device_limit} устройств\n"
+        f"└ {expiry_status}</blockquote>\n\n"
     )
 
     token = get_web_token(tg_id)
     if token:
-        text += f'🪄 <a href="https://344988.snk.wtf/my/{token}">Гид по подключению</a>\n\n'
+        text += f'🚀 <b>Быстрый старт:</b> <a href="https://344988.snk.wtf/my/{token}">Инструкция по настройке</a>\n\n'
 
-    bonus_label = f"Получи бонус за друзей: +{REFERRAL_REWARD_DAYS} дн." if ref_days == 0 else f"👥 Бонус за друзей: +{ref_days} дн."
+    bonus_header = f"Дарим <b>+{REFERRAL_REWARD_DAYS} дней</b> за каждого приглашенного друга:" if ref_days == 0 else f"👥 Бонус за друзей: <b>+{ref_days} дн.</b> (+{REFERRAL_REWARD_DAYS} дн. за нового друга):"
 
     text += (
-        f"<blockquote>{bonus_label}\n"
-        f"Воспользуйся реферальной ссылкой:\n➡️➡️➡️ <code>https://t.me/{BOT_USERNAME}?start={tg_id}</code> ⬅️</blockquote>"
+        f"<blockquote>👥 <b>Бонусная программа</b>\n"
+        f"{bonus_header}\n"
+        f"🔗 <code>{ref_link}</code></blockquote>"
     )
 
     if is_active and is_test:
-        text += "\n\n⚡ <b>Можно приобрести тариф ☺</b> Жми «Тарифы»"
+        text += "\n\n⚡ <b>Можно приобрести тариф ☺</b> Жми «💎 Тарифы»"
     elif not is_active:
         text += "\n\n⚡ <b>Подписка истекла.</b> Выбери новый тариф 👇"
 
@@ -532,11 +563,11 @@ async def show_single_config(query, client_name: str, xui):
         caption = caption[:1020] + "…"
         logger.warning(f"show_single_config: caption truncated to 1024 chars")
 
-    keyboard = [
-        [InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")],
-    ]
+    keyboard = []
     if web_token:
+        keyboard.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=f"https://344988.snk.wtf/go-connect/{web_token}")])
         keyboard.append([InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{web_token}")])
+    keyboard.append([InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")])
     if is_test_tariff:
         keyboard.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])
     keyboard.append([InlineKeyboardButton("🔙 К списку", callback_data="my_configs")])

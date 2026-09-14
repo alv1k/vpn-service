@@ -296,6 +296,28 @@ class XUIClient:
             logger.info(f"createClient Response: {result}")
 
             if result.get('success', False):
+                # Ensure client_inbounds entries exist in /etc/x-ui/x-ui.db for 3x-ui 3.4+
+                try:
+                    import sqlite3, time
+                    db_path = '/etc/x-ui/x-ui.db'
+                    if os.path.exists(db_path):
+                        with sqlite3.connect(db_path, timeout=5) as db_conn:
+                            cur = db_conn.cursor()
+                            cur.execute("SELECT id FROM client_traffics WHERE email = ? ORDER BY id DESC LIMIT 1", (email,))
+                            row = cur.fetchone()
+                            if row:
+                                ct_id = row[0]
+                                now_ms = int(time.time() * 1000)
+                                for i_id in inbound_ids:
+                                    flow = 'xtls-rprx-vision' if i_id in (1, 10) else ''
+                                    cur.execute("""
+                                        INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id, flow_override, created_at)
+                                        VALUES (?, ?, ?, ?)
+                                    """, (ct_id, i_id, flow, now_ms))
+                                db_conn.commit()
+                except Exception as db_sync_err:
+                    logger.error(f"Failed to auto-sync client_inbounds for {email}: {db_sync_err}")
+
                 client_data = self.get_client_by_email(email)
                 if client_data:
                     c = client_data['client']
@@ -362,26 +384,33 @@ class XUIClient:
             logger.error(f"Error deleting client: {e}")
             return False
 
-    def update_client_expiry(self, inbound_id: int, client: dict, expiry_ms: int) -> bool:
-        """Обновить время истечения клиента"""
+    def update_client_expiry(self, inbound_id: int, client: dict, expiry_ms: int, enable: bool = True) -> bool:
+        """Обновить время истечения и статус клиента"""
         try:
+            email = client.get("email")
+            if not email:
+                return False
             payload = {
-                "id": client.get("id"),
-                "inboundId": inbound_id,
-                "email": client.get("email"),
-                "enable": client.get("enable", True),
+                "email": email,
+                "enable": bool(enable),
                 "expiryTime": expiry_ms,
                 "totalGB": client.get("totalGB", 0),
                 "limitIp": client.get("limitIp", 0),
                 "reset": client.get("reset", 0),
+                "tgId": client.get("tgId", 0),
+                "flow": client.get("flow") or "xtls-rprx-vision",
             }
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/clients/update/{client.get('email')}",
+                f"{self.host}/panel/api/clients/update/{email}",
                 json=payload,
                 headers={"Content-Type": "application/json"},
             )
-            return response.json().get("success", False)
+            result = response.json()
+            if result.get("success", False):
+                return True
+            logger.warning(f"Failed to update client {email} expiry: {result}")
+            return False
         except Exception as e:
             logger.error(f"Error updating client expiry: {e}")
             return False
