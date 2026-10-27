@@ -12,6 +12,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from config import (
     TELEGRAM_BOT_TOKEN,
+    BOT_USERNAME,
     MYSQL_HOST,
     MYSQL_USER,
     MYSQL_PASSWORD,
@@ -130,9 +131,9 @@ def get_proxy_link() -> str:
 
 
 def send_message_to_user(tg_id: int) -> bool:
-    """Отправляет сообщение пользователю через Telegram с кнопкой подключения прокси."""
+    """Отправляет сообщение пользователю через Telegram с кнопкой перехода в бота."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    proxy_link = get_proxy_link()
+    bot_url = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "https://t.me/tiin_service_bot"
     payload = {
         "chat_id": tg_id,
         "text": MESSAGE,
@@ -140,7 +141,7 @@ def send_message_to_user(tg_id: int) -> bool:
         "disable_web_page_preview": True,
         "reply_markup": {
             "inline_keyboard": [
-                [{"text": "🔗 Подключить прокси", "url": proxy_link}]
+                [{"text": "🔑 Открыть бота (Мои конфиги)", "url": bot_url}]
             ]
         },
     }

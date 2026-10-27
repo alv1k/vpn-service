@@ -87,10 +87,25 @@ def count_users() -> dict:
             SUM(CASE WHEN subscription_until > NOW() THEN 1 ELSE 0 END) as active_sub,
             SUM(CASE WHEN subscription_until IS NULL AND EXISTS (
                 SELECT 1 FROM vpn_keys k WHERE k.tg_id = users.tg_id AND k.expires_at > NOW()
-            ) THEN 1 ELSE 0 END) as active_key_only
+            ) THEN 1 ELSE 0 END) as active_key_only,
+            SUM(CASE WHEN subscription_until > NOW() AND EXISTS (
+                SELECT 1 FROM payments p WHERE p.tg_id = users.tg_id AND p.status='paid' AND p.is_test=0
+            ) THEN 1 ELSE 0 END) as active_paying,
+            SUM(CASE WHEN subscription_until > NOW() 
+                     AND tg_id NOT IN (364224373, 6648354839, 5254383247)
+                     AND tg_id IS NOT NULL
+                     AND NOT EXISTS (
+                         SELECT 1 FROM payments p WHERE p.tg_id = users.tg_id AND p.status='paid' AND p.is_test=0
+                     ) THEN 1 ELSE 0 END) as active_trial
         FROM users
     """)
-    row = cur.fetchone()
+    row = cur.fetchone() or {}
+    cur.execute("""
+        SELECT COUNT(DISTINCT COALESCE(NULLIF(tg_id, 0), web_user_id)) as paying
+        FROM payments
+        WHERE status = 'paid' AND is_test = 0
+    """)
+    pay_row = cur.fetchone() or {}
     cur.close()
     conn.close()
     active_sub = row.get("active_sub", 0) or 0
@@ -100,6 +115,9 @@ def count_users() -> dict:
         "active": active_sub + active_key,
         "active_sub": active_sub,
         "active_key_only": active_key,
+        "active_paying": row.get("active_paying", 0) or 0,
+        "active_trial": row.get("active_trial", 0) or 0,
+        "paying": pay_row.get("paying", 0) or 0,
     }
 
 
@@ -290,6 +308,272 @@ def payment_stats() -> dict:
     return row or {"total": 0, "paid": 0, "revenue": 0}
 
 
+def get_financial_projections() -> dict:
+    """Calculate upcoming renewals, forecasts, breakeven, and payments needed to maintain profit."""
+    import math
+    from datetime import timedelta
+    
+    tariff_prices = {
+        "weekly_7d": 50.0,
+        "monthly_30d": 199.0,
+        "standard_3m": 499.0,
+        "annual_365d": 1490.0,
+        "test_24h": 0.0,
+    }
+    tariff_names = {
+        "weekly_7d": "Неделя (7 дн)",
+        "monthly_30d": "Месяц (30 дн)",
+        "standard_3m": "3 месяца",
+        "annual_365d": "Год (365 дн)",
+        "test_24h": "Тест (3 дн)",
+    }
+    try:
+        from bot_xui.tariffs import TARIFFS
+        for k, v in TARIFFS.items():
+            tariff_prices[k] = float(v.get("price", 199))
+            tariff_names[k] = v.get("name", k)
+    except Exception:
+        pass
+
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    now = datetime.now()
+
+    if now.month == 12:
+        next_month_first = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        next_month_first = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    end_of_month = next_month_first - timedelta(seconds=1)
+
+    # Active subscribers and upcoming renewals
+    cur.execute("""
+        SELECT u.id, u.tg_id, COALESCE(NULLIF(u.first_name,''), u.old_first_name) as first_name,
+               u.subscription_until, u.autopay_enabled, u.autopay_tariff, u.payment_method_id,
+               u.test_vless_activated, u.test_awg_activated,
+               (SELECT COUNT(*) FROM payments p WHERE p.tg_id = u.tg_id AND p.status='paid' AND p.is_test=0) as paid_count,
+               (SELECT p.tariff FROM payments p WHERE p.tg_id = u.tg_id AND p.status='paid' AND p.is_test=0 ORDER BY p.created_at DESC LIMIT 1) as last_paid_tariff,
+               (SELECT p.amount FROM payments p WHERE p.tg_id = u.tg_id AND p.status='paid' AND p.is_test=0 ORDER BY p.created_at DESC LIMIT 1) as last_paid_amount
+        FROM users u
+        WHERE u.subscription_until > NOW()
+        ORDER BY u.subscription_until ASC
+    """)
+    active_users = cur.fetchall()
+
+    ADMIN_TG_IDS = {364224373, 6648354839, 5254383247}
+    upcoming_list = []
+    for u in active_users:
+        sub_until = u["subscription_until"]
+        has_autopay = bool(u["autopay_enabled"] and u["payment_method_id"])
+        paid_cnt = int(u["paid_count"] or 0)
+        tg_id = u["tg_id"]
+        days_left = max(0.0, round((sub_until - now).total_seconds() / 86400, 1))
+        if tg_id in ADMIN_TG_IDS or tg_id is None or (days_left > 120 and paid_cnt == 0):
+            user_type = "special"
+            user_type_label = "👑 Админ / Спец"
+            t_key = u["last_paid_tariff"] or "special"
+            expected_price = 0.0
+        elif paid_cnt == 0:
+            user_type = "trial"
+            user_type_label = "🎁 Триал (тест 3 дн)"
+            t_key = "monthly_30d"
+            expected_price = float(tariff_prices.get("monthly_30d", 199.0))
+        elif has_autopay:
+            user_type = "autopay"
+            user_type_label = "⚡ Автоплатеж"
+            t_key = u["autopay_tariff"] or u["last_paid_tariff"] or "monthly_30d"
+            expected_price = float(tariff_prices.get(t_key, 199.0))
+        else:
+            user_type = "manual"
+            user_type_label = "🖐️ Ручное"
+            t_key = u["last_paid_tariff"] or "monthly_30d"
+            expected_price = float(u["last_paid_amount"] or tariff_prices.get(t_key, 199.0))
+
+        t_name = tariff_names.get(t_key, t_key)
+
+        upcoming_list.append({
+            "tg_id": tg_id,
+            "first_name": u["first_name"] or f"TG:{tg_id}",
+            "subscription_until": sub_until.strftime("%Y-%m-%d %H:%M"),
+            "days_left": days_left,
+            "user_type": user_type,
+            "user_type_label": user_type_label,
+            "is_autopay": has_autopay,
+            "is_trial": user_type == "trial",
+            "is_special": user_type == "special",
+            "paid_count": paid_cnt,
+            "tariff_key": t_key,
+            "tariff_name": t_name,
+            "amount": expected_price,
+            "expires_next_7d": sub_until <= (now + timedelta(days=7)),
+            "expires_this_month": sub_until <= end_of_month,
+            "expires_next_30d": sub_until <= (now + timedelta(days=30)),
+        })
+
+    # Horizon Summaries
+    sum_7d_auto = sum(x["amount"] for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "autopay")
+    sum_7d_man = sum(x["amount"] for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "manual")
+    sum_7d_trial = sum(x["amount"] for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "trial")
+    cnt_7d_auto = sum(1 for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "autopay")
+    cnt_7d_man = sum(1 for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "manual")
+    cnt_7d_trial = sum(1 for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "trial")
+
+    sum_month_auto = sum(x["amount"] for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "autopay")
+    sum_month_man = sum(x["amount"] for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "manual")
+    sum_month_trial = sum(x["amount"] for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "trial")
+    cnt_month_auto = sum(1 for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "autopay")
+    cnt_month_man = sum(1 for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "manual")
+    cnt_month_trial = sum(1 for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "trial")
+
+    sum_30d_auto = sum(x["amount"] for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "autopay")
+    sum_30d_man = sum(x["amount"] for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "manual")
+    sum_30d_trial = sum(x["amount"] for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "trial")
+    cnt_30d_auto = sum(1 for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "autopay")
+    cnt_30d_man = sum(1 for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "manual")
+    cnt_30d_trial = sum(1 for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "trial")
+
+    # Current month revenue (MTD)
+    cur.execute("""
+        SELECT COUNT(*) as cnt, COALESCE(SUM(amount), 0) as rev
+        FROM payments
+        WHERE status='paid' AND is_test=0 AND DATE_FORMAT(created_at, '%Y-%m') = DATE_FORMAT(NOW(), '%Y-%m')
+    """)
+    cur_m = cur.fetchone()
+    mtd_rev = float(cur_m["rev"])
+    mtd_cnt = int(cur_m["cnt"])
+
+    # Previous month revenue
+    cur.execute("""
+        SELECT COUNT(*) as cnt, COALESCE(SUM(amount), 0) as rev
+        FROM payments
+        WHERE status='paid' AND is_test=0 AND DATE_FORMAT(created_at, '%Y-%m') = DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 MONTH), '%Y-%m')
+    """)
+    prev_m = cur.fetchone()
+    prev_rev = float(prev_m["rev"])
+    prev_cnt = int(prev_m["cnt"])
+
+    # Current server cost
+    cur.execute("SELECT cost_rub FROM server_costs_monthly WHERE month = DATE_FORMAT(NOW(), '%Y-%m')")
+    c_row = cur.fetchone()
+    cur_server_cost = float(c_row["cost_rub"]) if (c_row and c_row["cost_rub"] is not None) else float(os.getenv("SERVER_MONTHLY_COST", "1350.0"))
+
+    # Average Order Value (last 60 days)
+    cur.execute("""
+        SELECT AVG(amount) as aov
+        FROM payments
+        WHERE status='paid' AND is_test=0 AND created_at >= NOW() - INTERVAL 60 DAY
+    """)
+    aov_row = cur.fetchone()
+    aov = float(aov_row["aov"] or 385.0)
+
+    cur.close()
+    conn.close()
+
+    # Realistic Forecast:
+    # 95% on autopay, 70% on manual paying retention, 16.5% historical test conversion
+    expected_auto_rest = sum_month_auto * 0.95
+    expected_manual_rest = sum_month_man * 0.70
+    expected_trial_rest = sum_month_trial * 0.165
+
+    projected_month_rev = mtd_rev + expected_auto_rest + expected_manual_rest + expected_trial_rest
+    projected_month_profit = projected_month_rev - cur_server_cost
+
+    # Profit target & Run-Rate
+    target_profit = max(3000.0, prev_rev - cur_server_cost)
+    target_rev = target_profit + cur_server_cost
+    target_payments_needed = math.ceil(target_rev / aov)
+    breakeven_payments = math.ceil(cur_server_cost / aov)
+    payments_remaining = max(0, target_payments_needed - mtd_cnt)
+    target_progress_pct = min(100.0, round((mtd_cnt / max(1, target_payments_needed)) * 100, 1))
+
+    # Normalized MRR (strictly from paying customers, excluding trials and admin)
+    mrr = 0.0
+    for u in upcoming_list:
+        if u["user_type"] not in ["autopay", "manual"]:
+            continue
+        t = u["tariff_key"]
+        if "365d" in t or "annual" in t:
+            mrr += 1490.0 / 12.0
+        elif "3m" in t or "standard" in t:
+            mrr += 499.0 / 3.0
+        elif "7d" in t or "weekly" in t:
+            mrr += 200.0
+        else:
+            mrr += 199.0
+
+    paying_count = sum(1 for x in upcoming_list if x["user_type"] in ["autopay", "manual"])
+    trial_count = sum(1 for x in upcoming_list if x["user_type"] == "trial")
+    special_count = sum(1 for x in upcoming_list if x["user_type"] == "special")
+
+    return {
+        "mtd": {
+            "month": now.strftime("%Y-%m"),
+            "revenue": round(mtd_rev, 2),
+            "payments_count": mtd_cnt,
+            "profit": round(mtd_rev - cur_server_cost, 2),
+        },
+        "forecast": {
+            "projected_revenue": round(projected_month_rev, 2),
+            "projected_profit": round(projected_month_profit, 2),
+            "autopay_guaranteed_rest_of_month": round(sum_month_auto, 2),
+            "manual_paying_potential_rest_of_month": round(sum_month_man, 2),
+            "trial_conversion_expected_rest_of_month": round(expected_trial_rest, 2),
+            "server_monthly_cost": round(cur_server_cost, 2),
+            "mrr": round(mrr, 2),
+            "aov": round(aov, 1),
+            "previous_month_revenue": round(prev_rev, 2),
+            "growth_pct": round(((projected_month_rev - prev_rev) / max(1, prev_rev)) * 100, 1) if prev_rev > 0 else 0.0,
+        },
+        "target_maintenance": {
+            "target_profit": round(target_profit, 2),
+            "target_revenue": round(target_rev, 2),
+            "target_payments_needed": target_payments_needed,
+            "payments_completed": mtd_cnt,
+            "payments_remaining": payments_remaining,
+            "progress_percent": target_progress_pct,
+            "breakeven_payments_needed": breakeven_payments,
+            "paying_subscribers_total": paying_count,
+            "autopay_subscribers_count": sum(1 for x in upcoming_list if x["user_type"] == "autopay"),
+            "trial_subscribers_count": trial_count,
+            "special_subscribers_count": special_count,
+            "active_subscribers_total": len(active_users),
+            "status": "ACHIEVED" if payments_remaining == 0 else ("ON_TRACK" if target_progress_pct >= 70 else "IN_PROGRESS"),
+        },
+        "horizons": {
+            "next_7_days": {
+                "count_total": cnt_7d_auto + cnt_7d_man + cnt_7d_trial,
+                "count_autopay": cnt_7d_auto,
+                "count_manual": cnt_7d_man,
+                "count_trial": cnt_7d_trial,
+                "amount_total": round(sum_7d_auto + sum_7d_man, 2), # Exclude trial pure amount from guaranteed
+                "amount_autopay": round(sum_7d_auto, 2),
+                "amount_manual": round(sum_7d_man, 2),
+                "amount_trial_potential": round(sum_7d_trial, 2),
+            },
+            "rest_of_month": {
+                "count_total": cnt_month_auto + cnt_month_man + cnt_month_trial,
+                "count_autopay": cnt_month_auto,
+                "count_manual": cnt_month_man,
+                "count_trial": cnt_month_trial,
+                "amount_total": round(sum_month_auto + sum_month_man, 2),
+                "amount_autopay": round(sum_month_auto, 2),
+                "amount_manual": round(sum_month_man, 2),
+                "amount_trial_potential": round(sum_month_trial, 2),
+            },
+            "next_30_days": {
+                "count_total": cnt_30d_auto + cnt_30d_man + cnt_30d_trial,
+                "count_autopay": cnt_30d_auto,
+                "count_manual": cnt_30d_man,
+                "count_trial": cnt_30d_trial,
+                "amount_total": round(sum_30d_auto + sum_30d_man, 2),
+                "amount_autopay": round(sum_30d_auto, 2),
+                "amount_manual": round(sum_30d_man, 2),
+                "amount_trial_potential": round(sum_30d_trial, 2),
+            },
+        },
+        "upcoming_renewals": upcoming_list,
+    }
+
+
 def autopay_failures(limit: int = 50) -> list[dict]:
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
@@ -435,7 +719,7 @@ def test_to_paid_by_protocol() -> list[dict]:
 
 def list_message_log(tg_id: int = None, source: str = None, status: str = None,
                      limit: int = 100, offset: int = 0) -> list[dict]:
-    """Query message_log with optional filters."""
+    """Query message_log with optional filters (excludes admin/test accounts by default)."""
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     conditions = []
@@ -443,6 +727,8 @@ def list_message_log(tg_id: int = None, source: str = None, status: str = None,
     if tg_id:
         conditions.append("m.tg_id = %s")
         params.append(tg_id)
+    else:
+        conditions.append("m.tg_id NOT IN (364224373, 6648354839, 5254383247)")
     if source:
         conditions.append("m.source = %s")
         params.append(source)
@@ -467,7 +753,7 @@ def list_message_log(tg_id: int = None, source: str = None, status: str = None,
 
 
 def count_message_log(tg_id: int = None, source: str = None, status: str = None) -> dict:
-    """Count message_log with optional filters, grouped by status."""
+    """Count message_log with optional filters, grouped by status (excludes admin/test accounts by default)."""
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     conditions = []
@@ -475,6 +761,8 @@ def count_message_log(tg_id: int = None, source: str = None, status: str = None)
     if tg_id:
         conditions.append("tg_id = %s")
         params.append(tg_id)
+    else:
+        conditions.append("tg_id NOT IN (364224373, 6648354839, 5254383247)")
     if source:
         conditions.append("source = %s")
         params.append(source)
@@ -497,7 +785,7 @@ def count_message_log(tg_id: int = None, source: str = None, status: str = None)
 
 
 def message_log_source_stats(days: int = 7) -> list[dict]:
-    """Per-source message stats for the last N days."""
+    """Per-source message stats for the last N days (excluding admin/test accounts)."""
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
@@ -508,6 +796,7 @@ def message_log_source_stats(days: int = 7) -> list[dict]:
                SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked
         FROM message_log
         WHERE created_at >= NOW() - INTERVAL %s DAY
+          AND tg_id NOT IN (364224373, 6648354839, 5254383247)
         GROUP BY source
         ORDER BY total DESC
     """, (days,))
@@ -515,6 +804,82 @@ def message_log_source_stats(days: int = 7) -> list[dict]:
     cur.close()
     conn.close()
     return rows
+
+
+def get_message_flow_analytics() -> dict:
+    """Computes real customer conversion funnel, retention trigger effectiveness, and support pain points."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    admin_filter = "m.tg_id NOT IN (364224373, 6648354839, 5254383247)"
+    
+    # 1. Funnel
+    cur.execute(f"""
+        SELECT 
+            COUNT(DISTINCT m.tg_id) as total_users,
+            COUNT(DISTINCT CASE WHEN m.scenario = 'start_screen' THEN m.tg_id END) as seen_start,
+            COUNT(DISTINCT CASE WHEN m.scenario = 'test_activation' THEN m.tg_id END) as activated_trial,
+            COUNT(DISTINCT CASE WHEN m.scenario LIKE '%tariff%' THEN m.tg_id END) as viewed_tariffs,
+            COUNT(DISTINCT CASE WHEN m.scenario LIKE '%buy_tariff%' OR m.scenario LIKE '%payment%' OR m.source='webhook' THEN m.tg_id END) as reached_payment
+        FROM message_log m
+        WHERE {admin_filter}
+    """)
+    funnel = cur.fetchone() or {}
+
+    cur.execute("""
+        SELECT COUNT(DISTINCT tg_id) as paid_users
+        FROM payments
+        WHERE status = 'paid' AND is_test = 0 AND tg_id NOT IN (364224373, 6648354839, 5254383247)
+    """)
+    paid_row = cur.fetchone() or {}
+    paid_users = paid_row.get("paid_users", 0)
+
+    # 2. Retention triggers
+    cur.execute(f"""
+        SELECT scenario, COUNT(*) as count
+        FROM message_log m
+        WHERE {admin_filter} AND m.source LIKE 'cron_%' AND m.status = 'sent'
+        GROUP BY scenario
+        ORDER BY count DESC
+        LIMIT 8
+    """)
+    retention_rows = cur.fetchall()
+
+    # 3. Recent incoming support texts
+    cur.execute(f"""
+        SELECT m.id, m.tg_id, COALESCE(NULLIF(u.first_name,''), u.old_first_name) as first_name,
+               m.message_text, m.created_at
+        FROM message_log m
+        LEFT JOIN users u ON m.tg_id = u.tg_id
+        WHERE {admin_filter} AND m.scenario = 'incoming_text'
+        ORDER BY m.created_at DESC
+        LIMIT 5
+    """)
+    support_rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    seen_start = funnel.get("seen_start", 0) or 1
+    act_trial = funnel.get("activated_trial", 0) or 0
+    viewed_tariffs = funnel.get("viewed_tariffs", 0) or 0
+    reached_pay = funnel.get("reached_payment", 0) or 0
+
+    return {
+        "funnel": {
+            "total_users": funnel.get("total_users", 0),
+            "seen_start": seen_start,
+            "activated_trial": act_trial,
+            "trial_pct": round((act_trial / seen_start) * 100, 1),
+            "viewed_tariffs": viewed_tariffs,
+            "tariffs_pct": round((viewed_tariffs / seen_start) * 100, 1),
+            "reached_payment": reached_pay,
+            "payment_intent_pct": round((reached_pay / seen_start) * 100, 1),
+            "paid_users": paid_users,
+            "paid_conversion_pct": round((paid_users / seen_start) * 100, 1),
+        },
+        "retention": retention_rows,
+        "recent_support": support_rows,
+    }
 
 
 def list_webpage_events(limit: int = 100, event_type: str = None, web_token: str = None) -> list[dict]:
@@ -819,6 +1184,7 @@ def get_monitoring_stats() -> dict:
 
 def subscription_status_summary() -> dict:
     """Return expiring_soon (within 3 days) and recently_expired (within 30 days) user list and counts.
+    Enriched with winback funnel stages (gift activated, pending, offer sent, paid status, bot blocked).
     Considers minimum of users.subscription_until and 3x-ui /etc/x-ui/x-ui.db client expiryTime."""
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
@@ -826,16 +1192,40 @@ def subscription_status_summary() -> dict:
     # 1. Fetch users from MySQL
     cur.execute("""
         SELECT u.id, u.tg_id, COALESCE(NULLIF(u.first_name,''), NULLIF(u.old_first_name,'')) AS first_name,
-               u.last_name, u.web_token, u.subscription_until
+               u.last_name, u.web_token, u.subscription_until, COALESCE(u.bot_blocked, 0) AS bot_blocked
         FROM users u
     """)
     user_rows = cur.fetchall()
+
+    # 2. Fetch payments aggregate per user
+    cur.execute("""
+        SELECT tg_id, COUNT(*) AS payments_count, COALESCE(SUM(amount), 0) AS total_paid
+        FROM payments
+        WHERE status = 'paid'
+        GROUP BY tg_id
+    """)
+    pay_rows = cur.fetchall()
+    pay_map = {r["tg_id"]: r for r in pay_rows if r.get("tg_id")}
+
+    # 3. Fetch winback log entries
+    cur.execute("""
+        SELECT tg_id, scenario, sent_at
+        FROM winback_log
+        ORDER BY sent_at ASC
+    """)
+    wb_rows = cur.fetchall()
     cur.close()
     conn.close()
 
+    from collections import defaultdict
+    wb_map = defaultdict(list)
+    for r in wb_rows:
+        if r.get("tg_id"):
+            wb_map[r["tg_id"]].append(r)
+
     users_map = {r["tg_id"]: r for r in user_rows if r.get("tg_id")}
 
-    # 2. Fetch min active expiryTime per tg_id from 3x-ui SQLite db
+    # 4. Fetch min active expiryTime per tg_id from 3x-ui SQLite db
     xui_expires = {}
     import sqlite3
     try:
@@ -867,7 +1257,8 @@ def subscription_status_summary() -> dict:
         xui_ms = xui_expires.get(tg_id)
         xui_dt = datetime.utcfromtimestamp(xui_ms / 1000.0) if xui_ms else None
 
-        # Effective expiry = LEAST of subscription_until and 3x-ui client expiryTime
+        # Effective expiry: users.subscription_until is canonical.
+        # Use max if multiple dates exist to avoid false-positives from stale secondary inbounds.
         dates = []
         if sub and isinstance(sub, datetime):
             dates.append(sub)
@@ -877,10 +1268,61 @@ def subscription_status_summary() -> dict:
         if not dates:
             continue
 
-        eff = min(dates)
+        eff = max(dates)
 
         diff_seconds = (eff - now).total_seconds()
         hours = int(diff_seconds / 3600)
+
+        # Check payments info
+        p_info = pay_map.get(tg_id, {})
+        p_count = int(p_info.get("payments_count", 0))
+        p_total = float(p_info.get("total_paid", 0.0))
+
+        # Check winback history
+        user_wb = wb_map.get(tg_id, [])
+        is_bot_blocked = bool(u.get("bot_blocked", 0))
+
+        gift_activated = False
+        gift_activated_at = None
+        gift_sent = False
+        gift_sent_at = None
+        last_wb_scenario = None
+        last_wb_at = None
+        sends_count = 0
+
+        for wb in user_wb:
+            sc = wb.get("scenario", "")
+            s_at = wb.get("sent_at")
+            if sc in ("loyalty_gift_activated", "gift_activated"):
+                gift_activated = True
+                gift_activated_at = s_at.strftime("%Y-%m-%d %H:%M") if hasattr(s_at, "strftime") else str(s_at)
+            elif sc in ("loyalty_gift_10d", "loyalty_gift", "test_0mb_2d"):
+                gift_sent = True
+                gift_sent_at = s_at.strftime("%Y-%m-%d %H:%M") if hasattr(s_at, "strftime") else str(s_at)
+                sends_count += 1
+                last_wb_scenario = sc
+                last_wb_at = s_at
+            else:
+                sends_count += 1
+                last_wb_scenario = sc
+                last_wb_at = s_at
+
+        # Determine winback stage
+        if is_bot_blocked:
+            wb_stage = "bot_blocked"
+            wb_badge = "🚫 Бот заблокирован"
+        elif gift_activated:
+            wb_stage = "gift_activated"
+            wb_badge = "🎁 Доп. тест активирован"
+        elif gift_sent:
+            wb_stage = "gift_pending"
+            wb_badge = "⏳ Доп. тест ожидает активации"
+        elif last_wb_scenario:
+            wb_stage = "offer_sent"
+            wb_badge = f"📨 Оффер: {last_wb_scenario}"
+        else:
+            wb_stage = "ready_to_send"
+            wb_badge = "✉️ Оффер не отправлялся"
 
         entry = {
             "id": u["id"],
@@ -889,6 +1331,19 @@ def subscription_status_summary() -> dict:
             "last_name": u["last_name"],
             "subscription_until": eff.strftime("%Y-%m-%d %H:%M:%S"),
             "web_token": u["web_token"],
+            "payments_count": p_count,
+            "paid_amount": p_total,
+            "is_paid": p_count > 0,
+            "bot_blocked": is_bot_blocked,
+            "winback_stage": wb_stage,
+            "winback_badge": wb_badge,
+            "gift_activated": gift_activated,
+            "gift_activated_at": gift_activated_at,
+            "gift_sent": gift_sent,
+            "gift_sent_at": gift_sent_at,
+            "last_winback_scenario": last_wb_scenario,
+            "last_winback_at": last_wb_at.strftime("%Y-%m-%d %H:%M") if hasattr(last_wb_at, "strftime") and last_wb_at else str(last_wb_at) if last_wb_at else None,
+            "sends_count": sends_count,
         }
 
         if 0 <= hours <= 72:
@@ -906,6 +1361,14 @@ def subscription_status_summary() -> dict:
         "recently_expired": recently_expired,
         "expiring_soon_count": len(expiring_soon),
         "recently_expired_count": len(recently_expired),
+        "stats": {
+            "total_expired": len(recently_expired),
+            "gift_activated_count": sum(1 for x in recently_expired if x.get("winback_stage") == "gift_activated"),
+            "gift_pending_count": sum(1 for x in recently_expired if x.get("winback_stage") == "gift_pending"),
+            "ready_to_send_count": sum(1 for x in recently_expired if x.get("winback_stage") == "ready_to_send"),
+            "paid_users_count": sum(1 for x in recently_expired if x.get("is_paid")),
+            "bot_blocked_count": sum(1 for x in recently_expired if x.get("bot_blocked")),
+        }
     }
 
 

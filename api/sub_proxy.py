@@ -22,6 +22,7 @@ from api.db import (
     log_user_platform,
 )
 from api.platform_detector import detect_platform
+from api.web_portal import WebEventRequest, _log_webpage_event
 
 logger = logging.getLogger(__name__)
 sub_router = APIRouter(); print("DEBUG: sub_router initialized")
@@ -44,7 +45,9 @@ def _get_active_sni(inbound_key: str = "1") -> str:
     defaults = {
         "1": "tile.openstreetmap.org",
         "2": "www.speedtest.net",
+        "10": "www.amazon.com",
         "14": "www.speedtest.net",
+        "15": "swscan.apple.com",
     }
     try:
         state_file = Path(__file__).resolve().parent.parent / "data" / "active_sni.json"
@@ -171,25 +174,44 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
     if len(outbound_tags) > 1:
         auto_group_tag = "⚡ Автовыбор узла"
         manual_group_tag = "🎯 Выбор сервера вручную"
+        yt_group_tag = "🔴 YouTube & Видео (Безлимит DE)"
+
+        # Отбираем скоростные европейские узлы для видеостриминга (без расхода RU Selectel)
+        eu_tags = [t for t in outbound_tags if not any(x in t for x in ('🇷🇺', 'Шлюз', 'RU', 'ru-server', 'Selectel', 'Доступ в РФ'))]
+        ru_tags = [t for t in outbound_tags if any(x in t for x in ('🇷🇺', 'Шлюз', 'RU', 'ru-server', 'Selectel', 'Доступ в РФ'))]
+        ru_proxy = ru_tags[0] if ru_tags else None
+        yt_preferred = [t for t in eu_tags if any(k in t for k in ('Turbo', 'Hysteria', 'Vision'))] or eu_tags or outbound_tags
+        yt_fallback_chain = list(yt_preferred) + [t for t in outbound_tags if t not in yt_preferred]
+
         auto_outbound = {
             "type": "urltest",
             "tag": auto_group_tag,
-            "outbounds": list(outbound_tags),
+            "outbounds": list(eu_tags or outbound_tags),
             "url": "https://www.gstatic.com/generate_204",
             "interval": "2m",
             "tolerance": 100,
             "idle_timeout": "30m",
         }
+        yt_outbound = {
+            "type": "urltest",
+            "tag": yt_group_tag,
+            "outbounds": yt_fallback_chain,
+            "url": "https://www.gstatic.com/generate_204",
+            "interval": "3m",
+            "tolerance": 80,
+            "idle_timeout": "30m",
+        }
         select_outbound = {
             "type": "selector",
             "tag": manual_group_tag,
-            "outbounds": [auto_group_tag] + list(outbound_tags),
+            "outbounds": [auto_group_tag, yt_group_tag] + list(outbound_tags),
             "default": auto_group_tag,
         }
-        proxy_groups.extend([select_outbound, auto_outbound])
+        proxy_groups.extend([select_outbound, auto_outbound, yt_outbound])
         default_proxy = manual_group_tag
     else:
         default_proxy = outbound_tags[0]
+        yt_group_tag = default_proxy
 
     # Системные аутбаунды
     all_outbounds = proxy_groups + outbounds + [
@@ -205,7 +227,8 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
                 {"tag": "dns-direct", "address": "77.88.8.8", "detour": "direct"},
             ],
             "rules": [
-                {"geosite": ["category-ru", "category-gov-ru", "mailru", "vk"], "server": "dns-direct"},
+                {"ip_is_private": True, "server": "dns-direct"},
+                {"domain_suffix": [".ru", ".su", ".рф", "2gis.com", "vk.com", "tinkoff.com", "sberbank.com"], "server": "dns-direct"},
             ],
             "final": "dns-remote",
         },
@@ -224,8 +247,83 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
             "rules": [
                 {"protocol": "dns", "outbound": "dns-out"},
                 {"ip_is_private": True, "outbound": "direct"},
-                {"geosite": ["category-ru", "category-gov-ru", "mailru", "vk"], "outbound": "direct"},
-                {"geoip": ["ru"], "outbound": "direct"},
+                {
+                    "domain_suffix": [
+                        "ooni.org",
+                        "ooni.torproject.org",
+                        "ooni.nu",
+                        "measurementlab.net",
+                        "measurement-lab.org",
+                        "cmu.ssop.gov.ru",
+                        "cmu.gov.ru",
+                        "eais.rkn.gov.ru",
+                        "blocklist.rkn.gov.ru",
+                        "re-filter.com",
+                        "zapret-info.org",
+                    ],
+                    "outbound": "block",
+                },
+                {
+                    "domain_suffix": [
+                        "googlevideo.com",
+                        "youtube.com",
+                        "ytimg.com",
+                        "youtu.be",
+                        "youtubei.googleapis.com",
+                        "yt3.ggpht.com",
+                        "nhacmp3youtube.com",
+                        "twitch.tv",
+                        "ttvnw.net",
+                        "jtvnw.net",
+                        "ext-twitch.tv",
+                        "netflix.com",
+                        "nflxvideo.net",
+                        "nflxext.com",
+                        "nflximg.net",
+                        "tiktok.com",
+                        "byteoversea.com",
+                        "ibytedtos.com",
+                        "musical.ly",
+                        "kick.com",
+                        "vimeo.com",
+                        "vimeocdn.com",
+                        "disneyplus.com",
+                        "hulu.com",
+                        "max.com",
+                        "hbomax.com",
+                        "primevideo.com",
+                        "pv-cdn.net",
+                        "tv.apple.com"
+                    ],
+                    "domain_keyword": [
+                        "googlevideo"
+                    ],
+                    "outbound": yt_group_tag
+                },
+                {
+                    "domain_suffix": [
+                        ".ru", ".su", ".рф",
+                        "2gis.com", "2gis.ru",
+                        "ozon.ru", "wildberries.ru", "avito.ru", "megamarket.ru",
+                        "gosuslugi.ru", "esia.gosuslugi.ru", "gu-st.ru", "pos.gosuslugi.ru",
+                        "nalog.ru", "nalog.gov.ru", "cbr.ru", "nspk.ru", "mir-pay.ru", "sbp.nspk.ru",
+                        "tbank.ru", "t-bank.ru", "tinkoff.ru", "tbank-online.ru", "t-invest.ru", "tinkoff.com",
+                        "sberbank.ru", "sber.ru", "sberbank.com", "sbrf.ru", "domclick.ru",
+                        "vtb.ru", "alfabank.ru", "alfa-bank.ru", "gazprombank.ru", "sovcombank.ru",
+                        "rshb.ru", "raiffeisen.ru", "psbank.ru", "open.ru", "rosbank.ru", "mkb.ru", "pochtabank.ru",
+                        "2ip.ru", "yandex.ru", "ya.ru", "yandex.net", "vk.com", "vk.ru",
+                        "mail.ru", "dzen.ru", "kinopoisk.ru", "mos.ru", "e-yakutia.ru", "sakha.gov.ru", "sakha.ru",
+                        "rutube.ru", "rutubelist.ru", "rtbcdn.ru", "fe.rutube.ru",
+                        "okko.tv", "okko.sport", "ivi.ru", "kion.ru", "premier.one",
+                        "amediateka.ru", "smotrim.ru", "vgtrk.ru", "wink.ru", "start.ru",
+                        "vigo.tech", "tns-counter.ru", "yappy.media"
+                    ],
+                    "outbound": "direct"
+                },
+                {
+                    "geoip": ["ru"],
+                    "outbound": "direct"
+                }
             ],
             "final": default_proxy,
             "auto_detect_interface": True,
@@ -283,7 +381,24 @@ def _pick_vless_key(user: dict) -> dict | None:
     now = datetime.utcnow()
     active = [k for k in vless_keys if k.get("expires_at") and k["expires_at"] > now]
     pool = active or vless_keys
-    return max(pool, key=lambda k: k.get("expires_at") or datetime.min)
+
+    # Сортируем:
+    # 1. Срок действия (expires_at)
+    # 2. Приоритет правильным именам: tiin_{tg_id} или tiin_web_{user_id}
+    # 3. ID записи (самый свежий ключ)
+    pref_names = set()
+    if tg_id:
+        pref_names.add(f"tiin_{tg_id}")
+    if user.get("id"):
+        pref_names.add(f"tiin_web_{user['id']}")
+
+    def _sort_key(k: dict):
+        exp = k.get("expires_at") or datetime.min
+        name_prio = 1 if k.get("client_name") in pref_names else 0
+        kid = k.get("id") or 0
+        return (exp, name_prio, kid)
+
+    return max(pool, key=_sort_key)
 
 
 class XUIError(Exception):
@@ -294,6 +409,8 @@ class XUIError(Exception):
 
 async def _fetch_xui(url: str) -> bytes:
     """Получает подписку из XUI."""
+    if ":2096/sub/" in url:
+        url = url.replace(":2096/sub/", ":2096/updates_ui/")
     async with httpx.AsyncClient(timeout=10, verify=False) as client:
         resp = await client.get(url)
         if resp.status_code in (400, 403, 404):
@@ -374,11 +491,14 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
     b64_url = base64.urlsafe_b64encode(sub_url.encode()).decode().rstrip("=")
     
     happ_link = f"happ://add/{sub_url}"
+    incy_link = f"incy://import/{sub_url}"
     streisand_link = f"streisand://import/{sub_url}"
     v2rayng_link = f"v2rayng://install-config?url={urllib.parse.quote(sub_url, safe='')}"
     shadowrocket_link = f"shadowrocket://add/sub://{b64_url}"
     singbox_link = f"sing-box://import-remote-profile?url={urllib.parse.quote(sub_url, safe='')}#%F0%9F%90%BF%20TIIN%20VPN"
     cabinet_link = f"https://344988.snk.wtf/my/{token}"
+
+    import json as json_mod
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -503,39 +623,65 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
     border-radius: 8px;
     cursor: pointer;
   }}
-  .footer-link {{
-    margin-top: 20px;
-    display: inline-block;
-    color: #818cf8;
+  .cabinet-box {{
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }}
+  .cabinet-desc {{
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }}
+  .btn-cabinet {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-radius: 12px;
     text-decoration: none;
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 600;
+    color: #c7d2fe;
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    transition: all 0.2s ease;
   }}
-  .footer-link:hover {{ text-decoration: underline; }}
-  .ios-only, .android-only, .pc-only {{ display: none; }}
+  .btn-cabinet:hover {{
+    background: rgba(99, 102, 241, 0.2);
+    color: #fff;
+  }}
 </style>
 </head>
 <body>
 <div class="card">
   <div class="badge">🚀 Быстрый старт в 1 клик</div>
   <h1>Подключение к тииҥ VPN</h1>
-  <p class="subtitle">Нажмите кнопку установленного у вас приложения — настройки подтянутся автоматически:</p>
+  <p class="subtitle">Нажмите кнопку установленного приложения — настройки подтянутся автоматически:</p>
 
   <div class="btn-group">
     <!-- Кнопки приложений -->
-    <a class="btn btn-primary" href="{happ_link}">
+    <a class="btn btn-primary" id="btn-happ" data-app="Happ Proxy" href="{happ_link}">
       <span>⚡</span> Открыть в Happ Proxy
     </a>
+
+    <a class="btn btn-secondary" id="btn-incy" data-app="INCY" href="{incy_link}">
+      <span>🔮</span> Открыть в INCY
+    </a>
     
-    <a class="btn btn-secondary" id="btn-streisand" href="{streisand_link}">
+    <a class="btn btn-secondary" id="btn-streisand" data-app="Streisand" href="{streisand_link}">
       <span>🛡️</span> Открыть в Streisand
     </a>
     
-    <a class="btn btn-secondary" id="btn-v2rayng" href="{v2rayng_link}">
+    <a class="btn btn-secondary" id="btn-v2rayng" data-app="v2rayNG" href="{v2rayng_link}">
       <span>🤖</span> Открыть в v2rayNG
     </a>
 
-    <a class="btn btn-secondary" id="btn-shadowrocket" href="{shadowrocket_link}">
+    <a class="btn btn-secondary" id="btn-shadowrocket" data-app="Shadowrocket" href="{shadowrocket_link}">
       <span>🚀</span> Открыть в Shadowrocket
     </a>
   </div>
@@ -546,20 +692,85 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
     <div class="sub-box-title">Прямая ссылка подписки:</div>
     <div class="sub-url-row">
       <div class="sub-url" id="subUrlText">{sub_url}</div>
-      <button class="btn-copy" onclick="copySub()">Копировать</button>
+      <button class="btn-copy" id="btnCopySub" onclick="copySub()">Копировать</button>
     </div>
   </div>
 
-  <div>
-    <a class="footer-link" href="{cabinet_link}">📖 Открыть подробную инструкцию и QR-код</a>
+  <div class="cabinet-box">
+    <div class="cabinet-desc">Нужен статус подписки, QR-код или подробная пошаговая инструкция?</div>
+    <a class="btn-cabinet" id="btnToCabinet" href="{cabinet_link}">
+      <span>👤</span> Открыть Личный кабинет
+    </a>
   </div>
 </div>
 
 <script>
+// ── Трекинг аналитики на странице 1 клик ──
+(function() {{
+  var TOKEN = {json_mod.dumps(token)};
+  var API = '/go-connect/' + TOKEN + '/event';
+
+  function track(eventType, el, extra) {{
+    var payload = {{
+      event_type: eventType,
+      element_id: el ? el.id || null : null,
+      element_text: el ? (el.textContent || '').trim().substring(0, 200) : null,
+      extra_data: Object.assign({{ page: 'go_connect', flow: 'one_click' }}, extra || {{}})
+    }};
+    if (navigator.sendBeacon) {{
+      navigator.sendBeacon(API, new Blob([JSON.stringify(payload)], {{ type: 'application/json' }}));
+    }} else {{
+      fetch(API, {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify(payload),
+        keepalive: true
+      }}).catch(function(){{}});
+    }}
+  }}
+
+  window._trackEvent = track;
+
+  // Track page load
+  track('page_view', null, {{
+    url: window.location.pathname,
+    referrer: document.referrer || null,
+    screen: window.innerWidth + 'x' + window.innerHeight
+  }});
+
+  // Слушатель кликов
+  document.addEventListener('click', function(e) {{
+    var el = e.target.closest('a, button');
+    if (!el) return;
+
+    var extra = {{}};
+    if (el.dataset && el.dataset.app) {{
+      extra.app = el.dataset.app;
+      extra.href = el.href || null;
+      track('click_connect_btn', el, extra);
+    }} else if (el.id === 'btnCopySub') {{
+      track('copy_subscription_url', el);
+    }} else if (el.id === 'btnToCabinet' || (el.href && el.href.indexOf('/my/') !== -1)) {{
+      extra.target_url = el.href;
+      track('click_to_cabinet', el, extra);
+    }} else if (el.tagName === 'A') {{
+      extra.href = el.href || null;
+      track('click_link', el, extra);
+    }}
+  }});
+
+  // Track page unload (время на странице)
+  var pageStart = Date.now();
+  window.addEventListener('beforeunload', function() {{
+    var duration = Math.round((Date.now() - pageStart) / 1000);
+    track('page_unload', null, {{ duration_seconds: duration }});
+  }});
+}})();
+
 function copySub() {{
   const text = document.getElementById('subUrlText').innerText;
   navigator.clipboard.writeText(text).then(() => {{
-    const btn = event.target;
+    const btn = document.getElementById('btnCopySub') || event.target;
     const old = btn.innerText;
     btn.innerText = 'Скопировано!';
     btn.style.background = '#10b981';
@@ -573,16 +784,29 @@ function copySub() {{
     alert('Ссылка: ' + text);
   }});
 }}
-
-// Попытка авто-редиректа на Happ (если поддерживается)
-window.addEventListener('load', () => {{
-  const ua = navigator.userAgent.toLowerCase();
-  const isIOS = /iphone|ipad|ipod/.test(ua);
-  const isAndroid = /android/.test(ua);
-}});
 </script>
 </body>
 </html>"""
+
+
+@sub_router.post("/go-connect/{token}/event")
+async def track_go_connect_event(token: str, req: WebEventRequest, request: Request):
+    """Слушатель событий на странице Подключить в 1 клик."""
+    extra = req.extra_data or {}
+    if not isinstance(extra, dict):
+        extra = {"raw": str(extra)}
+    extra.setdefault("source", "go_connect_one_click")
+
+    _log_webpage_event(
+        web_token=token,
+        event_type=req.event_type,
+        element_id=req.element_id,
+        element_text=req.element_text,
+        extra_data=extra,
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    return {"ok": True}
 
 
 
@@ -672,13 +896,16 @@ async def proxy_subscription(token: str, request: Request = None):
             else:
                 base_link = line
 
+            # Очистка несовместимых параметров Post-Quantum ML-DSA (pqv) для мобильных клиентов
+            import re
+            base_link = re.sub(r'pqv=[^&]+&?', '', base_link)
+            base_link = base_link.rstrip('?&')
+
             # Исключаем нерабочие/отключенные узлы по запросу
             if "type=ws" in line or ":14715" in line:
-                continue  # WebSocket • MUX
-            elif ":48745" in line or ("type=xhttp" in line and "update.microsoft.com" in line):
-                continue  # xHTTP • Armor-M1
-            elif ":53151" in line or ("security=reality" in line and "amazon.com" in line):
-                continue  # Reality • Standard
+                continue  # WebSocket • MUX (0 подключений)
+            elif ":38745" in line:
+                continue  # xHTTP • Ultra (дублирует и сбоит на МТС/Мегафон)
 
             if ":7443" in line:
                 active_sni = _get_active_reality_sni()
@@ -687,12 +914,12 @@ async def proxy_subscription(token: str, request: Request = None):
                     base_link = re.sub(r'sni=[^&]+', f'sni={active_sni}', base_link)
                 else:
                     base_link = f"{base_link}&sni={active_sni}"
-                remark = "🇩🇪 👁️ Reality • Vision (TCP)"
+                remark = "🇩🇪 👁️ Reality • Vision (МТС / РТК)"
             elif line.startswith("hysteria2://") or line.startswith("hysteria://"):
                 if ":35443" in line:
                     remark = "🇩🇪 ⚔️ Hysteria2 • Armor-M1"
                 elif ":4443" in line:
-                    remark = "🇩🇪 🚀 Hysteria2 • Turbo"
+                    remark = "🇩🇪 🚀 Hysteria2 • Turbo (Быстрый)"
                 else:
                     remark = "🇩🇪 🚀 Hysteria2"
             elif line.startswith("tuic://"):
@@ -703,6 +930,26 @@ async def proxy_subscription(token: str, request: Request = None):
                 remark = "🇩🇪 🟣 VLESS • gRPC"
             elif ":8081" in line or "x_padding_bytes=100-1000" in line or "amd.com" in line:
                 remark = "🇩🇪 🛡️ Anti-DPI • Enhanced"
+            elif ":48745" in line or ("type=xhttp" in line and ("swscan.apple.com" in line or "update.microsoft.com" in line)):
+                active_sni_15 = _get_active_sni("15")
+                import re
+                if "sni=" in base_link:
+                    base_link = re.sub(r'sni=[^&]+', f'sni={active_sni_15}', base_link)
+                else:
+                    base_link = f"{base_link}&sni={active_sni_15}"
+                if "host=" in base_link:
+                    base_link = re.sub(r'host=[^&]+', f'host={active_sni_15}', base_link)
+                else:
+                    base_link = f"{base_link}&host={active_sni_15}"
+                base_link = re.sub(r'flow=[^&]+&?', '', base_link)
+                base_link = base_link.rstrip('?&')
+                remark = "🇩🇪 💎 xHTTP • Armor (МТС / Билайн)"
+            elif ":53151" in line or ("security=reality" in line and "amazon.com" in line):
+                active_sni_10 = _get_active_sni("10")
+                if "sni=" in base_link:
+                    import re
+                    base_link = re.sub(r'sni=[^&]+', f'sni={active_sni_10}', base_link)
+                remark = "🇩🇪 🛡️ Reality • Standard (Amazon)"
             elif ":47447" in line or ("type=xhttp" in line and ("nvidia.com" in line or "samsung.com" in line)):
                 active_sni_2 = _get_active_sni("2")
                 import re
@@ -718,22 +965,7 @@ async def proxy_subscription(token: str, request: Request = None):
                 base_link = re.sub(r'flow=[^&]+&?', '', base_link)
                 base_link = re.sub(r'encryption=[^&]+', 'encryption=none', base_link)
                 base_link = base_link.rstrip('?&')
-                remark = "🇩🇪 🌊 xHTTP • Stream"
-            elif ":38745" in line or ("type=xhttp" in line and "microsoft.com" in line):
-                active_sni_14 = _get_active_sni("14")
-                import re
-                if "sni=" in base_link:
-                    base_link = re.sub(r'sni=[^&]+', f'sni={active_sni_14}', base_link)
-                else:
-                    base_link = f"{base_link}&sni={active_sni_14}"
-                if "host=" in base_link:
-                    base_link = re.sub(r'host=[^&]+', f'host={active_sni_14}', base_link)
-                else:
-                    base_link = f"{base_link}&host={active_sni_14}"
-                base_link = re.sub(r'flow=[^&]+&?', '', base_link)
-                base_link = re.sub(r'encryption=[^&]+', 'encryption=none', base_link)
-                base_link = base_link.rstrip('?&')
-                remark = "🇩🇪 💎 xHTTP • Ultra"
+                remark = "🇩🇪 🌊 xHTTP • Stream (МегаФон)"
             elif ":28745" in line or ("type=xhttp" in line and "google.com" in line):
                 remark = "🇩🇪 🟠 xHTTP • Standard"
             elif "type=xhttp" in line:
@@ -746,13 +978,19 @@ async def proxy_subscription(token: str, request: Request = None):
             new_lines.append(f"{base_link}#{remark}")
             vless_entries.append((base_link, remark))
 
-        # Сортируем немецкие серверы по надежности: xHTTP Ultra -> Hysteria2 -> Reality
+        # Сортируем немецкие серверы по надежности и операторам
         def _server_sort_key(entry):
             _, remark = entry
-            if "xHTTP • Ultra" in remark: return 1
-            if "Hysteria2 • Armor" in remark: return 2
-            if "Reality • Vision" in remark: return 3
-            return 10
+            if "Hysteria2 • Turbo" in remark: return 1
+            if "Reality • Vision" in remark: return 2
+            if "xHTTP • Armor" in remark: return 3
+            if "xHTTP • Stream" in remark: return 4
+            if "Reality • Standard" in remark: return 5
+            if "Hysteria2 • Armor" in remark: return 6
+            if "Hysteria2" in remark: return 7
+            if "Reality" in remark: return 8
+            if "xHTTP" in remark: return 9
+            return 20
         vless_entries.sort(key=_server_sort_key)
         new_lines = [f"{link}#{remark}" for link, remark in vless_entries]
 
@@ -774,14 +1012,14 @@ async def proxy_subscription(token: str, request: Request = None):
             
             client_auth = real_hy2_auth or client_uuid.replace('-', '')
             ru_hy2_link = f"hysteria2://{client_auth}@ru-server.tiinservice.online:35443?alpn=h3&fp=chrome&security=tls&sni=ru-server.tiinservice.online"
-            ru_hy2_remark = "🇷🇺 ⚡ Hysteria2 • Шлюз (РФ ➔ DE)"
-            new_lines.insert(0, f"{ru_hy2_link}#{ru_hy2_remark}")
-            vless_entries.insert(0, (ru_hy2_link, ru_hy2_remark))
+            ru_hy2_remark = "🇷🇺 🏛 Selectel • Доступ в РФ (из заграницы)"
+            new_lines.append(f"{ru_hy2_link}#{ru_hy2_remark}")
+            vless_entries.append((ru_hy2_link, ru_hy2_remark))
 
             ru_vless_link = f"vless://{client_uuid}@ru-server.tiinservice.online:8443?type=ws&security=tls&sni=ru-server.tiinservice.online&path=%2Fapi%2Fv1%2Fws"
-            ru_vless_remark = "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
-            new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
-            vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
+            ru_vless_remark = "🇷🇺 🏛 Selectel • Доступ в РФ (из заграницы) • TCP"
+            new_lines.append(f"{ru_vless_link}#{ru_vless_remark}")
+            vless_entries.append((ru_vless_link, ru_vless_remark))
 
         if wants_singbox:
             singbox_cfg = _build_singbox_config(vless_entries)

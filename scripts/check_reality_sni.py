@@ -41,6 +41,7 @@ INBOUND_POOLS = {
             {"sni": "tile.openstreetmap.org", "desc": "OpenStreetMap Tiles"},
             {"sni": "ftp.fau.de", "desc": "FAU University Mirror"},
             {"sni": "www.uni-frankfurt.de", "desc": "Frankfurt University"},
+            {"sni": "swscan.apple.com", "desc": "Apple CDN"},
         ]
     },
     "2": {
@@ -49,7 +50,17 @@ INBOUND_POOLS = {
         "default": "www.speedtest.net",
         "candidates": [
             {"sni": "www.speedtest.net", "desc": "Ookla Speedtest CDN"},
-            {"sni": "download.videolan.org", "desc": "VideoLAN VLC CDN"},
+            {"sni": "www.uni-heidelberg.de", "desc": "Heidelberg University"},
+            {"sni": "www.microsoft.com", "desc": "Microsoft CDN"},
+        ]
+    },
+    "10": {
+        "name": "Inbound #10 (Reality Standard)",
+        "port": 53151,
+        "default": "www.amazon.com",
+        "candidates": [
+            {"sni": "www.amazon.com", "desc": "Amazon Retail CDN"},
+            {"sni": "aws.amazon.com", "desc": "Amazon AWS Portal"},
         ]
     },
     "14": {
@@ -59,6 +70,16 @@ INBOUND_POOLS = {
         "candidates": [
             {"sni": "www.speedtest.net", "desc": "Ookla Speedtest CDN"},
             {"sni": "www.uni-heidelberg.de", "desc": "Heidelberg University"},
+        ]
+    },
+    "15": {
+        "name": "Inbound #15 (xHTTP Armor-M1)",
+        "port": 48745,
+        "default": "swscan.apple.com",
+        "candidates": [
+            {"sni": "swscan.apple.com", "desc": "Apple Software Scan CDN"},
+            {"sni": "swdist.apple.com", "desc": "Apple Distribution CDN"},
+            {"sni": "www.apple.com", "desc": "Apple Main Portal"},
         ]
     }
 }
@@ -109,6 +130,48 @@ def test_tls13(host: str, port: int = 443, timeout: float = 3.5) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def sync_xui_db_inbound(inbound_id_str: str, new_sni: str):
+    """Синхронизирует целевой target/serverNames/host в базе данных x-ui."""
+    db_path = Path("/etc/x-ui/x-ui.db")
+    if not db_path.exists():
+        return
+    try:
+        import sqlite3
+        inbound_id = int(inbound_id_str)
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        c.execute("SELECT stream_settings FROM inbounds WHERE id = ?", (inbound_id,))
+        row = c.fetchone()
+        if row:
+            stream = json.loads(row[0])
+            changed = False
+            if "realitySettings" in stream:
+                rs = stream["realitySettings"]
+                if rs.get("target") != f"{new_sni}:443":
+                    rs["target"] = f"{new_sni}:443"
+                    changed = True
+                if "serverNames" in rs and isinstance(rs["serverNames"], list):
+                    if new_sni not in rs["serverNames"]:
+                        rs["serverNames"].insert(0, new_sni)
+                        changed = True
+                if "settings" in rs and isinstance(rs["settings"], dict):
+                    if rs["settings"].get("serverName") != new_sni:
+                        rs["settings"]["serverName"] = new_sni
+                        changed = True
+            if "xhttpSettings" in stream:
+                xs = stream["xhttpSettings"]
+                if xs.get("host") != new_sni:
+                    xs["host"] = new_sni
+                    changed = True
+            if changed:
+                c.execute("UPDATE inbounds SET stream_settings = ? WHERE id = ?", (json.dumps(stream), inbound_id))
+                conn.commit()
+                logger.info(f"💾 Synchronized x-ui.db inbound #{inbound_id} with new SNI [{new_sni}]")
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to sync x-ui.db for inbound #{inbound_id_str}: {e}")
+
+
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
@@ -118,8 +181,10 @@ def load_state() -> dict:
             pass
     return {
         "active_sni_1": "tile.openstreetmap.org",
-        "active_sni_2": "www.samsung.com",
+        "active_sni_2": "www.speedtest.net",
+        "active_sni_10": "www.amazon.com",
         "active_sni_14": "www.speedtest.net",
+        "active_sni_15": "swscan.apple.com",
     }
 
 
@@ -200,6 +265,7 @@ async def main():
             new_sni = best["sni"]
             logger.info(f"🔄 Rotating {pool_info['name']}: {current_active} -> {new_sni}")
             state[state_key] = new_sni
+            sync_xui_db_inbound(inb_key, new_sni)
             rotations.append({
                 "inbound": pool_info["name"],
                 "old": current_active,

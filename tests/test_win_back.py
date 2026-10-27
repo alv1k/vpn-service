@@ -150,6 +150,19 @@ class TestTestEndedScenarios:
         assert candidates[0]["priority"] == 2
         assert candidates[0]["total_mb"] == 0.0
 
+    def test_test_0mb_2d_when_handshake_noise_traffic(self):
+        """Test ended 2+ days ago, no payments, low handshake traffic (1.4 KB) -> test_0mb_2d."""
+        user = _make_user(tg_id=201, test_vless=True, sub_until=NOW - timedelta(days=2))
+        test_expires = NOW - timedelta(days=2, hours=1)
+        keys = {201: [_make_key(201, expires_at=test_expires)]}
+        traffic = _make_traffic(201, upload=700, download=735)  # ~1.4 KB
+
+        candidates = classify_funnel([user], keys, {}, traffic)
+        assert len(candidates) == 1
+        assert candidates[0]["tg_id"] == 201
+        assert candidates[0]["scenario"] == "test_0mb_2d"
+        assert candidates[0]["priority"] == 2
+
     def test_test_ended_2d_when_traffic_exists(self):
         """Test ended 2+ days ago, traffic > 0, no payments -> test_ended_2d."""
         user = _make_user(tg_id=202, test_awg=True, sub_until=NOW - timedelta(days=2))

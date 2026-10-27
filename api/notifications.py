@@ -42,6 +42,12 @@ def _generate_code() -> str:
 
 def create_auth_code(destination: str, channel: str = "email") -> str | None:
     """Generate a code, store it, and send it. Returns the code on success, None on failure."""
+    if channel == "email":
+        from api.disposable_email import is_disposable_email
+        if is_disposable_email(destination):
+            logger.warning(f"Blocked auth code request to disposable email: {destination}")
+            return None
+
     # Rate limit: count unexpired, unused codes for this destination
     active = execute_query(
         "SELECT COUNT(*) AS cnt FROM auth_codes "
@@ -454,3 +460,49 @@ def send_support_message_to_team(from_email: str, message: str) -> bool:
 
     html = _branded_html(body)
     return _send_html_email("support@tiinservice.online", subject, text, html)
+
+
+def send_link_bot_invitation_email(to: str, web_token: str) -> bool:
+    """Send invitation email to active web user (>50MB traffic) to link Telegram bot."""
+    subject = "TIIN — Ваш VPN успешно подключен! Подключите Telegram-бота"
+    bot_url = f"https://t.me/tiin_service_bot?start={web_token}"
+
+    text = (
+        "Мы заметили, что вы успешно подключились к VPN и начали им пользоваться! 🎉\n\n"
+        "Чтобы не потерять доступ при смене устройства, вовремя получать напоминания и продлевать подписку "
+        "в один клик картой или СБП, привяжите наш Telegram-бот:\n"
+        f"{bot_url}\n\n"
+        "После привязки вся ваша история, баланс и подписка будут доступны прямо в мессенджере."
+    )
+
+    body = f"""\
+    <div style="background: #161616; border: 1px solid #262626; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+      <div style="text-align: center; font-size: 2rem; margin-bottom: .5rem;">🎉</div>
+      <h2 style="color: #22c55e; text-align: center; font-size: 1.2rem; margin: 0;">Ваш VPN успешно работает!</h2>
+      <p style="margin-top: 1rem; color: #a3a3a3; font-size: .9rem; line-height: 1.5; text-align: center;">
+        Мы зафиксировали первое подключение и передачу трафика. Всё настроено правильно!
+      </p>
+    </div>
+
+    <div style="background: #1a1528; border: 1px solid #6b21a8; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem;">
+      <h3 style="color: #c084fc; margin: 0 0 .5rem; font-size: 1rem;">🤖 Подключите Telegram-бота</h3>
+      <p style="color: #d1d5db; font-size: .85rem; line-height: 1.4; margin: 0 0 1rem;">
+        Привяжите Telegram-аккаунт, чтобы управлять подпиской в пару кликов:
+      </p>
+      <ul style="color: #9ca3af; font-size: .85rem; margin: 0 0 1rem; padding-left: 1.2rem; line-height: 1.4;">
+        <li>Быстрое продление через СБП и карты РФ</li>
+        <li>Уведомления об окончании подписки, чтобы интернет не отключился внезапно</li>
+        <li>Оперативная связь с поддержкой прямо в чате</li>
+      </ul>
+      <div style="text-align: center; margin-top: 1rem;">
+        <a href="{bot_url}"
+           style="display: inline-block; padding: 12px 28px; background: #9333ea; color: #fff;
+                  border-radius: 8px; font-size: .95rem; font-weight: 600; text-decoration: none;">
+          ⚡ Привязать Telegram-бота
+        </a>
+      </div>
+    </div>"""
+
+    html = _branded_html(body)
+    return _send_html_email(to, subject, text, html)
+

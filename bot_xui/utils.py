@@ -22,8 +22,12 @@ class XUIClient:
 
     def _get_csrf_token(self) -> str:
         """Get a fresh CSRF token from the panel."""
-        csrf_resp = self.session.get(f"{self.host}/csrf-token")
-        return csrf_resp.json().get("obj", "")
+        try:
+            csrf_resp = self.session.get(f"{self.host}/csrf-token", timeout=4)
+            return csrf_resp.json().get("obj", "")
+        except Exception as e:
+            logger.debug(f"CSRF token fetch error: {e}")
+            return ""
 
     def login(self) -> bool:
         """Login to x-ui panel (v3.x with CSRF support)."""
@@ -34,6 +38,7 @@ class XUIClient:
                 f"{self.host}/login",
                 data={"username": self.username, "password": self.password},
                 headers={"X-CSRF-Token": csrf_token},
+                timeout=4,
             )
 
             if response.status_code == 200 and response.json().get("success"):
@@ -49,7 +54,7 @@ class XUIClient:
 
     def _request(self, method, url, **kwargs):
         """Выполняет запрос, при необходимости делает login/re-login."""
-        kwargs.setdefault('timeout', 10)
+        kwargs.setdefault('timeout', 15)
         if not self._logged_in:
             self.login()
 
@@ -174,6 +179,46 @@ class XUIClient:
             logger.error(f"Error searching client by tg_id: {e}")
             return None
 
+    def set_client_expiry(self, email, expiry_time_ms, enable=True):
+        """Установить точный срок действия (expiryTime) и активность (enable) клиента."""
+        try:
+            client_data = self.get_client_by_email(email)
+            if not client_data:
+                logger.error(f"set_client_expiry: Client with email={email} not found")
+                return False
+            
+            client = client_data.get('client', {})
+            payload = {
+                "email": email,
+                "totalGB": client.get('totalGB', 0),
+                "expiryTime": expiry_time_ms,
+                "tgId": client.get('tgId', 0),
+                "enable": bool(enable),
+                "limitIp": client.get('limitIp', 0),
+                "reset": client.get('reset', 0),
+                "flow": client.get('flow') or 'xtls-rprx-vision',
+            }
+
+            url = f"{self.host}/panel/api/clients/update/{email}"
+            logger.info(f"set_client_expiry: POST {url} with expiry={expiry_time_ms}, enable={enable}")
+
+            response = self._request("POST", url, json=payload, headers={"Content-Type": "application/json"})
+            result = response.json()
+            if result.get('success', False):
+                try:
+                    tg_id_val = client.get('tgId')
+                    if tg_id_val and str(tg_id_val).isdigit() and int(tg_id_val) > 0:
+                        from bot_xui.awg_manager import get_or_create_3xui_awg_client
+                        get_or_create_3xui_awg_client(tg_id=int(tg_id_val), expiry_ms=expiry_time_ms, client_name=f"awg_{tg_id_val}")
+                except Exception as awg_sync_err:
+                    logger.warning(f"set_client_expiry: failed to sync AWG Inbound 17: {awg_sync_err}")
+                return expiry_time_ms
+            logger.error(f"set_client_expiry: XUI returned success=False: {result}")
+            return False
+        except Exception as e:
+            logger.error(f"set_client_expiry: exception: {e}", exc_info=True)
+            return False
+
     def extend_client_expiry(self, inbound_id, client, duration_ms):
         """Продлить срок действия клиента на duration_ms миллисекунд."""
         try:
@@ -219,6 +264,14 @@ class XUIClient:
             result = response.json()
             logger.info(f"extend_client_expiry: response body={result}")
             if result.get('success', False):
+                # Also sync AmneziaWG (Inbound 17) expiry if user has tgId or awg client
+                try:
+                    tg_id_val = client.get('tgId')
+                    if tg_id_val and str(tg_id_val).isdigit() and int(tg_id_val) > 0:
+                        from bot_xui.awg_manager import get_or_create_3xui_awg_client
+                        get_or_create_3xui_awg_client(tg_id=int(tg_id_val), expiry_ms=new_expiry, client_name=f"awg_{tg_id_val}")
+                except Exception as awg_sync_err:
+                    logger.warning(f"extend_client_expiry: failed to sync AWG Inbound 17: {awg_sync_err}")
                 return new_expiry
             logger.error(f"extend_client_expiry: XUI returned success=False: {result}")
             return False
@@ -465,7 +518,7 @@ class XUIClient:
                                 best_sub_id = sub_id
                                 best_expiry = expiry
             if best_sub_id:
-                return f"{XUI_SUB_PATH}/sub/{best_sub_id}"
+                return f"{XUI_SUB_PATH}/updates_ui/{best_sub_id}"
             return None
 
         except Exception as e:
@@ -483,7 +536,7 @@ class XUIClient:
             if client_data:
                 sub_id = client_data['client'].get('subId')
                 if sub_id:
-                    return f"{XUI_SUB_PATH}/sub/{sub_id}"
+                    return f"{XUI_SUB_PATH}/updates_ui/{sub_id}"
             return None
         except Exception as e:
             logger.error(f"Error getting client subscription url by email: {e}")

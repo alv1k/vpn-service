@@ -19,7 +19,7 @@ from config import (
     AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD,
     SERVER_LOCATION, VLESS_INBOUND_ID,
     HYSTERIA_PORT, HYSTERIA_SNI, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID,
-    ACTIVE_INBOUND_IDS,
+    ACTIVE_INBOUND_IDS, ADMIN_TG_ID,
 )
 from api.subscriptions import activate_subscription
 from api.db import (
@@ -38,11 +38,31 @@ from api.db import (
     deactivate_key_by_payment,
     get_user_by_web_token,
     sync_expiry,
+    get_user_by_tg_id,
+    get_user_paid_payments_count,
+    grant_grace_period,
 )
 from bot_xui.tariffs import TARIFFS
 from bot_xui.utils import XUIClient, generate_hysteria2_link
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+YOOKASSA_REASONS_RU = {
+    "payment_method_restricted": "Ограничение банка/карты (лимиты, запрет интернет-оплат)",
+    "insufficient_funds": "Недостаточно средств на счёте/карте",
+    "expired_on_confirmation": "Истёк срок подтверждения 3D-Secure/SMS",
+    "3d_secure_failed": "Ошибка 3D-Secure аутентификации",
+    "call_issuer": "Отклонено банком (обратитесь в банк)",
+    "card_expired": "Истёк срок действия карты",
+    "fraud_suspected": "Отклонено антифрод-системой",
+    "general_decline": "Отклонено банком-эмитентом",
+    "canceled_by_merchant": "Отменено магазином",
+    "invalid_card_number": "Неверный номер карты",
+    "invalid_csc": "Неверный код CVC/CVV",
+    "payment_timeout": "Таймаут проведения платежа",
+}
 
 # ─────────────────────────────────────────────
 #  IP rate limiter (in-memory, per-endpoint)
@@ -54,14 +74,16 @@ _rate_lock = threading.Lock()
 _rate_buckets: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
 
 RATE_LIMITS = {
-    "/api/auth/send-code": (5, 300),      # 5 requests per 5 min
-    "/api/auth/verify": (10, 300),        # 10 per 5 min — prevent brute-force on 6-digit codes
-    "/api/web/order/send-code": (5, 300),
+    "/api/auth/send-code": (3, 300),        # 3 requests per 5 min
+    "/api/auth/verify": (5, 300),          # 5 per 5 min — prevent brute-force on 6-digit codes
+    "/api/web/order/send-code": (3, 300),  # 3 per 5 min
 
-    "/api/web/activate-test": (3, 3600),   # 3 per hour
-    "/api/web/support/send-code": (5, 300),
-    "/api/web/order": (10, 300),           # 10 per 5 min
-    "/api/web/event": (30, 60),           # 30 per minute — prevent DB flooding
+    "/api/web/test/activate": (2, 3600),   # 2 per hour — protect free trial from abuse
+    "/api/web/activate-test": (2, 3600),   # legacy route
+    "/api/web/test": (5, 300),             # 5 per 5 min — prevent path scanning / probing
+    "/api/web/support/send-code": (3, 300),
+    "/api/web/order": (5, 300),            # 5 per 5 min
+    "/api/web/event": (30, 60),            # 30 per minute — prevent DB flooding
 }
 
 
@@ -132,6 +154,10 @@ from api.web_api import web_api_router
 from api.web_auth import auth_router
 from api.sub_proxy import sub_router
 from admin.routes import router as admin_router
+from api.canary import canary_router
+from api.handshake import handshake_router
+app.include_router(canary_router)
+app.include_router(handshake_router)
 app.include_router(web_router)
 app.include_router(web_api_router)
 app.include_router(auth_router)
@@ -343,21 +369,25 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         tariff_key: str = payment_data.get("tariff", "default")
 
         # ===== 1. Получение / создание пользователя =====
-        web_user_id = payment_data.get("_web_user_id")
+        web_user_id = payment_data.get("_web_user_id") or payment_data.get("web_user_id")
         if tg_id and tg_id != 0:
             user_id = get_or_create_user(tg_id)
         elif web_user_id:
             user_id = web_user_id
         else:
-            user_id = None
+            # Fallback: гарантируем существование пользователя в users
+            from api.db import create_web_user
+            web_token = payment_data.get("web_token")
+            web_email = payment_data.get("email")
+            user_id = create_web_user(email=web_email, web_token=web_token) if (web_token or web_email) else None
 
         # ===== 4. Формирование имени VPN клиента =====
         if tg_id and tg_id != 0:
             client_name = f"tiin_{tg_id}"
-        elif web_user_id:
-            client_name = f"tiin_web_{web_user_id}"
+        elif user_id:
+            client_name = f"tiin_web_{user_id}"
         else:
-            client_name = f"tiin_{payment_id[:8]}"
+            client_name = f"tiin_web_guest_{payment_id[:8]}"
 
         client_id = None
         client_ip = None
@@ -404,6 +434,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 existing = xui.get_client_by_email(client_name)
             if not existing and tg_id and tg_id != 0:
                 existing = xui.get_client_by_email(f"tiin_{tg_id}")
+            if not existing and user_id:
+                existing = xui.get_client_by_email(f"tiin_web_{user_id}")
 
             if existing:
                 client_id = existing['client']['id']
@@ -465,7 +497,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 logger.warning(f"subId still missing for {client_name}, using random fallback: {sub_id}")
 
             # Формируем прямую ссылку XUI для сохранения в vpn_keys (источник для прокси)
-            sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}"
+            sub_url = f"{XUI_SUB_PATH}/updates_ui/{sub_id}"
 
             # Генерируем VLESS ссылку
             client_config = generate_vless_link(
@@ -560,13 +592,16 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
 
         # ===== 6. Активация подписки (после успешного создания VPN) =====
-        activate_subscription(payment_id, user_id=web_user_id)
-        subscription_until = get_subscription_until(tg_id) if tg_id else None
-        if not subscription_until and web_user_id:
-            from api.db import get_user_by_id
-            _u = get_user_by_id(web_user_id)
-            subscription_until = _u.get('subscription_until') if _u else None
-        logger.info("✅ Subscription activated")
+        subscription_until = activate_subscription(payment_id, user_id=web_user_id)
+        if not subscription_until:
+            if tg_id and tg_id != 0:
+                subscription_until = get_subscription_until(tg_id)
+            elif web_user_id:
+                from api.db import get_user_by_id
+                _u = get_user_by_id(web_user_id)
+                subscription_until = _u.get('subscription_until') if _u else None
+        logger.info(f"✅ Subscription activated: {subscription_until}")
+
 
         # ===== 6.1. Mark test period as activated =====
         tariff_info = TARIFFS.get(tariff_key, {})
@@ -621,6 +656,13 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     except Exception as ru_err:
                         logger.warning(f"Failed to sync client to RU node during payment: {ru_err}")
 
+                    # Sync to Inbound 17 (AmneziaWG) as well
+                    try:
+                        from bot_xui.awg_manager import get_or_create_3xui_awg_client
+                        get_or_create_3xui_awg_client(tg_id=tg_id, expiry_ms=sub_until_ms, client_name=f"awg_{tg_id}")
+                    except Exception as awg_err:
+                        logger.warning(f"Failed to sync client to Inbound 17 (AWG): {awg_err}")
+
         # ===== 7. Сохранение в БД (UPSERT: обновляем существующий ключ или создаём новый) =====
         upsert_vpn_key(
             tg_id=tg_id,
@@ -640,12 +682,13 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         )
 
         # Sync expiry to vpn_keys for existing keys too
-        sub_utc = subscription_until if subscription_until.tzinfo else subscription_until.replace(tzinfo=timezone.utc)
-        if subscription_until and tg_id and tg_id != 0:
-            sync_expiry(tg_id, sub_utc)
-        elif subscription_until and web_user_id:
-            from api.db import sync_expiry_by_user_id
-            sync_expiry_by_user_id(web_user_id, sub_utc)
+        if subscription_until:
+            sub_utc = subscription_until if subscription_until.tzinfo else subscription_until.replace(tzinfo=timezone.utc)
+            if tg_id and tg_id != 0:
+                sync_expiry(tg_id, sub_utc)
+            elif web_user_id:
+                from api.db import sync_expiry_by_user_id
+                sync_expiry_by_user_id(web_user_id, sub_utc)
 
         logger.info("💾 VPN config saved to DB")
 
@@ -811,6 +854,123 @@ async def send_telegram_notification(tg_id: int, message: str, buttons: list = N
             except Exception:
                 pass
 
+
+async def handle_failed_payment(
+    payment_id: str,
+    tg_id: int,
+    tariff: str,
+    amount: float,
+    reason: str = "",
+    party: str = "",
+):
+    """
+    Smart payment failure handler:
+    1. Checks if client is an existing customer (paid_count >= 1).
+    2. Grants 12-hour grace period if eligible.
+    3. Sends tailored smart error message with exact bank failure explanation.
+    4. Provides 1-click fallback button for SBP / card payment.
+    5. Sends high-priority Telegram alert to admin for regular customers (paid_count >= 2).
+    """
+    tariff_info = TARIFFS.get(tariff, {})
+    tariff_name = tariff_info.get("name", tariff)
+    try:
+        amount_int = int(float(amount or tariff_info.get("price", 199)))
+    except (ValueError, TypeError):
+        amount_int = tariff_info.get("price", 199)
+
+    paid_count = get_user_paid_payments_count(tg_id) if tg_id else 0
+    grace_granted = False
+    grace_expiry = None
+
+    if tg_id and paid_count >= 1:
+        grace_expiry = grant_grace_period(tg_id, hours=12)
+        if grace_expiry:
+            grace_granted = True
+
+    # 1. Smart reason explanation
+    if reason == "payment_method_restricted":
+        reason_explanation = (
+            "Банк заблокировал списание. Чаще всего в приложении банка (Т-Банк, Сбер) "
+            "выключена опция <i>«Покупки в интернете»</i> или исчерпан лимит на онлайн-операции."
+        )
+    elif reason == "insufficient_funds":
+        reason_explanation = (
+            f"На привязанной карте недостаточно средств для списания {amount_int} ₽."
+        )
+    elif reason in ("expired_on_confirmation", "3d_secure_failed"):
+        reason_explanation = (
+            "Истёк срок ввода кода подтверждения (3D-Secure) или код был введён с ошибкой."
+        )
+    else:
+        reason_ru = YOOKASSA_REASONS_RU.get(reason, reason or "Отклонено банком")
+        reason_explanation = f"Платёж отклонён платёжной системой: <i>{reason_ru}</i>."
+
+    time_str = grace_expiry.strftime("%H:%M") if grace_expiry else "12 часов"
+
+    # 2. Build user message
+    user_message = (
+        f"❌ <b>Оплата не прошла</b>\n\n"
+        f"📦 Тариф: <b>{tariff_name}</b> ({amount_int} ₽)\n"
+        f"💳 <b>Причина:</b> {reason_explanation}\n\n"
+    )
+    if grace_granted:
+        user_message += (
+            f"🛡️ <b>Мы сохранили ваш доступ к VPN на 12 часов (до ~{time_str})</b>, "
+            f"чтобы вы не оставались без связи и могли спокойно настроить карту.\n\n"
+        )
+    user_message += (
+        f"<b>Как восстановить подписку:</b>\n"
+        f"• Проверьте настройки карты в приложении банка, либо\n"
+        f"• Оплатите удобным способом через <b>СБП</b> или другой картой по кнопке ниже 👇"
+    )
+
+    user_buttons = [
+        [{"text": f"⚡ Продлить через СБП / Карту ({amount_int} ₽)", "callback_data": f"buy_tariff_{tariff}"}]
+    ]
+
+    if tg_id:
+        await send_telegram_notification(
+            tg_id,
+            user_message,
+            buttons=user_buttons,
+            source="webhook",
+            scenario="payment_canceled_smart",
+        )
+
+    # 3. High-priority admin alert for regular customers (paid_count >= 2)
+    if paid_count >= 2 and ADMIN_TG_ID:
+        u_data = get_user_by_tg_id(tg_id) if tg_id else None
+        user_name = f"{u_data.get('first_name') or ''} {u_data.get('last_name') or ''}".strip() if u_data else ""
+
+        reason_ru = YOOKASSA_REASONS_RU.get(reason, reason or "Не указана")
+        admin_alert = (
+            f"🚨 <b>Сбой автоплатежа у постоянного клиента!</b>\n\n"
+            f"👤 Пользователь: <b>{user_name or 'Без имени'}</b> (<code>tg:{tg_id}</code>)\n"
+            f"⭐ Успешных оплат в истории: <b>{paid_count}</b>\n"
+            f"📦 Тариф: <b>{tariff_name}</b> ({amount_int} ₽)\n"
+            f"❌ Причина отказа: <b>{reason_ru}</b> (<code>{reason or 'none'}</code>)\n"
+        )
+        if grace_granted:
+            admin_alert += f"🛡️ Грейс-период: <b>Активирован на 12ч</b> (до ~{time_str})\n"
+        else:
+            admin_alert += "⚠️ Грейс-период: <i>Не активирован</i>\n"
+        admin_alert += f"🆔 <code>{payment_id}</code>"
+
+        admin_buttons = [
+            [
+                {"text": "🛡️ Продлить ещё на 12ч", "callback_data": f"admin_grace_12h_{tg_id}"},
+                {"text": "👤 Написать клиенту", "url": f"tg://user?id={tg_id}"},
+            ]
+        ]
+        await send_telegram_notification(
+            ADMIN_TG_ID,
+            admin_alert,
+            buttons=admin_buttons,
+            source="webhook",
+            scenario="admin_regular_customer_failure_alert",
+        )
+
+
 async def send_telegram_document(tg_id: int, file_bytes: bytes, filename: str, caption: str = "",
                                     source: str = "webhook", scenario: str = None):
     """Отправка документа в Telegram через HTTP API"""
@@ -953,13 +1113,43 @@ async def yookassa_webhook(request: Request):
     is_web_order = metadata.get("source") in ("web", "web_test")
     web_email = metadata.get("email", "")
     web_token = metadata.get("web_token", "")
-    
     if not payment_id:
         logger.warning("⚠️ No payment_id in webhook")
         return Response(status_code=200)
-    
-    amount = obj.get("amount", {}).get("value", 0)
-    logger.info(f"📋 Webhook: {event} | ID: {payment_id} | Status: {status_raw} | Amount: {amount} RUB")
+
+    amount_obj = obj.get("amount", {})
+    amount = amount_obj.get("value", 0)
+    currency = amount_obj.get("currency", "RUB")
+
+    cancellation = obj.get("cancellation_details") or {}
+    reason = cancellation.get("reason", "")
+    party = cancellation.get("party", "")
+    reason_ru = YOOKASSA_REASONS_RU.get(reason, reason or "Не указана")
+
+    tariff_info = TARIFFS.get(tariff, {})
+    tariff_name = tariff_info.get("name", tariff or "Не указан")
+    is_autopay = metadata.get("is_autopayment") in ("true", True, "1", 1) or metadata.get("is_renew") in ("true", True, "1", 1)
+    payment_type = "Автопродление" if is_autopay else ("Веб-сайт" if is_web_order else "Telegram-бот")
+
+    user_repr = "Web/Unknown"
+    if tg_id and str(tg_id).isdigit():
+        try:
+            u_data = get_user_by_tg_id(int(tg_id))
+            if u_data:
+                full_name = f"{u_data.get('first_name') or ''} {u_data.get('last_name') or ''}".strip()
+                user_repr = f"{full_name} (tg:{tg_id})" if full_name else f"tg:{tg_id}"
+            else:
+                user_repr = f"tg:{tg_id}"
+        except Exception:
+            user_repr = f"tg:{tg_id}"
+    elif web_email:
+        user_repr = f"email:{web_email}"
+
+    logger.info(
+        f"[YOOKASSA_WEBHOOK] event={event} | status={status_raw} | amount={amount} {currency} | "
+        f"tariff={tariff_name} ({tariff}) | user={user_repr} | type={payment_type} | "
+        f"reason={reason} | reason_ru={reason_ru} | party={party} | payment_id={payment_id}"
+    )
 
 
     # ===== 3.5 ОБРАБОТКА ВОЗВРАТА =====
@@ -1025,13 +1215,14 @@ async def yookassa_webhook(request: Request):
             except Exception as e:
                 logger.warning(f"Failed to insert canceled payment {payment_id}: {e}")
             if tg_id:
-                await send_telegram_notification(
-                    int(tg_id),
-                    f"❌ Платёж не прошёл\n\n"
-                    f"💳 ID платежа: {payment_id}\n"
-                    f"📦 Тариф: {tariff}\n\n"
-                    f"Попробуйте ещё раз или обратитесь в поддержку.",
-                    source="webhook", scenario="payment_canceled",
+                cancellation = obj.get("cancellation_details") or {}
+                await handle_failed_payment(
+                    payment_id=payment_id,
+                    tg_id=int(tg_id),
+                    tariff=tariff,
+                    amount=amount,
+                    reason=cancellation.get("reason", ""),
+                    party=cancellation.get("party", ""),
                 )
             return {"status": "ignored"}
         elif status_raw == "succeeded" and tariff in TARIFFS:
@@ -1078,7 +1269,7 @@ async def yookassa_webhook(request: Request):
         return Response(status_code=404)
     
     # ===== 9. ⭐ ОБРАБОТКА УСПЕШНОГО ПЛАТЕЖА ⭐ =====
-    if current_status == "pending" and new_status == "paid":
+    if current_status in ("pending", "succeeded") and new_status == "paid":
         # Atomically claim payment — only one concurrent webhook wins
         if not claim_payment_for_processing(payment_id):
             logger.info(f"🔁 Payment already claimed by another request: {payment_id}")
@@ -1093,35 +1284,59 @@ async def yookassa_webhook(request: Request):
             return Response(status_code=400)
 
         # Для веб-заказов: привязать tg_id и user_id если есть
-        web_user_id_from_db = payment_data.get("_web_user_id")
-        if web_user_id_from_db and not tg_id:
-            from api.db import get_user_by_id as _get_user_by_id
-            web_user = _get_user_by_id(web_user_id_from_db)
-            if web_user:
-                tg_id = int(web_user.get('tg_id') or 0)
-                payment_data = {**payment_data, 'tg_id': tg_id, '_web_user_id': web_user_id_from_db}
+        web_user_id_from_db = payment_data.get("web_user_id") or payment_data.get("_web_user_id")
+        if not web_user_id_from_db and is_web_order:
+            if web_token:
+                from api.db import get_user_by_web_token
+                _u = get_user_by_web_token(web_token)
+                if _u:
+                    web_user_id_from_db = _u['id']
+            if not web_user_id_from_db and web_email:
+                from api.db import get_user_by_email
+                _u = get_user_by_email(web_email)
+                if _u:
+                    web_user_id_from_db = _u['id']
 
-                # Process web referral if present
-                ref_token = metadata.get("ref")
-                if ref_token:
-                    from api.db import process_web_referral
-                    if process_web_referral(web_user_id_from_db, ref_token):
-                        logger.info(f"Web referral applied on payment: user_id={web_user_id_from_db}, ref={ref_token}")
+        if web_user_id_from_db:
+            payment_data = {**payment_data, '_web_user_id': web_user_id_from_db}
+            if not tg_id:
+                from api.db import get_user_by_id as _get_user_by_id
+                web_user = _get_user_by_id(web_user_id_from_db)
+                if web_user:
+                    tg_id = int(web_user.get('tg_id') or 0)
+                    if tg_id:
+                        payment_data['tg_id'] = tg_id
+
+            # Process web referral if present
+            ref_token = metadata.get("ref")
+            if ref_token:
+                from api.db import process_web_referral
+                if process_web_referral(web_user_id_from_db, ref_token):
+                    logger.info(f"Web referral applied on payment: user_id={web_user_id_from_db}, ref={ref_token}")
 
         # Save payment method for autopay if available
         pm = obj.get("payment_method", {})
         if pm.get("saved") and pm.get("id"):
             from api.db import save_user_payment_method, save_user_payment_method_by_id
             pm_id = pm["id"]
+            save_res = None
             if is_web_order and payment_data.get('_web_user_id'):
-                save_user_payment_method_by_id(
+                save_res = save_user_payment_method_by_id(
                     payment_data['_web_user_id'], pm_id, tariff,
                     vpn_type or "vless",
                 )
-                logger.info(f"Saved payment method {pm_id} for web user_id={payment_data['_web_user_id']}")
-                if tg_id and int(tg_id) > 0:
-                    try:
-                        tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
+                logger.info(f"Saved payment method {pm_id} for web user_id={payment_data['_web_user_id']} (autopay_enabled={save_res.get('autopay_enabled') if save_res else False})")
+            elif tg_id and int(tg_id) > 0:
+                save_res = save_user_payment_method(
+                    int(tg_id), pm_id, tariff,
+                    vpn_type or "vless",
+                )
+                logger.info(f"Saved payment method {pm_id} for tg_id={tg_id} (autopay_enabled={save_res.get('autopay_enabled') if save_res else False})")
+
+            if tg_id and int(tg_id) > 0 and save_res:
+                try:
+                    tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
+                    if save_res.get("autopay_enabled"):
                         await send_telegram_notification(
                             int(tg_id),
                             f"💳 <b>Способ оплаты сохранён</b>\n\n"
@@ -1130,26 +1345,18 @@ async def yookassa_webhook(request: Request):
                             f"Управление автопродлением: /autopay",
                             source="webhook", scenario="autopay_enabled",
                         )
-                    except Exception:
-                        logger.warning(f"Failed to send autopay enabled notification for tg:{tg_id}", exc_info=True)
-            elif tg_id and int(tg_id) > 0:
-                save_user_payment_method(
-                    int(tg_id), pm_id, tariff,
-                    vpn_type or "vless",
-                )
-                logger.info(f"Saved payment method {pm_id} for tg_id={tg_id}")
-                try:
-                    tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
-                    await send_telegram_notification(
-                        int(tg_id),
-                        f"💳 <b>Способ оплаты сохранён</b>\n\n"
-                        f"Автопродление включено для тарифа «{tariff_name}».\n"
-                        f"При истечении подписки мы автоматически спишем средства с сохранённой карты.\n\n"
-                        f"Управление автопродлением: /autopay",
-                        source="webhook", scenario="autopay_enabled",
-                    )
+                    else:
+                        d_at = save_res.get("disabled_at")
+                        date_str = d_at.strftime('%d.%m.%Y') if d_at and hasattr(d_at, 'strftime') else 'ранее'
+                        await send_telegram_notification(
+                            int(tg_id),
+                            f"💳 <b>Способ оплаты сохранён</b>\n\n"
+                            f"Автопродление <b>не включено</b>, так как вы отключили его ранее ({date_str}).\n\n"
+                            f"Управлять автооплатой и включить при желании: /autopay",
+                            source="webhook", scenario="autopay_kept_disabled",
+                        )
                 except Exception:
-                    logger.warning(f"Failed to send autopay enabled notification for tg:{tg_id}", exc_info=True)
+                    logger.warning(f"Failed to send autopay notification for tg:{tg_id}", exc_info=True)
 
         # Consume promo code if used (both web and bot flows)
         promo_code_str = metadata.get("promo_code")
@@ -1247,14 +1454,15 @@ async def yookassa_webhook(request: Request):
             # Дополнительное уведомление не нужно
             pass
         elif new_status == "canceled":
-            message = (
-                f"❌ Платёж не прошёл\n\n"
-                f"💳 ID платежа: {payment_id}\n"
-                f"📦 Тариф: {tariff_name}\n\n"
-                f"Попробуйте ещё раз или обратитесь в поддержку."
+            cancellation = obj.get("cancellation_details") or {}
+            await handle_failed_payment(
+                payment_id=payment_id,
+                tg_id=int(tg_id),
+                tariff=tariff,
+                amount=payment_data.get("amount") or amount,
+                reason=cancellation.get("reason", ""),
+                party=cancellation.get("party", ""),
             )
-            await send_telegram_notification(tg_id, message,
-                source="webhook", scenario="payment_canceled")
         else:
             message = f"⏳ Платёж {payment_id} в обработке ({new_status})"
             await send_telegram_notification(tg_id, message,

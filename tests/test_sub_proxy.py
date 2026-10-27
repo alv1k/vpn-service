@@ -138,7 +138,7 @@ class TestProxySubscription:
 
         response = await proxy_subscription("tok")
         body_decoded = base64.b64decode(response.body).decode()
-        assert "Reality • Vision (TCP)" in body_decoded
+        assert "Reality • Vision (МТС / РТК)" in body_decoded
 
         # Headers
         assert "subscription-userinfo" in response.headers

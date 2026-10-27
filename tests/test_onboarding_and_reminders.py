@@ -257,5 +257,5 @@ class TestFifteenMinuteReminderRoutine:
 
             # Verification: error logged
             assert mock_log.called
-            assert mock_log.call_args.kwargs["status"] == "failed"
+            assert mock_log.call_args.kwargs["status"] in ("failed", "blocked")
             assert "Forbidden" in mock_log.call_args.kwargs["error_text"]

@@ -73,7 +73,7 @@ class TestCreateXuiMultiConfig:
         assert result["client_uuid"] == "existing-uuid"
         xui.create_client.assert_not_called()
         xui.get_client_subscription_url.assert_called_once_with(55555)
-        xui.extend_client_expiry.assert_called_once()
+        xui.set_client_expiry.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.generate_vless_link")

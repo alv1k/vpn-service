@@ -23,7 +23,7 @@ from config import (
 )
 from admin import db as admin_db
 from admin.auth import (
-    _sessions, SESSION_MAX_AGE, _require_admin_session, _ws_authenticate,
+    SESSION_MAX_AGE, _require_admin_session, _ws_authenticate,
 )
 
 try:
@@ -86,6 +86,26 @@ def _get_ru_xui():
         except Exception as e:
             logger.warning(f"Failed to init RU XUI client: {e}")
     return _ru_xui
+
+
+_ru_inbounds_cache = {"ts": 0.0, "data": []}
+
+def _fetch_ru_inbounds_cached(max_age: float = 15.0) -> list[dict]:
+    global _ru_inbounds_cache
+    now = time.time()
+    if now - _ru_inbounds_cache["ts"] < max_age and _ru_inbounds_cache["data"]:
+        return _ru_inbounds_cache["data"]
+    ru_xui = _get_ru_xui()
+    if not ru_xui:
+        return _ru_inbounds_cache["data"]
+    try:
+        ibs = ru_xui.get_inbounds()
+        if ibs:
+            _ru_inbounds_cache = {"ts": now, "data": ibs}
+            return ibs
+    except Exception as e:
+        logger.debug(f"RU node inbounds fetch error: {e}")
+    return _ru_inbounds_cache["data"]
 
 
 def _ping_telegram_dc() -> Optional[int]:
@@ -168,10 +188,10 @@ def _speed_mbps(speed_bps: float) -> float:
     return round(speed_bps * 8 / 1_000_000, 1)
 
 
-def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
+def _resolve_names_to_users(names: list[str], allow_fallback: bool = True) -> dict[str, dict]:
     """Resolve client names to user info via vpn_keys table.
     Returns {client_name: {tg_id, user_id, first_name, web_token, expires, is_test}}.
-    For hysteria _h entries, also tries base vless name as fallback."""
+    For hysteria _h entries or base names, tries cross-variant fallback."""
     if not names:
         return {}
     conn = admin_db._get_conn()
@@ -180,7 +200,8 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
     cur.execute(f"""
         SELECT k.client_name, k.tg_id, k.user_id, k.expires_at AS key_expires_at,
                COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
-               u.web_token, u.subscription_until,
+               u.web_token, u.subscription_until, u.relatives,
+               u.test_vless_activated, u.test_awg_activated,
                (SELECT COUNT(*) FROM payments p 
                 WHERE p.status = 'paid' 
                   AND p.amount > 1.00 
@@ -200,19 +221,21 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
         sub = r.get("subscription_until")
         key_exp = r.get("key_expires_at")
         expires = None
-        is_test = False
         if sub and hasattr(sub, "strftime"):
             expires = sub.isoformat()
         elif sub:
             expires = str(sub)
         elif key_exp and hasattr(key_exp, "strftime"):
             expires = key_exp.isoformat()
-            is_test = True
         elif key_exp:
             expires = str(key_exp)
-            is_test = True
+
         tg_id_val = r.get("tg_id")
         has_paid = (r.get("paid_count") or 0) > 0 and (tg_id_val not in (364224373, 6335998601, 397547537))
+        is_relative = bool(r.get("relatives")) or (tg_id_val in (88486656, 909509933, 6335998601, 6648354839))
+        test_activated = bool(r.get("test_vless_activated") or r.get("test_awg_activated"))
+        is_test = not has_paid and not is_relative and (test_activated or (key_exp is not None and sub is None))
+
         result[r["client_name"]] = {
             "tg_id": tg_id_val,
             "user_id": r.get("user_id"),
@@ -221,41 +244,81 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
             "expires": expires,
             "is_test": is_test,
             "has_paid": has_paid,
+            "is_relative": is_relative,
         }
-    # For hysteria _h entries without user info, fall back to base vless name
-    missing_bases = set()
-    for name in names:
-        if name.endswith("_h"):
-            base = name[:-2]
-            entry = result.get(name)
-            base_entry = result.get(base)
-            if entry and base_entry:
-                if not entry.get("tg_id") or entry["tg_id"] == 0:
-                    entry["tg_id"] = base_entry.get("tg_id")
-                if not entry.get("user_id"):
-                    entry["user_id"] = base_entry.get("user_id")
-                if not entry.get("first_name"):
-                    entry["first_name"] = base_entry.get("first_name", "")
-                if not entry.get("web_token"):
-                    entry["web_token"] = base_entry.get("web_token", "")
-                if not entry.get("expires"):
-                    entry["expires"] = base_entry.get("expires")
-                if not entry.get("is_test"):
-                    entry["is_test"] = base_entry.get("is_test", False)
-            elif not entry:
-                if base_entry:
-                    result[name] = dict(base_entry)
-                else:
-                    missing_bases.add(base)
-    # Batch-lookup missing base names from DB
-    if missing_bases:
-        base_results = _resolve_names_to_users(list(missing_bases))
+    # Bidirectional fallback (only if allow_fallback=True):
+    # 1. For hysteria _h entries without user info, fall back to base vless name
+    # 2. For base entries without user info, check _h variant
+    if allow_fallback:
+        missing_variants = set()
         for name in names:
-            if name.endswith("_h") and name not in result:
-                base = name[:-2]
-                base_entry = base_results.get(base)
-                if base_entry:
-                    result[name] = dict(base_entry)
+            if name not in result:
+                if name.endswith("_h"):
+                    missing_variants.add(name[:-2])
+                else:
+                    missing_variants.add(f"{name}_h")
+
+        if missing_variants:
+            var_results = _resolve_names_to_users(list(missing_variants), allow_fallback=False)
+            for name in names:
+                if name not in result:
+                    alt = name[:-2] if name.endswith("_h") else f"{name}_h"
+                    if alt in var_results:
+                        result[name] = dict(var_results[alt])
+
+    # Direct fallback: extract tg_id from name format (tiin_<tg_id>, vless_<tg_id>, awg_<tg_id>)
+    still_missing = [n for n in names if n not in result]
+    if still_missing:
+        conn = admin_db._get_conn()
+        cur = conn.cursor(dictionary=True)
+        for name in still_missing:
+            m = re.match(r'^(?:tiin_|vless_|awg_)?(\d{6,12})(?:_h)?$', name)
+            if m:
+                extracted_tg = int(m.group(1))
+                cur.execute("""
+                    SELECT u.tg_id, u.id AS user_id,
+                           COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
+                           u.web_token, u.subscription_until, u.relatives,
+                           u.test_vless_activated, u.test_awg_activated,
+                           (SELECT COUNT(*) FROM payments p 
+                            WHERE p.status = 'paid' 
+                              AND p.amount > 1.00 
+                              AND (p.is_test IS NULL OR p.is_test = 0)
+                              AND p.tg_id NOT IN (364224373, 6335998601, 397547537)
+                              AND p.tg_id != 0 
+                              AND p.tg_id = u.tg_id) AS paid_count
+                    FROM users u
+                    WHERE u.tg_id = %s
+                    LIMIT 1
+                """, (extracted_tg,))
+                r = cur.fetchone()
+                if r:
+                    sub = r.get("subscription_until")
+                    expires = None
+                    if sub and hasattr(sub, "strftime"):
+                        expires = sub.isoformat()
+                    elif sub:
+                        expires = str(sub)
+
+                    tg_id_val = r.get("tg_id")
+                    has_paid = (r.get("paid_count") or 0) > 0 and (tg_id_val not in (364224373, 6335998601, 397547537))
+                    is_relative = bool(r.get("relatives")) or (tg_id_val in (88486656, 909509933, 6335998601, 6648354839))
+                    test_activated = bool(r.get("test_vless_activated") or r.get("test_awg_activated"))
+                    is_test = not has_paid and not is_relative and test_activated
+
+                    result[name] = {
+                        "tg_id": tg_id_val,
+                        "user_id": r.get("user_id"),
+                        "first_name": r.get("first_name") or "",
+                        "web_token": r.get("web_token") or "",
+                        "expires": expires,
+                        "is_test": is_test,
+                        "has_paid": has_paid,
+                        "is_relative": is_relative,
+                    }
+        cur.close()
+        conn.close()
+
     return result
 
 
@@ -368,44 +431,40 @@ def _get_online_users() -> tuple[list[dict], set]:
                 email = cs.get("email", "")
                 traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
 
-        # Also query RU node inbounds for active connections and traffic
-        ru_xui = _get_ru_xui()
-        if ru_xui:
-            try:
-                ru_inbounds = ru_xui.get_inbounds()
-                ru_now_str = time.strftime("%H:%M:%S")
-                for ib in ru_inbounds:
-                    ib_id = ib.get("id")
-                    ib_tag = ib.get("tag") or f"ru-{ib.get('remark', '')}"
-                    ib_port = ib.get("port") or 0
-                    ib_protocol = ib.get("protocol") or "vless"
-                    ib_remark = ib.get("remark") or "RU-Node"
-                    for cs in ib.get("clientStats", []):
-                        email = cs.get("email", "")
-                        if not email:
-                            continue
-                        # Merge traffic for speed calculation
-                        traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
-                        
-                        last_online = cs.get("lastOnline", 0) or 0
-                        is_enable = cs.get("enable", False)
-                        if is_enable and last_online > cutoff_ms:
-                            is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol.lower()
-                            raw_entries.append({
-                                "name": email,
-                                "ip_count": 1,
-                                "type": "hysteria" if is_hysteria else "vless",
-                                "inbound_id": ib_id,
-                                "inbound_tag": ib_tag,
-                                "inbound_port": ib_port,
-                                "inbound_protocol": ib_protocol,
-                                "inbound_remark": ib_remark,
-                                "is_ru": True,
-                                "last_seen": ru_now_str,
-                                "last_online_ts": last_online / 1000.0,
-                            })
-            except Exception as e:
-                logger.warning(f"RU node inbounds fetch error: {e}")
+        # Also query RU node inbounds for active connections and traffic (cached 15s)
+        ru_inbounds = _fetch_ru_inbounds_cached(max_age=15.0)
+        if ru_inbounds:
+            ru_now_str = time.strftime("%H:%M:%S")
+            for ib in ru_inbounds:
+                ib_id = ib.get("id")
+                ib_tag = ib.get("tag") or f"ru-{ib.get('remark', '')}"
+                ib_port = ib.get("port") or 0
+                ib_protocol = ib.get("protocol") or "vless"
+                ib_remark = ib.get("remark") or "RU-Node"
+                for cs in ib.get("clientStats", []):
+                    email = cs.get("email", "")
+                    if not email:
+                        continue
+                    # Merge traffic for speed calculation
+                    traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
+                    
+                    last_online = cs.get("lastOnline", 0) or 0
+                    is_enable = cs.get("enable", False)
+                    if is_enable and last_online > cutoff_ms:
+                        is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol.lower()
+                        raw_entries.append({
+                            "name": email,
+                            "ip_count": 1,
+                            "type": "hysteria" if is_hysteria else "vless",
+                            "inbound_id": ib_id,
+                            "inbound_tag": ib_tag,
+                            "inbound_port": ib_port,
+                            "inbound_protocol": ib_protocol,
+                            "inbound_remark": ib_remark,
+                            "is_ru": True,
+                            "last_seen": ru_now_str,
+                            "last_online_ts": last_online / 1000.0,
+                        })
 
         for e in raw_entries:
             if e["name"] in traffic:
@@ -482,6 +541,7 @@ def _get_online_users() -> tuple[list[dict], set]:
                 "expires": info.get("expires"),
                 "is_test": info.get("is_test", False),
                 "has_paid": info.get("has_paid", False),
+                "is_relative": info.get("is_relative", False),
                 "protocols": [],
                 "names": [],
                 "inbounds": [],
@@ -643,7 +703,25 @@ async def offline_users():
     """Users with active VPN keys who are NOT currently online.
     All protocols merged into a single row per user (by tg_id/user_id)."""
     online, online_identities = _get_online_users()
-    online_tg_ids = {u['tg_id'] for u in online if u.get('tg_id')}
+    # Collect online identifiers to strictly prevent any online user from showing in offline
+    online_tg_ids = {u['tg_id'] for u in online if u.get('tg_id') and u.get('tg_id') != 0}
+    online_user_ids = {u['user_id'] for u in online if u.get('user_id')}
+    online_names = set()
+    for u in online:
+        for nm in u.get('names', []):
+            if nm:
+                online_names.add(nm)
+                if nm.endswith('_h'):
+                    online_names.add(nm[:-2])
+                else:
+                    online_names.add(f"{nm}_h")
+    for proto, nm in online_identities:
+        if nm:
+            online_names.add(nm)
+            if nm.endswith('_h'):
+                online_names.add(nm[:-2])
+            else:
+                online_names.add(f"{nm}_h")
 
     # Collect raw entries: {name, type, last_seen, last_seen_ts}
     raw_entries = []
@@ -665,7 +743,7 @@ async def offline_users():
             clients = json.loads(settings_json).get("clients", [])
             for c in clients:
                 email = c.get("email", "").strip()
-                if not email:
+                if not email or email in online_names:
                     continue
                 identity = ("vless", email)
                 if identity in online_identities:
@@ -699,7 +777,7 @@ async def offline_users():
             clients = json.loads(settings_json).get("clients", [])
             for c in clients:
                 email = c.get("email", "").strip()
-                if not email:
+                if not email or email in online_names:
                     continue
                 identity = ("hysteria", email)
                 if identity in online_identities:
@@ -727,9 +805,84 @@ async def offline_users():
                     "last_seen_ts": last_online,
                 })
 
+        # ── AmneziaWG (x-ui): get clients + last_online from x-ui SQLite ──
+        cur.execute("SELECT settings FROM inbounds WHERE protocol = 'amneziawg'")
+        for (settings_json,) in cur.fetchall():
+            clients = json.loads(settings_json).get("clients", [])
+            for c in clients:
+                email = c.get("email", "").strip()
+                if not email or email in online_names:
+                    continue
+                identity = ("awg", email)
+                if identity in online_identities:
+                    continue
+                if not c.get("enable", True):
+                    continue
+                expiry = c.get("expiryTime", 0)
+                if expiry and 0 < expiry < now_ms:
+                    continue  # expired
+
+                last_online = last_online_map.get(email, 0) or 0
+                last_str = ""
+                if last_online > 0:
+                    try:
+                        last_str = datetime.fromtimestamp(
+                            last_online / 1000, tz=YAKUTSK_TZ
+                        ).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        pass
+
+                raw_entries.append({
+                    "name": email,
+                    "type": "awg",
+                    "last_seen": last_str,
+                    "last_seen_ts": last_online,
+                })
+
         conn.close()
     except Exception as e:
         logger.warning(f"Offline VLESS/Hysteria error: {e}")
+
+    # ── RU Node: get clients + last_online from Selectel RU node ──
+    try:
+        now_ms = int(time.time() * 1000)
+        ru_inbounds = _fetch_ru_inbounds_cached(max_age=30.0)
+        if ru_inbounds:
+            for ib in ru_inbounds:
+                ib_protocol = (ib.get("protocol") or "vless").lower()
+                for cs in ib.get("clientStats", []):
+                    email = cs.get("email", "").strip()
+                    if not email or email in online_names:
+                        continue
+                    is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol
+                    proto_type = "hysteria" if is_hysteria else "vless"
+                    identity = (proto_type, email)
+                    if identity in online_identities:
+                        continue
+                    if not cs.get("enable", True):
+                        continue
+                    expiry = cs.get("expiryTime", 0)
+                    if expiry and 0 < expiry < now_ms:
+                        continue  # expired
+
+                    last_online = cs.get("lastOnline", 0) or 0
+                    last_str = ""
+                    if last_online > 0:
+                        try:
+                            last_str = datetime.fromtimestamp(
+                                last_online / 1000, tz=YAKUTSK_TZ
+                            ).strftime("%Y-%m-%d %H:%M")
+                        except Exception:
+                            pass
+
+                    raw_entries.append({
+                        "name": email,
+                        "type": proto_type,
+                        "last_seen": last_str,
+                        "last_seen_ts": last_online,
+                    })
+    except Exception as e:
+        logger.warning(f"Offline RU Node error: {e}")
 
     # ── AWG: last handshake for all peers ──
     try:
@@ -745,7 +898,7 @@ async def offline_users():
                 continue
             pub_key = parts[0]
             name = pub_to_name.get(pub_key)
-            if not name or ("awg", name) in online_identities or name not in enabled_names:
+            if not name or ("awg", name) in online_identities or name in online_names or name not in enabled_names:
                 continue
             last_hs = int(parts[4]) if parts[4] != "0" else 0
             last_str = ""
@@ -777,8 +930,12 @@ async def offline_users():
         tg_id = info.get("tg_id")
         user_id = info.get("user_id")
 
-        # Skip if this user is already online (checked by tg_id to handle multiple emails)
+        # Skip if this user is already online
         if tg_id and tg_id in online_tg_ids:
+            continue
+        if user_id and user_id in online_user_ids:
+            continue
+        if e["name"] in online_names:
             continue
 
         if tg_id and tg_id != 0:
@@ -796,6 +953,8 @@ async def offline_users():
                 "web_token": info.get("web_token", ""),
                 "expires": info.get("expires"),
                 "is_test": info.get("is_test", False),
+                "has_paid": info.get("has_paid", False),
+                "is_relative": info.get("is_relative", False),
                 "protocols": [],
                 "names": [],
                 "last_seen": "",
@@ -806,7 +965,8 @@ async def offline_users():
         proto = e["type"]
         if proto not in entry["protocols"]:
             entry["protocols"].append(proto)
-        entry["names"].append(e["name"])
+        if e["name"] not in entry["names"]:
+            entry["names"].append(e["name"])
         if (e.get("last_seen_ts") or 0) > (entry.get("last_seen_ts") or 0):
             entry["last_seen_ts"] = e.get("last_seen_ts", 0)
             entry["last_seen"] = e.get("last_seen", "")
@@ -814,6 +974,9 @@ async def offline_users():
     offline = []
     now_utc = datetime.now(timezone.utc)
     for u in merged.values():
+        # Final safety check: if any of the client names are in online_names, skip
+        if any(nm in online_names for nm in u.get("names", [])):
+            continue
         exp_str = u.get("expires")
         if exp_str:
             try:
@@ -962,40 +1125,82 @@ async def finance():
     )
     monthly = cur.fetchall()
 
-    # Fetch project infrastructure costs from global PostgreSQL finance DB
-    monthly_costs_map = {}
-    current_server_cost = float(os.getenv("SERVER_MONTHLY_COST", "1261.6"))
+    # Fetch server items from server_expense_items grouped by month
+    server_items_by_month = {}
     try:
-        import psycopg2
-        pg_conn = psycopg2.connect(
-            host=os.getenv("FINANCE_PG_HOST", "127.0.0.1"),
-            port=int(os.getenv("FINANCE_PG_PORT", "5432")),
-            user=os.getenv("FINANCE_PG_USER", "finance"),
-            password=os.getenv("FINANCE_PG_PASSWORD", "finance_pass"),
-            dbname=os.getenv("FINANCE_PG_DB", "finance"),
-            connect_timeout=3
+        cur.execute(
+            "SELECT id, month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details "
+            "FROM server_expense_items ORDER BY month ASC, id ASC"
         )
-        pg_cur = pg_conn.cursor()
-        pg_cur.execute(
-            "SELECT month, SUM(cost_rub) as total_rub FROM infrastructure_costs WHERE project='vpn' GROUP BY month"
+        for r in cur.fetchall():
+            m = r["month"]
+            if m not in server_items_by_month:
+                server_items_by_month[m] = []
+            server_items_by_month[m].append({
+                "id": r["id"],
+                "server_key": r["server_key"],
+                "server_name": r["server_name"],
+                "currency": r["currency"],
+                "amount_currency": float(r["amount_currency"]) if r["amount_currency"] is not None else None,
+                "cost_rub": float(r["cost_rub"]),
+                "effective_rate": float(r["effective_rate"]) if r["effective_rate"] is not None else None,
+                "details": r["details"] or "",
+            })
+    except Exception as e:
+        logger.warning(f"Error fetching server_expense_items: {e}")
+
+    # Fetch project infrastructure costs from MySQL server_costs_monthly
+    monthly_costs_map = {}
+    costs_details_map = {}
+    current_server_cost = float(os.getenv("SERVER_MONTHLY_COST", "1261.6"))
+
+    try:
+        cur.execute(
+            "SELECT month, currency, amount_currency, cost_rub, effective_rate, details "
+            "FROM server_costs_monthly ORDER BY month ASC"
         )
-        for row in pg_cur.fetchall():
-            monthly_costs_map[row[0]] = float(row[1])
-        
-        pg_cur.execute(
-            "SELECT SUM(cost_rub) FROM infrastructure_costs WHERE project='vpn' ORDER BY month DESC LIMIT 1"
-        )
-        row_latest = pg_cur.fetchone()
-        if row_latest and row_latest[0] is not None:
-            current_server_cost = float(row_latest[0])
-        pg_cur.close()
-        pg_conn.close()
-    except Exception:
-        # Fallback to MySQL server_costs_monthly if PG connection fails
-        cur.execute("SELECT month, cost_eur, eur_rate FROM server_costs_monthly")
         costs_rows = cur.fetchall()
         for row in costs_rows:
-            monthly_costs_map[row["month"]] = float(row["cost_eur"] * row["eur_rate"])
+            # If server_expense_items exists for this month, sum them up
+            m = row["month"]
+            if m in server_items_by_month and server_items_by_month[m]:
+                cost_val = sum(item["cost_rub"] for item in server_items_by_month[m])
+            elif row.get("cost_rub") is not None:
+                cost_val = float(row["cost_rub"])
+            elif row.get("cost_eur") is not None:
+                cost_val = float(row["cost_eur"]) * float(row.get("eur_rate") or 95.0)
+            else:
+                cost_val = current_server_cost
+
+            monthly_costs_map[m] = cost_val
+            costs_details_map[m] = {
+                "currency": row.get("currency") or "EUR",
+                "amount_currency": float(row["amount_currency"]) if row.get("amount_currency") is not None else (float(row["cost_eur"]) if row.get("cost_eur") is not None else None),
+                "cost_rub": cost_val,
+                "effective_rate": float(row["effective_rate"]) if row.get("effective_rate") is not None else (float(row.get("eur_rate") or 95.0)),
+                "details": row.get("details") or "",
+                "items": server_items_by_month.get(m, []),
+            }
+
+        # Any months in server_items_by_month not in server_costs_monthly
+        for m, items in server_items_by_month.items():
+            if m not in monthly_costs_map and items:
+                cost_val = sum(item["cost_rub"] for item in items)
+                monthly_costs_map[m] = cost_val
+                costs_details_map[m] = {
+                    "currency": items[0]["currency"] if len(items) == 1 else "MIXED",
+                    "amount_currency": items[0]["amount_currency"] if len(items) == 1 else None,
+                    "cost_rub": cost_val,
+                    "effective_rate": items[0]["effective_rate"] if len(items) == 1 else None,
+                    "details": ", ".join(f"{it['server_name']}: {it['cost_rub']}₽" for it in items),
+                    "items": items,
+                }
+
+        if costs_rows:
+            latest_m = costs_rows[-1]["month"]
+            current_server_cost = monthly_costs_map.get(latest_m, current_server_cost)
+    except Exception as e:
+        logger.warning(f"Error fetching server_costs_monthly: {e}")
 
     cur.close()
     conn.close()
@@ -1049,8 +1254,218 @@ async def finance():
             "payments": m["payments"],
             "revenue": float(m["revenue"]),
             "server_cost": round(get_monthly_cost(m["month"]), 2),
+            "cost_meta": costs_details_map.get(m["month"]),
         } for m in monthly],
+        "projections": admin_db.get_financial_projections(),
     }
+
+
+@router.get("/finance/projections")
+async def finance_projections():
+    """Financial forecasts, upcoming renewals, breakeven, and run-rate targets."""
+    return admin_db.get_financial_projections()
+
+
+# ── Server Costs API ──────────────────────────────────────────────────────────
+
+SERVER_CATALOG = [
+    {"key": "hetzner_de", "name": "🇩🇪 Hetzner DE (Германия)", "default_curr": "EUR"},
+    {"key": "nl_bridge", "name": "🇳🇱 Hostinger / NL (Нидерланды)", "default_curr": "EUR"},
+    {"key": "selectel_ru", "name": "🇷🇺 Selectel SPB (Россия)", "default_curr": "RUB"},
+    {"key": "domain_dns", "name": "🌐 Домены / SSL / DNS", "default_curr": "USD"},
+    {"key": "other", "name": "⚙️ Другой сервер / Хостинг", "default_curr": "EUR"},
+]
+
+
+@router.get("/server-costs/catalog")
+async def get_server_catalog():
+    """Return available server catalog for expense reporting."""
+    return SERVER_CATALOG
+
+
+@router.get("/server-costs")
+async def list_server_costs():
+    """List monthly server items and totals."""
+    conn = admin_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT id, month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details, created_at "
+            "FROM server_expense_items ORDER BY month DESC, id ASC"
+        )
+        items = cur.fetchall()
+        result = []
+        for r in items:
+            result.append({
+                "id": r["id"],
+                "month": r["month"],
+                "server_key": r["server_key"],
+                "server_name": r["server_name"],
+                "currency": r["currency"] or "EUR",
+                "amount_currency": float(r["amount_currency"]) if r["amount_currency"] is not None else None,
+                "cost_rub": float(r["cost_rub"]),
+                "effective_rate": float(r["effective_rate"]) if r["effective_rate"] is not None else None,
+                "details": r["details"] or "",
+            })
+        return {
+            "catalog": SERVER_CATALOG,
+            "items": result
+        }
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.post("/server-costs")
+async def save_server_cost(data: dict):
+    """
+    Save or update a server expense item.
+    Payload: {
+        "id": 123 (optional for update),
+        "month": "2026-10",
+        "server_key": "hetzner_de",
+        "server_name": "🇩🇪 Hetzner DE (Германия)",
+        "currency": "EUR" | "USD" | "RUB",
+        "amount_currency": 11.18,
+        "cost_rub": 1350.00,
+        "details": "Основной Hetzner DE"
+    }
+    """
+    month = str(data.get("month", "")).strip()
+    if not month or len(month) != 7 or "-" not in month:
+        raise HTTPException(status_code=400, detail="Invalid month format, expected YYYY-MM")
+
+    server_key = str(data.get("server_key", "hetzner_de")).strip()
+    catalog_match = next((s for s in SERVER_CATALOG if s["key"] == server_key), None)
+    server_name = data.get("server_name") or (catalog_match["name"] if catalog_match else server_key)
+
+    currency = str(data.get("currency", "EUR")).upper().strip()
+    if currency not in ("EUR", "USD", "RUB"):
+        currency = "EUR"
+
+    try:
+        cost_rub = float(data.get("cost_rub", 0.0))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid cost_rub")
+
+    try:
+        amount_currency = float(data.get("amount_currency", 0.0)) if data.get("amount_currency") is not None else None
+    except (ValueError, TypeError):
+        amount_currency = None
+
+    details = str(data.get("details", "")).strip()
+
+    # Calculate effective rate
+    effective_rate = None
+    if currency == "RUB":
+        effective_rate = 1.0
+        if amount_currency is None or amount_currency == 0:
+            amount_currency = cost_rub
+    elif amount_currency and amount_currency > 0:
+        effective_rate = round(cost_rub / amount_currency, 2)
+
+    item_id = data.get("id")
+
+    conn = admin_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        if item_id:
+            cur.execute(
+                """
+                UPDATE server_expense_items
+                SET month=%s, server_key=%s, server_name=%s, currency=%s,
+                    amount_currency=%s, cost_rub=%s, effective_rate=%s, details=%s
+                WHERE id=%s
+                """,
+                (month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details, item_id)
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO server_expense_items
+                    (month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details)
+            )
+            item_id = cur.lastrowid
+
+        # Recalculate total for server_costs_monthly for backwards compatibility
+        cur.execute("SELECT SUM(cost_rub) as total_rub FROM server_expense_items WHERE month=%s", (month,))
+        total_row = cur.fetchone()
+        month_total_rub = float(total_row["total_rub"]) if total_row and total_row["total_rub"] is not None else cost_rub
+
+        cur.execute(
+            """
+            INSERT INTO server_costs_monthly 
+                (month, currency, amount_currency, cost_rub, effective_rate, details, cost_eur, eur_rate)
+            VALUES 
+                (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                cost_rub = VALUES(cost_rub),
+                currency = VALUES(currency),
+                details = VALUES(details)
+            """,
+            (month, currency, amount_currency, month_total_rub, effective_rate, f"Сумма серверов за {month}", 0.0, 95.0)
+        )
+        conn.commit()
+        return {
+            "status": "ok",
+            "saved": {
+                "id": item_id,
+                "month": month,
+                "server_key": server_key,
+                "server_name": server_name,
+                "currency": currency,
+                "amount_currency": amount_currency,
+                "cost_rub": cost_rub,
+                "effective_rate": effective_rate,
+                "details": details,
+            }
+        }
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to save server expense item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.delete("/server-costs/{item_id}")
+async def delete_server_cost(item_id: int):
+    """Delete a server expense item."""
+    conn = admin_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT month FROM server_expense_items WHERE id=%s", (item_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Item not found")
+        month = row["month"]
+
+        cur.execute("DELETE FROM server_expense_items WHERE id=%s", (item_id,))
+        
+        # Recalculate month total
+        cur.execute("SELECT SUM(cost_rub) as total_rub FROM server_expense_items WHERE month=%s", (month,))
+        total_row = cur.fetchone()
+        month_total_rub = float(total_row["total_rub"]) if total_row and total_row["total_rub"] is not None else 0.0
+
+        if month_total_rub > 0:
+            cur.execute("UPDATE server_costs_monthly SET cost_rub=%s WHERE month=%s", (month_total_rub, month))
+        else:
+            cur.execute("DELETE FROM server_costs_monthly WHERE month=%s", (month))
+
+        conn.commit()
+        return {"status": "ok", "deleted_id": item_id, "month": month, "new_total": month_total_rub}
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to delete server expense item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
 
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
@@ -1170,6 +1585,9 @@ async def dashboard():
             "active": user_stats["active"],
             "active_sub": user_stats.get("active_sub", 0),
             "active_key_only": user_stats.get("active_key_only", 0),
+            "active_paying": user_stats.get("active_paying", 0),
+            "active_trial": user_stats.get("active_trial", 0),
+            "paying": user_stats.get("paying", 0),
             "expiring_soon": sub_summary["expiring_soon_count"],
             "recently_expired": sub_summary["recently_expired_count"],
         },
@@ -1695,6 +2113,51 @@ async def winback_effectiveness():
     return _clean(admin_db.winback_effectiveness())
 
 
+# ── TSPU / DPI Retention Trigger ──────────────────────────────────────────────
+
+@router.get("/tspu-status")
+async def get_tspu_status():
+    """Returns real-time TSPU/DPI blocking score and segmented winback targets."""
+    try:
+        from scripts.detect_tspu_wave import calculate_dpi_score
+        from scripts.win_back_users import get_tspu_wave_targets
+        
+        dpi_data = calculate_dpi_score()
+        targets = get_tspu_wave_targets(cooldown_days=3)
+        
+        # Breakdown by segments
+        breakdown = {
+            "total": len(targets),
+            "pending_gift": len([t for t in targets if t["scenario"] == "tspu_pending_gift"]),
+            "used_gift": len([t for t in targets if t["scenario"] == "tspu_used_gift"]),
+            "fresh_gift": len([t for t in targets if t["scenario"] == "tspu_fresh_gift"]),
+        }
+        
+        return {
+            "dpi": dpi_data,
+            "breakdown": breakdown,
+            "targets": _clean(targets)
+        }
+    except Exception as e:
+        logger.error(f"Error getting TSPU status: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@router.post("/tspu-winback/send")
+async def send_tspu_winback(request: Request):
+    """Triggers TSPU wave retention messages to selected cohorts."""
+    try:
+        from scripts.win_back_users import process_tspu_campaign
+        data = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        allowed_scenarios = data.get("scenarios") or ["tspu_pending_gift", "tspu_used_gift", "tspu_fresh_gift"]
+        
+        res = await process_tspu_campaign(send_mode=True, allowed_scenarios=allowed_scenarios)
+        return {"ok": True, "result": res}
+    except Exception as e:
+        logger.error(f"Error sending TSPU winback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Promocodes ────────────────────────────────────────────────────────────────
 
 @router.get("/promocodes")
@@ -1778,7 +2241,7 @@ async def user_payments(tg_id: int):
 async def user_autopay(tg_id: int):
     from api.db import execute_query
     row = execute_query(
-        "SELECT autopay_enabled, autopay_tariff, autopay_vpn_type, payment_method_id "
+        "SELECT autopay_enabled, autopay_tariff, autopay_vpn_type, payment_method_id, autopay_disabled_at "
         "FROM users WHERE tg_id = %s", (tg_id,), fetch='one'
     )
     return row or {}
@@ -1918,6 +2381,13 @@ async def admin_create_user(request: Request):
         client_uuid = existing['client']['id']
         sub_id = existing['client'].get('subId')
         xui.extend_client_expiry(existing['inbound_id'], existing['client'], days * 86400 * 1000)
+        # Also sync Inbound 17 (AmneziaWG)
+        try:
+            from bot_xui.awg_manager import get_or_create_3xui_awg_client
+            if tg_id and tg_id != 0:
+                get_or_create_3xui_awg_client(tg_id=tg_id, expiry_ms=expiry_time, client_name=f"awg_{tg_id}")
+        except Exception as _awg_err:
+            logger.warning(f"Admin extend: failed to sync Inbound 17 AWG: {_awg_err}")
     else:
         result = xui.create_client(
             email=client_name,
@@ -1935,7 +2405,7 @@ async def admin_create_user(request: Request):
     if not sub_id:
         sub_id = _secrets.token_hex(8)
 
-    sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}"
+    sub_url = f"{XUI_SUB_PATH}/updates_ui/{sub_id}"
 
     vless_link = generate_vless_link(
         client_id=client_uuid,
@@ -2222,28 +2692,17 @@ async def xui_restore(backup_id: str, request: Request):
 def get_admin_page_route():
     """Return the admin page endpoint for mounting in the app."""
     async def admin_page(request: Request):
-        # nginx auth_basic already protects this path — skip session check
-        # Pre-create a session cookie so JS doesn't need the API password
-        import secrets as _secrets
-        from admin.auth import _sessions, SESSION_MAX_AGE
-
         html_path = os.path.join(os.path.dirname(__file__), "static", "admin.html")
-        with open(html_path) as f:
+        with open(html_path, "r", encoding="utf-8") as f:
             html = f.read()
-        # Do NOT embed the real password — use a placeholder so JS skips login
-        html = html.replace("{{AWG_PASSWORD}}", "")
 
-        token = _secrets.token_hex(24)
-        _sessions[token] = datetime.now(timezone.utc).timestamp()
+        # Do NOT embed password — JS uses form login and persistent session cookie
+        html = html.replace("{{AWG_PASSWORD}}", "")
 
         response = HTMLResponse(html)
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
-        response.set_cookie(
-            key="connect.sid", value=token,
-            httponly=True, secure=True, samesite="lax", max_age=SESSION_MAX_AGE,
-        )
         return response
     return admin_page
 
@@ -2506,6 +2965,13 @@ async def api_message_log_stats(
     return {"sources": admin_db.message_log_source_stats(days=days)}
 
 
+@router.get("/api/messages/analytics")
+async def api_message_flow_analytics(request: Request):
+    """Customer journey funnel and retention effectiveness analytics."""
+    _require_admin_session(request)
+    return admin_db.get_message_flow_analytics()
+
+
 # ─────────────────────────────────────────────
 #  Inbounds Popularity & SNI Stats
 # ─────────────────────────────────────────────
@@ -2524,6 +2990,49 @@ async def api_inbounds_popularity_stats(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/inbound-switches")
+@router.get("/api/inbound-switches")
+async def api_inbound_switches(request: Request):
+    """Return inbound switch monitor state, operator breakdowns, and recent switch events."""
+    _require_admin_session(request)
+    json_path = "/home/alvik/vpn-service/data/inbound_switches.json"
+    log_path = "/home/alvik/vpn-service/logs/inbound_switches.log"
+
+    data = {
+        "updated_at": None,
+        "total_switches": 0,
+        "total_roaming": 0,
+        "user_states": {},
+        "switch_matrix": {},
+        "isp_switches": {},
+        "user_switch_counts": {},
+        "recent_events": [],
+    }
+
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                data.update(saved)
+        except Exception as e:
+            logger.warning(f"Error reading inbound_switches.json: {e}")
+
+    if os.path.exists(log_path):
+        try:
+            events = []
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()[-60:]
+            for line in lines:
+                line = line.strip()
+                if "🔄 [SWITCH]" in line or "📡 [ROAMING]" in line:
+                    events.append(line)
+            data["recent_events"] = events[-35:]
+        except Exception as e:
+            logger.warning(f"Error reading inbound_switches.log: {e}")
+
+    return data
+
+
 
 @router.get("/api/monitoring")
 async def api_monitoring_stats(request: Request):
@@ -2533,6 +3042,85 @@ async def api_monitoring_stats(request: Request):
     # Also broadcast real-time update to all connected WebSocket clients
     await _broadcast_ws({"type": "monitoring", "data": data})
     return data
+
+
+@router.get("/services-health")
+async def api_services_health(request: Request):
+    """Healthcheck endpoint for all services across DE, RU, and NL servers."""
+    _require_admin_session(request)
+    import socket, subprocess, time
+
+    def check_tcp(host: str, port: int, timeout: float = 1.0) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except Exception:
+            return False
+
+    def check_systemd(unit: str) -> str:
+        try:
+            res = subprocess.run(
+                ["systemctl", "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            return res.stdout.strip()
+        except Exception:
+            return "error"
+
+    # Services dictionary
+    services = {
+        # DE Core
+        "vpn-admin": "active",
+        "awg-bridge": "active" if check_systemd("awg-quick@awg-ru-bridge.service") == "active" and check_tcp("10.50.0.2", 8443, 1.0) else "inactive",
+        "3xui-de": check_systemd("x-ui.service"),
+        "olcrtc-server": "standby" if check_systemd("olcrtc.service") == "inactive" else check_systemd("olcrtc.service"),
+        "mtproto": check_systemd("mtg.service"),
+        "main-api": check_systemd("api.service"),
+        "fuel-map": check_systemd("fuel-map.service"),
+        "fuel-map-admin": check_systemd("fuel-map.service"),
+        "portfolio": "active" if os.path.isdir("/home/alvik/portfolio/dist") else "inactive",
+        "portfolio-analytics": "active" if check_tcp("127.0.0.1", 3306) else "inactive",
+        "video-studio": check_systemd("video-studio.service"),
+        "agy-inference": "active" if check_tcp("127.0.0.1", 8799) else "inactive",
+        "grafana": "active" if check_tcp("127.0.0.1", 3030) else "inactive",
+        "owl-monitor": check_systemd("owl-monitor.service"),
+        "upload-server": check_systemd("upload-server.service"),
+        "ntfy": "active",
+        "phpmyadmin": "active" if check_tcp("127.0.0.1", 8080) else "inactive",
+        "finance-api": "active" if check_tcp("127.0.0.1", 3000) else "inactive",
+        "dudaApp-backend": "active" if check_tcp("127.0.0.1", 3000) else "inactive",
+
+        # RU Relay
+        "3xui-ru": "active" if check_tcp("10.50.0.2", 2053, 1.0) or check_tcp("139.100.207.18", 2053, 1.5) else "inactive",
+        "adguard-ru": "active" if check_tcp("10.50.0.2", 53, 1.0) or check_tcp("139.100.207.18", 53, 1.0) else "inactive",
+        "ru-split": "active",
+        "hy2-bridge": "active",
+        "olcrtc-ru": "standby",
+        "ru-watchdog": "active",
+        "ru-sync": "active",
+
+        # NL Exit
+        "3xui-nl": "active" if check_tcp("2.26.76.210", 40649, 1.5) else "inactive",
+        "adguard-nl": "active" if check_tcp("2.26.76.210", 53, 1.5) else "inactive",
+        "nl-yt-watcher": "active",
+        "nl-backup-vault": "active" if check_tcp("2.26.76.210", 22, 1.5) else "inactive",
+        "yaenergo-dashboard": "active" if check_tcp("127.0.0.1", 8501) else "inactive",
+    }
+
+    nodes = {
+        "de": "healthy",
+        "ru": "healthy" if services["3xui-ru"] == "active" else "degraded",
+        "nl": "healthy" if services["3xui-nl"] == "active" else "degraded",
+    }
+
+    return {
+        "status": "ok",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+        "nodes": nodes,
+        "services": services,
+    }
 
 
 @router.get("/messages")

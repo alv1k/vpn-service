@@ -25,6 +25,7 @@ auth_router = APIRouter(prefix="/api/auth")
 class SendCodeRequest(BaseModel):
     email: EmailStr | None = None
     phone: str | None = None
+    company: str | None = None  # Honeypot field for bot trapping
 
 
 class VerifyRequest(BaseModel):
@@ -129,9 +130,28 @@ def _get_current_user(request: Request) -> dict:
 # ─────────────────────────────────────────────
 
 @auth_router.post("/send-code", response_model=AuthResponse)
-async def send_code(req: SendCodeRequest):
+async def send_code(req: SendCodeRequest, request: Request):
     """Send auth code to email or phone."""
+    # Honeypot: if bot filled hidden field, return fake ok without sending
+    if req.company and req.company.strip():
+        logger.warning(f"Honeypot triggered in /api/auth/send-code from bot: {req.company}")
+        return AuthResponse(ok=True, message="Код отправлен")
+
+    # Handshake token verification
+    token = request.headers.get("x-handshake-token")
+    from api.handshake import consume_handshake_token
+    if not consume_handshake_token(token):
+        client_ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+        logger.warning(f"Missing or invalid handshake token in /api/auth/send-code from {client_ip}")
+        raise HTTPException(403, "Сессия устарела. Обновите страницу.")
+
     destination, channel = _get_destination(req.email, req.phone)
+
+    if channel == "email":
+        from api.disposable_email import is_disposable_email
+        if is_disposable_email(destination):
+            logger.warning(f"Blocked disposable email in /api/auth/send-code: {destination}")
+            raise HTTPException(400, "Использование временных email не поддерживается")
 
     result = create_auth_code(destination, channel)
     if result is None:

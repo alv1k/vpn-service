@@ -566,7 +566,7 @@ async def show_single_config(query, client_name: str, xui):
     keyboard = []
     if web_token:
         keyboard.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=f"https://344988.snk.wtf/go-connect/{web_token}")])
-        keyboard.append([InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{web_token}")])
+        keyboard.append([InlineKeyboardButton("👤 Личный кабинет и инструкции", url=f"https://344988.snk.wtf/my/{web_token}")])
     keyboard.append([InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")])
     if is_test_tariff:
         keyboard.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])

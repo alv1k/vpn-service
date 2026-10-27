@@ -52,6 +52,14 @@ case "${1:-all}" in
         restart_service bot
         restart_service api
         restart_service admin-panel
+        if [ "${2:-}" == "--test" ]; then
+            echo -e "\n${YELLOW}🧪 Running Alex QA Smoke Test...${NC}"
+            /home/alvik/vpn-service/scripts/run_qa_agent.sh --smoke
+        fi
+        ;;
+    test)
+        echo -e "${YELLOW}🧪 Running Alex QA Smoke Test...${NC}"
+        /home/alvik/vpn-service/scripts/run_qa_agent.sh --smoke
         ;;
     status|s)
         echo "Service status:"
@@ -62,7 +70,7 @@ case "${1:-all}" in
         journalctl -u "$svc" -f --no-pager
         ;;
     *)
-        echo "Usage: $0 {bot|api|admin-panel|all|status|logs [bot|api|admin-panel]}"
+        echo "Usage: $0 {bot|api|admin-panel|all [--test]|test|status|logs [bot|api|admin-panel]}"
         exit 1
         ;;
 esac

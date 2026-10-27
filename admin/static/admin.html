@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TIIN VPN Admin</title>
-  <link rel="icon" type="image/png" href="/tiin_admin_panel/favicon.png?v=20260828">
+  <link rel="icon" type="image/png" href="/tiin_admin_panel/favicon.png?v=20260916">
   <style>
     :root {
       --bg: #0a0a0a;
@@ -331,13 +331,36 @@
   </style>
 </head>
 <body>
-  <div class="container">
+  <!-- Login Screen Overlay -->
+  <div id="login-screen" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0a0a;z-index:99999;align-items:center;justify-content:center;padding:20px">
+    <div style="background:#161616;border:1px solid #2a2a2a;border-radius:12px;padding:32px;width:100%;max-width:380px;box-shadow:0 12px 40px rgba(0,0,0,0.6)">
+      <div style="text-align:center;margin-bottom:24px">
+        <div style="font-size:36px;margin-bottom:8px">🛡️</div>
+        <h2 style="color:#fff;font-size:20px;margin-bottom:4px">TIIN Server Admin</h2>
+        <p style="color:#888;font-size:13px">Вход в панель управления</p>
+      </div>
+      <form id="login-form" onsubmit="handleLoginForm(event)">
+        <div style="margin-bottom:16px">
+          <label style="display:block;font-size:12px;color:#888;margin-bottom:6px">Логин</label>
+          <input type="text" id="login-username" value="alvik" autocomplete="username" required style="width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:10px 12px;border-radius:6px;font-size:14px;outline:none">
+        </div>
+        <div style="margin-bottom:20px">
+          <label style="display:block;font-size:12px;color:#888;margin-bottom:6px">Пароль</label>
+          <input type="password" id="login-password" autocomplete="current-password" required style="width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:10px 12px;border-radius:6px;font-size:14px;outline:none">
+        </div>
+        <div id="login-error" style="display:none;color:#ef4444;font-size:13px;margin-bottom:16px;text-align:center"></div>
+        <button type="submit" id="login-btn" style="width:100%;background:#7c3aed;color:#fff;border:none;padding:12px;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">Войти</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="container" id="main-container">
     <nav>
       <span class="title">TIIN VPN</span><a href="https://tiinservice.online" target="_blank" style="color:var(--muted);font-size:12px;margin-left:8px;text-decoration:none" title="tiinservice.online">🌐 tiinservice.online</a>
       <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('91.132.161.112');this.textContent='copied!';setTimeout(()=>this.textContent='91.132.161.112',1000)" title="Click to copy DE IP">91.132.161.112</span>
-      <!-- https://344988.snk.wtf:5096/XhU5cXVfMCyHzAXlrT/panel/xray -->
+      <!-- https://344988.snk.wtf/XhU5cXVfMCyHzAXlrT/panel/xray -->
       <span style="color:var(--muted);font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('2.26.76.210');this.textContent='copied!';setTimeout(()=>this.textContent='2.26.76.210',1000)" title="Click to copy NL IP">2.26.76.210</span>
-      <!-- http://2.26.76.210:40649/q8gIb3co6oD2rHbtFc/panel/clients -->
+      <!-- https://344988.snk.wtf/q8gIb3co6oD2rHbtFc/panel/clients -->
       <span style="color:#a78bfa;font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer;font-weight:600" onclick="navigator.clipboard.writeText('139.100.207.18');this.textContent='copied!';setTimeout(()=>this.textContent='139.100.207.18',1000)" title="Click to copy RU VPS IP">🇷🇺 139.100.207.18</span>
       <span style="color:#38bdf8;font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('tiin.connect.flow@outlook.com');this.textContent='copied!';setTimeout(()=>this.textContent='✉️ tiin.connect.flow@outlook.com',1000)" title="Click to copy Primary Service Email">✉️ tiin.connect.flow@outlook.com</span>
       <span style="color:#a5a5c7;font-size:12px;margin-left:8px;font-family:monospace;cursor:pointer" onclick="navigator.clipboard.writeText('gladis1503@proton.me');this.textContent='copied!';setTimeout(()=>this.textContent='✉️ gladis1503@proton.me (резерв)',1000)" title="Click to copy Backup Email">✉️ gladis1503@proton.me (резерв)</span>
@@ -349,13 +372,15 @@
         <button onclick="showTab('proxy')" id="tab-proxy">MTProxy</button>
         <button onclick="showTab('testpay')" id="tab-testpay">Test Pay</button>
         <button onclick="showTab('messages')" id="tab-messages">Messages</button>
+        <button onclick="handleLogout()" style="margin-left:auto;background:transparent;border:1px solid #ef444455;color:#ef4444;padding:7px 12px;border-radius:6px;cursor:pointer;font-size:12px">🚪 Выйти</button>
         <div class="nav-ext">
           <span class="nav-ext-label">External</span>
-          <a href="https://344988.snk.wtf:5096/XhU5cXVfMCyHzAXlrT/panel/" target="_blank">3X-UI Panel ↗</a>
-          <a href="https://344988.snk.wtf/phpmyadmin/" target="_blank">phpMyAdmin ↗</a>
-          <a href="https://344988.snk.wtf/phpmyadmin-dev/" target="_blank">phpMyAdmin Dev ↗</a>
-          <a href="http://2.26.76.210:40649/q8gIb3co6oD2rHbtFc/" target="_blank">3X-UI NL ↗</a>
-          <a href="http://139.100.207.18:2053/0ruabxwdsz96R7jSIN/panel/inbounds" target="_blank" style="color:#a78bfa;font-weight:600">3X-UI RU ↗</a>
+          <a href="https://344988.snk.wtf/XhU5cXVfMCyHzAXlrT/panel/" target="_blank">3X-UI Panel ↗</a>
+          <a href="https://344988.snk.wtf/_pma_sec_74921/" target="_blank">phpMyAdmin ↗</a>
+          <a href="https://344988.snk.wtf/q8gIb3co6oD2rHbtFc/panel/" target="_blank">3X-UI NL ↗</a>
+          <a href="https://344988.snk.wtf/0ruabxwdsz96R7jSIN/panel/inbounds" target="_blank" style="color:#a78bfa;font-weight:600">3X-UI RU ↗</a>
+          <a href="https://my.selectel.ru/vpc/cost/details" target="_blank" style="color:#38bdf8;font-weight:600">Selectel ↗</a>
+          <a href="https://mr-empeche.tiinservice.online/" target="_blank" style="color:#f472b6;font-weight:600">Mr. Empêché ↗</a>
         </div>
       </div>
     </nav>
@@ -372,24 +397,6 @@
     <div id="s-dashboard" class="section active">
       <div class="cards" id="dash-cards"></div>
       <div class="cards" id="dash-extra-cards" style="display:none"></div>
-
-      <h3 class="mb" style="color:var(--muted)">SERVICES</h3>
-      <div class="cards" style="margin-bottom:16px">
-        <div class="card" style="display:flex;flex-direction:column;gap:8px;min-width:340px">
-          <h3>x-ui Backup</h3>
-          <div class="sub">Full snapshot: DB, metrics, config, binary. Keeps last 10.</div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <button onclick="xuiCreateBackup()" id="btn-xui-backup" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">
-              📦 Create Backup
-            </button>
-            <button onclick="xuiLoadBackups()" style="padding:8px 16px;background:var(--border);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:13px">
-              🔄 Refresh List
-            </button>
-            <span id="xui-backup-status" style="font-size:12px;color:var(--muted)"></span>
-          </div>
-          <div id="xui-backup-list" style="margin-top:8px;font-size:12px"></div>
-        </div>
-      </div>
 
       <h3 class="mb" style="color:var(--muted)">SITE ANALYTICS</h3>
       <div class="cards" id="dash-site-stats"></div>
@@ -422,14 +429,77 @@
         <summary style="color:var(--red);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">
           🔴 НЕДАВНО ИСТЕКШИЕ ПОДПИСКИ (до 30 дн назад) <span id="recently-expired-count" style="color:var(--red)"></span>
         </summary>
+
+        <!-- TSPU / DPI Retention Trigger Banner -->
+        <div id="tspu-banner" class="card" style="margin: 8px 0 12px 0; border: 1px solid #3b82f644; background: linear-gradient(135deg, #1e1b4b22 0%, #0f172a 100%); padding: 12px 16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px">
+            <div style="display:flex; align-items:center; gap:10px">
+              <span style="font-size:22px">🛡️</span>
+              <div>
+                <div style="display:flex; align-items:center; gap:8px">
+                  <strong style="font-size:13px; color:#fff">Детектор фильтрации ТСПУ / РКН:</strong>
+                  <span id="tspu-score-badge" class="badge" style="background:#22c55e22; color:var(--green)">DPI Score: 0/100 (Normal)</span>
+                </div>
+                <div id="tspu-status-desc" style="font-size:12px; color:var(--muted); margin-top:2px">Фоновый режим — блокировок у операторов не зафиксировано</div>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px">
+              <button class="btn sm" onclick="loadTspuStatus()" style="font-size:11px">🔄 Проверить DPI</button>
+              <button class="btn sm" onclick="openTspuModal()" style="background:linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%); color:#fff; font-weight:600; font-size:12px">
+                🚀 Триггер-рассылка (<span id="tspu-ready-count">0</span> чел.)
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- KPI Summary Cards -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:8px;margin:8px 0 12px 0">
+          <div class="card" style="padding:8px 12px;margin:0">
+            <div style="font-size:11px;color:var(--muted)">Всего истекших</div>
+            <div id="rec-stat-total" style="font-size:16px;font-weight:700;color:var(--text)">0</div>
+          </div>
+          <div class="card" style="padding:8px 12px;margin:0;border-color:var(--green)">
+            <div style="font-size:11px;color:var(--green)">🎁 Активировали тест</div>
+            <div id="rec-stat-gift-act" style="font-size:16px;font-weight:700;color:var(--green)">0</div>
+          </div>
+          <div class="card" style="padding:8px 12px;margin:0;border-color:var(--orange)">
+            <div style="font-size:11px;color:var(--orange)">⏳ Ожидают активации</div>
+            <div id="rec-stat-gift-pend" style="font-size:16px;font-weight:700;color:var(--orange)">0</div>
+          </div>
+          <div class="card" style="padding:8px 12px;margin:0;border-color:#a78bfa">
+            <div style="font-size:11px;color:#a78bfa">✉️ Не отправлялся оффер</div>
+            <div id="rec-stat-ready" style="font-size:16px;font-weight:700;color:#a78bfa">0</div>
+          </div>
+          <div class="card" style="padding:8px 12px;margin:0;border-color:var(--accent)">
+            <div style="font-size:11px;color:var(--accent)">💎 Были оплаты (LTV)</div>
+            <div id="rec-stat-paid" style="font-size:16px;font-weight:700;color:var(--accent)">0</div>
+          </div>
+        </div>
+
+        <!-- Filter Bar -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div id="rec-filter-bar" style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn active" id="rec-btn-all" onclick="setRecentlyExpiredFilter('all')" style="font-size:11px;padding:4px 8px;font-weight:600">Все (<span id="rec-cnt-all">0</span>)</button>
+            <button class="btn" id="rec-btn-gift-act" onclick="setRecentlyExpiredFilter('gift_activated')" style="font-size:11px;padding:4px 8px;color:var(--green)">🎁 Активировали (<span id="rec-cnt-gift-act">0</span>)</button>
+            <button class="btn" id="rec-btn-gift-pend" onclick="setRecentlyExpiredFilter('gift_pending')" style="font-size:11px;padding:4px 8px;color:var(--orange)">⏳ Ожидают (<span id="rec-cnt-gift-pend">0</span>)</button>
+            <button class="btn" id="rec-btn-ready" onclick="setRecentlyExpiredFilter('ready_to_send')" style="font-size:11px;padding:4px 8px;color:#a78bfa">✉️ Без оффера (<span id="rec-cnt-ready">0</span>)</button>
+            <button class="btn" id="rec-btn-paid" onclick="setRecentlyExpiredFilter('paid')" style="font-size:11px;padding:4px 8px;color:var(--accent)">💎 Платные (<span id="rec-cnt-paid">0</span>)</button>
+          </div>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none;margin:0">
+            <input type="checkbox" id="rec-hide-blocked" onchange="toggleHideBlockedBots(this.checked)" checked style="margin:0;cursor:pointer">
+            Скрыть заблокировавших бота (<span id="rec-cnt-blocked">0</span>)
+          </label>
+        </div>
+
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>TG ID</th>
-                <th>Имя</th>
+                <th>Имя / Портал</th>
                 <th>Истекла</th>
-                <th>Прошло</th>
+                <th>Сегмент / LTV</th>
+                <th>Статус возврата (Winback)</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -468,9 +538,14 @@
         </table>
       </div>
 
-      <h3 class="mb" style="color:var(--muted)">
-        📴 OFFLINE <span id="offline-count" style="color:var(--orange)"></span>
-      </h3>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <h3 style="color:var(--muted);margin:0">
+          📴 OFFLINE <span id="offline-count" style="color:var(--orange)"></span>
+        </h3>
+        <div>
+          <button class="btn" onclick="refreshOffline()" style="font-size:11px;padding:3px 8px" title="Обновить список офлайн пользователей">🔄 Обновить офлайн</button>
+        </div>
+      </div>
       <div class="table-wrap mb">
         <table>
           <thead>
@@ -604,9 +679,15 @@
         </div>
       </details>
 
-      <h3 class="mb" style="color:var(--muted)">FINANCIALS</h3>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h3 style="color:var(--muted);margin:0">FINANCIALS</h3>
+        <button class="btn" style="font-size:12px;padding:4px 10px;background:var(--card);border:1px solid #444" onclick="openExpenseModal()">
+          + Внести расход за сервер
+        </button>
+      </div>
       <div class="cards" id="dash-finance"></div>
       <div id="dash-monthly" class="mb"></div>
+      <div id="dash-upcoming-renewals-block" class="mb"></div>
     </div>
 
 
@@ -788,6 +869,111 @@
           </tbody>
         </table>
       </div>
+
+      <!-- Inbound & Operator Switch Monitor -->
+      <div style="margin-top:32px;border-top:1px solid var(--border);padding-top:20px">
+        <div class="toolbar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <b style="font-size:16px">🔀 Мониторинг переключений инбаундов & Роуминг сетей</b>
+          <span style="color:var(--muted);font-size:12px" id="sw-last-updated">—</span>
+          <span style="flex:1"></span>
+          <button class="btn sm" onclick="loadInboundSwitches()">🔄 Обновить монитор</button>
+        </div>
+
+        <!-- Switch Monitor KPI Cards -->
+        <div class="cards mb mt" id="sw-kpi-cards">
+          <div class="card"><div class="val" id="sw-kpi-total-switches" style="color:var(--accent)">0</div><div class="sub">Смен инбаундов</div></div>
+          <div class="card"><div class="val" id="sw-kpi-total-roaming" style="color:var(--orange)">0</div><div class="sub">Смен оператора (роуминг)</div></div>
+          <div class="card"><div class="val" id="sw-kpi-tracked-users" style="color:var(--green)">0</div><div class="sub">Активных сессий в мониторе</div></div>
+          <div class="card"><div class="val" id="sw-kpi-top-route" style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">—</div><div class="sub">Топ переход протоколов</div></div>
+        </div>
+
+        <!-- Switch Matrix & ISP Breakdown (2 columns) -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));gap:16px;margin-bottom:20px">
+          <!-- Switch Matrix Table -->
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px">
+            <h4 style="margin:0 0 12px;color:var(--text);font-size:14px;display:flex;align-items:center;gap:6px">
+              <span>🔄 Матрица переходов между серверами</span>
+            </h4>
+            <div class="table-wrap" style="max-height:280px;overflow-y:auto">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Исходный инбаунд</th>
+                    <th>Целевой инбаунд</th>
+                    <th style="text-align:right">Случаев</th>
+                  </tr>
+                </thead>
+                <tbody id="sw-matrix-tbody">
+                  <tr><td colspan="3" style="text-align:center;padding:12px;color:var(--muted)">Нет данных</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ISP Switch Breakdown -->
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px">
+            <h4 style="margin:0 0 12px;color:var(--text);font-size:14px;display:flex;align-items:center;gap:6px">
+              <span>📡 Активность по операторам связи</span>
+            </h4>
+            <div class="table-wrap" style="max-height:280px;overflow-y:auto">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Оператор связи</th>
+                    <th>Маршрут переключения</th>
+                    <th style="text-align:right">Случаев</th>
+                  </tr>
+                </thead>
+                <tbody id="sw-isp-tbody">
+                  <tr><td colspan="3" style="text-align:center;padding:12px;color:var(--muted)">Нет данных</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live User States Table with Search & ISP Filter -->
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+            <h4 style="margin:0;color:var(--text);font-size:14px">
+              👥 Текущее состояние пользователей (Инбаунд & Сеть) <span id="sw-user-count" style="color:var(--green)"></span>
+            </h4>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input type="search" id="sw-user-filter" placeholder="Поиск по email, оператору, IP..." oninput="renderSwitchUserTable()" style="max-width:240px;padding:4px 8px;font-size:12px">
+              <select id="sw-isp-filter" onchange="renderSwitchUserTable()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-size:12px">
+                <option value="">Все операторы</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrap" style="max-height:360px;overflow-y:auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Пользователь (Email)</th>
+                  <th>Текущий инбаунд</th>
+                  <th>Оператор связи</th>
+                  <th>Клиентский IP</th>
+                  <th>Последняя активность (ЯКТ)</th>
+                  <th style="text-align:right">Смен инбаундов</th>
+                </tr>
+              </thead>
+              <tbody id="sw-users-tbody">
+                <tr><td colspan="6" style="text-align:center;padding:12px;color:var(--muted)">Загрузка...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Recent Switch Events Feed -->
+        <details style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px" open>
+          <summary style="color:var(--accent);cursor:pointer;font-weight:600;font-size:13px">
+            📜 Живая лента последних переключений и роуминга (Realtime Feed)
+          </summary>
+          <div id="sw-recent-events" style="margin-top:10px;font-family:monospace;font-size:11px;max-height:220px;overflow-y:auto;background:var(--bg);padding:10px;border-radius:6px;border:1px solid var(--border);white-space:pre-wrap;word-break:break-all;line-height:1.6">
+            Загрузка событий...
+          </div>
+        </details>
+      </div>
     </div>
 
     <!-- Users -->
@@ -818,7 +1004,75 @@
 
     <!-- Messages Section -->
     <div id="s-messages" class="section">
-      <h2>📨 Message Log</h2>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <h2 style="margin:0">📨 Message Log & Customer Flow</h2>
+        <button class="btn" onclick="loadMsgAnalytics()" style="padding:4px 10px;font-size:12px;background:var(--border)">🔄 Обновить аналитику</button>
+      </div>
+
+      <!-- User Flow & Conversion Funnel Panel -->
+      <div id="msg-analytics-panel" style="margin-bottom:18px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;">
+        <div style="margin-bottom:12px">
+          <div style="font-size:13px;font-weight:700;color:#fff;display:flex;align-items:center;gap:6px">
+            <span>📊</span> Воронка пользовательского пути (Customer Flow)
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">
+            Анализ поведения реальных клиентов (админские и тестовые сессии исключены)
+          </div>
+        </div>
+
+        <!-- Funnel Steps -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:14px">
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase">1. Старт в боте</div>
+            <div id="fn-start" style="font-size:20px;font-weight:700;color:#60a5fa;margin:4px 0">—</div>
+            <div style="font-size:11px;color:var(--muted)">100% базы</div>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase">2. Тест (3 дня)</div>
+            <div id="fn-trial" style="font-size:20px;font-weight:700;color:#38bdf8;margin:4px 0">—</div>
+            <div id="fn-trial-pct" style="font-size:11px;color:#38bdf8">—%</div>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase">3. Выбор тарифа</div>
+            <div id="fn-tariffs" style="font-size:20px;font-weight:700;color:#a78bfa;margin:4px 0">—</div>
+            <div id="fn-tariffs-pct" style="font-size:11px;color:#a78bfa">—%</div>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase">4. Интент оплаты</div>
+            <div id="fn-pay-intent" style="font-size:20px;font-weight:700;color:#f59e0b;margin:4px 0">—</div>
+            <div id="fn-pay-intent-pct" style="font-size:11px;color:#f59e0b">—%</div>
+          </div>
+          <div style="background:var(--bg);border:1px solid #10b981;border-radius:6px;padding:10px;text-align:center;box-shadow:0 0 10px rgba(16,185,129,0.1)">
+            <div style="font-size:11px;color:#10b981;text-transform:uppercase">5. Оплатили</div>
+            <div id="fn-paid" style="font-size:20px;font-weight:700;color:#10b981;margin:4px 0">—</div>
+            <div id="fn-paid-pct" style="font-size:11px;color:#10b981;font-weight:600">—% конверсия</div>
+          </div>
+        </div>
+
+        <!-- Insights and Pain Points -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px">
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px">
+            <div style="font-size:12px;font-weight:600;color:#f87171;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+              <span>🎯</span> Точки трения и частые вопросы клиентов
+            </div>
+            <div style="font-size:12px;color:#cbd5e1;line-height:1.5">
+              • <b>Windows / ПК:</b> частый вопрос — как перенести подписку на ноутбук (Hiddify/v2rayN).<br>
+              • <b>Мультидевайс:</b> клиенты не знают о лимите в 10 устройств и спрашивают, как подключить второй телефон.<br>
+              • <b>Локации и ИИ:</b> высокий спрос на США/Gemini/ChatGPT и работу через «белые списки».<br>
+              • <b>Отказы YooKassa:</b> часть оплат отменяется банком — бот шлет <code>payment_canceled_smart</code>.
+            </div>
+          </div>
+
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px">
+            <div style="font-size:12px;font-weight:600;color:#34d399;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+              <span>⚡</span> Эффективность автоматических триггеров
+            </div>
+            <div id="msg-retention-triggers" style="font-size:12px;color:var(--muted);line-height:1.5">
+              Загрузка статистики...
+            </div>
+          </div>
+        </div>
+      </div>
       <div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <label style="font-size:12px;color:var(--muted)">TG ID</label>
         <input type="number" id="msg-f-tg_id" placeholder="e.g. 123456" style="background:var(--bg2);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:4px 8px;font-size:13px;width:120px">
@@ -890,6 +1144,129 @@
     <div class="modal" id="modal-content"></div>
   </div>
 
+  <!-- Expense Modal -->
+  <div class="modal-bg" id="expense-modal" onclick="if (event.target === this) closeExpenseModal()">
+    <div class="modal" style="max-width:480px">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+        <h2 style="font-size:16px; margin:0">💳 Учёт расхода за сервер</h2>
+        <button onclick="closeExpenseModal()" class="btn sm" style="padding:2px 8px">✕</button>
+      </div>
+      <div style="font-size:13px; color:var(--muted); margin-bottom:14px">
+        Укажите фактическую сумму списания в рублях и сумму по инвойсу (EUR, USD или RUB). Реальный курс с учетом комиссий перевода рассчитается автоматически.
+      </div>
+      <form id="expense-form" onsubmit="event.preventDefault(); submitExpense();">
+        <input type="hidden" id="exp-id" value="">
+
+        <div style="margin-bottom:10px">
+          <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px">Сервер / Инфраструктура:</label>
+          <select id="exp-server" onchange="onServerSelectChange()" style="width:100%; padding:8px; border-radius:6px; background:#111; border:1px solid #333; color:#fff">
+            <option value="hetzner_de">🇩🇪 Hetzner DE (Германия)</option>
+            <option value="nl_bridge">🇳🇱 Hostinger / NL (Нидерланды)</option>
+            <option value="selectel_ru">🇷🇺 Selectel SPB (Россия)</option>
+            <option value="domain_dns">🌐 Домены / SSL / DNS</option>
+            <option value="other">⚙️ Другой сервер (ввести вручную)</option>
+          </select>
+        </div>
+
+        <div id="exp-custom-name-box" style="margin-bottom:10px; display:none">
+          <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px">Название сервера / локации:</label>
+          <input type="text" id="exp-custom-name" placeholder="например, 🇫🇷 OVH France или 🇰🇿 AlmaTel" style="width:100%; padding:8px; border-radius:6px; background:#111; border:1px solid #333; color:#fff">
+        </div>
+
+        <div style="margin-bottom:10px">
+          <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px">Месяц расхода (ГГГГ-ММ):</label>
+          <input type="month" id="exp-month" required style="width:100%; padding:8px; border-radius:6px; background:#111; border:1px solid #333; color:#fff">
+        </div>
+
+        <div style="display:grid; grid-template-columns:1fr 2fr; gap:10px; margin-bottom:10px">
+          <div>
+            <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px">Валюта:</label>
+            <select id="exp-currency" onchange="calcEffectiveRatePreview()" style="width:100%; padding:8px; border-radius:6px; background:#111; border:1px solid #333; color:#fff">
+              <option value="EUR">EUR (€)</option>
+              <option value="USD">USD ($)</option>
+              <option value="RUB">RUB (₽)</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px">Сумма в инвойсе:</label>
+            <input type="number" step="0.01" id="exp-amount-currency" oninput="calcEffectiveRatePreview()" placeholder="например 11.18" style="width:100%; padding:8px; border-radius:6px; background:#111; border:1px solid #333; color:#fff">
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px">
+          <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px">Фактически списано в рублях (Итого с карты/кошелька):</label>
+          <input type="number" step="0.01" id="exp-cost-rub" required oninput="calcEffectiveRatePreview()" placeholder="например 1350.00" style="width:100%; padding:8px; border-radius:6px; background:#111; border:1px solid #333; color:#fff">
+        </div>
+
+        <div id="exp-rate-preview" style="font-size:12px; padding:8px 12px; border-radius:6px; background:#181818; margin-bottom:12px; color:var(--orange)">
+          Эффективный курс: —
+        </div>
+
+        <div style="margin-bottom:14px">
+          <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px">Детали / Комментарий:</label>
+          <input type="text" id="exp-details" placeholder="Тариф, IP, доп. трафик или метод оплаты" style="width:100%; padding:8px; border-radius:6px; background:#111; border:1px solid #333; color:#fff">
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center">
+          <button type="button" class="btn" id="exp-delete-btn" onclick="deleteExpenseItem()" style="background:var(--red); display:none">Удалить</button>
+          <div style="flex:1"></div>
+          <div style="display:flex; gap:8px">
+            <button type="button" class="btn" onclick="closeExpenseModal()" style="background:#222">Отмена</button>
+            <button type="submit" class="btn" id="exp-submit-btn" style="background:var(--blue)">Сохранить</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- TSPU Trigger Modal -->
+  <div class="modal-bg" id="tspu-modal" onclick="if (event.target === this) closeTspuModal()">
+    <div class="modal" style="max-width:550px">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+        <h2 style="font-size:16px; margin:0">⚡ Триггер-рассылка при блокировках ТСПУ</h2>
+        <button onclick="closeTspuModal()" class="btn sm" style="padding:2px 8px">✕</button>
+      </div>
+      <div style="font-size:12px; color:var(--muted); margin-bottom:12px">
+        Система сформировала персонализированные офферы под каждого пользователя с учетом статуса его подарков:
+      </div>
+      
+      <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:14px">
+        <label style="display:flex; align-items:flex-start; gap:8px; background:#1e1e1e; padding:8px 12px; border-radius:6px; cursor:pointer">
+          <input type="checkbox" id="tspu-chk-pending" checked onchange="updateTspuSelectionCount()" style="margin-top:3px">
+          <div>
+            <strong style="color:var(--orange); font-size:12px">⏳ Ожидают активации подарка (<span id="tspu-cnt-pending">0</span> чел.)</strong>
+            <div style="font-size:11px; color:var(--muted)">Напоминание о 3 днях + кнопка активации подарка в 1 клик</div>
+          </div>
+        </label>
+        
+        <label style="display:flex; align-items:flex-start; gap:8px; background:#1e1e1e; padding:8px 12px; border-radius:6px; cursor:pointer">
+          <input type="checkbox" id="tspu-chk-used" checked onchange="updateTspuSelectionCount()" style="margin-top:3px">
+          <div>
+            <strong style="color:var(--accent); font-size:12px">💎 Использовали подарок ранее (<span id="tspu-cnt-used">0</span> чел.)</strong>
+            <div style="font-size:11px; color:var(--muted)">Скидка 20% на продление во время волны блокировок</div>
+          </div>
+        </label>
+        
+        <label style="display:flex; align-items:flex-start; gap:8px; background:#1e1e1e; padding:8px 12px; border-radius:6px; cursor:pointer">
+          <input type="checkbox" id="tspu-chk-fresh" checked onchange="updateTspuSelectionCount()" style="margin-top:3px">
+          <div>
+            <strong style="color:var(--green); font-size:12px">🎁 Свежие истекшие (<span id="tspu-cnt-fresh">0</span> чел.)</strong>
+            <div style="font-size:11px; color:var(--muted)">Начисление 3 дней бесплатного доступа на тест спец-протоколов</div>
+          </div>
+        </label>
+      </div>
+      
+      <div id="tspu-send-status" style="font-size:12px; margin-bottom:10px; display:none"></div>
+      
+      <div style="display:flex; justify-content:flex-end; gap:8px">
+        <button class="btn" onclick="closeTspuModal()">Отмена</button>
+        <button id="tspu-btn-submit" class="btn" onclick="submitTspuWinback()" style="background:var(--accent); color:#fff; font-weight:600">
+          🚀 Отправить (<span id="tspu-btn-count">0</span> чел.)
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const B = '/tiin_admin_panel';
     const PORTAL = 'https://344988.snk.wtf/my/';
@@ -923,21 +1300,13 @@
     }
 
     async function api(path, opts = {}) {
-      if (!_cookie) {
-        // Session cookie is set by the server when serving this page
-        // Only attempt POST login if AWG_PASS is explicitly provided (legacy)
-        if (AWG_PASS) {
-          await fetch(`${B}/api/session`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: AWG_PASS }),
-            credentials: 'same-origin',
-          });
-        }
-        _cookie = true;
-      }
       opts.credentials = 'same-origin';
       const r = await fetch(`${B}${path}`, opts);
+      if (r.status === 401) {
+        console.warn('Admin session expired/invalidated — showing login');
+        showLoginScreen();
+        return {};
+      }
       if (path.includes('configuration')) return r.text();
       if (r.status === 204) return null;
       return r.json();
@@ -950,10 +1319,10 @@
       document.getElementById('tab-' + id).classList.add('active');
       if (id === 'dashboard') loadDashboard();
       if (id === 'monitoring') loadMonitoring();
-      if (id === 'inbounds') loadInboundsPopularity();
+      if (id === 'inbounds') { loadInboundsPopularity(); loadInboundSwitches(); }
       if (id === 'proxy') loadProxy();
       if (id === 'testpay') { /* static UI, no load needed */ }
-      if (id === 'messages') loadMsgLog(true);
+      if (id === 'messages') { loadMsgLog(true); loadMsgAnalytics(); }
       if (id === 'users') loadUsers();
     }
 
@@ -1298,6 +1667,213 @@
       }
     }
 
+    // ── Inbound & Operator Switch Monitoring ──────────────────────────
+    let _switchMonitorData = null;
+
+    async function loadInboundSwitches() {
+      const matrixTbody = document.getElementById('sw-matrix-tbody');
+      const ispTbody = document.getElementById('sw-isp-tbody');
+      const usersTbody = document.getElementById('sw-users-tbody');
+      const eventsEl = document.getElementById('sw-recent-events');
+
+      try {
+        const d = await api('/api/admin/inbound-switches');
+        _switchMonitorData = d || {};
+
+        // 1. KPI Cards
+        const totalSw = document.getElementById('sw-kpi-total-switches');
+        if (totalSw) totalSw.textContent = d.total_switches || 0;
+
+        const totalRoam = document.getElementById('sw-kpi-total-roaming');
+        if (totalRoam) totalRoam.textContent = d.total_roaming || 0;
+
+        const userStates = d.user_states || {};
+        const userCount = Object.keys(userStates).length;
+        const trackedUsers = document.getElementById('sw-kpi-tracked-users');
+        if (trackedUsers) trackedUsers.textContent = userCount;
+
+        const countSpan = document.getElementById('sw-user-count');
+        if (countSpan) countSpan.textContent = `(${userCount})`;
+
+        if (d.updated_at) {
+          const updDate = toUTC9Date(d.updated_at);
+          const lastUpdEl = document.getElementById('sw-last-updated');
+          if (lastUpdEl) lastUpdEl.textContent = updDate ? 'Обновлено: ' + fmtDateFull(updDate) : '';
+        }
+
+        // Top switch route
+        let topRoute = '—';
+        let maxRouteCount = 0;
+        const matrix = d.switch_matrix || {};
+        for (const [fromIb, targets] of Object.entries(matrix)) {
+          for (const [toIb, cnt] of Object.entries(targets)) {
+            if (cnt > maxRouteCount) {
+              maxRouteCount = cnt;
+              topRoute = `${fromIb} ➔ ${toIb} (${cnt})`;
+            }
+          }
+        }
+        const topRouteEl = document.getElementById('sw-kpi-top-route');
+        if (topRouteEl) {
+          topRouteEl.textContent = topRoute;
+          topRouteEl.title = topRoute;
+        }
+
+        // 2. Switch Matrix Table
+        const matrixRows = [];
+        for (const [fromIb, targets] of Object.entries(matrix)) {
+          for (const [toIb, cnt] of Object.entries(targets)) {
+            matrixRows.push({ from: fromIb, to: toIb, count: cnt });
+          }
+        }
+        matrixRows.sort((a, b) => b.count - a.count);
+
+        if (matrixTbody) {
+          if (!matrixRows.length) {
+            matrixTbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:12px;color:var(--muted)">Нет зафиксированных переключений</td></tr>';
+          } else {
+            matrixTbody.innerHTML = matrixRows.map(r => `
+              <tr>
+                <td><span class="badge" style="background:#3b82f622;color:#93c5fd;font-weight:600">${esc(r.from)}</span></td>
+                <td><span class="badge" style="background:#10b98122;color:#6ee7b7;font-weight:600">${esc(r.to)}</span></td>
+                <td style="text-align:right;font-weight:bold;color:var(--accent);font-family:monospace">${r.count}</td>
+              </tr>
+            `).join('');
+          }
+        }
+
+        // 3. ISP Breakdown Table
+        const ispSwitches = d.isp_switches || {};
+        const ispRows = [];
+        const ispSet = new Set();
+
+        for (const [isp, routes] of Object.entries(ispSwitches)) {
+          ispSet.add(isp);
+          for (const [route, cnt] of Object.entries(routes)) {
+            ispRows.push({ isp, route, count: cnt });
+          }
+        }
+        ispRows.sort((a, b) => b.count - a.count);
+
+        if (ispTbody) {
+          if (!ispRows.length) {
+            ispTbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:12px;color:var(--muted)">Нет данных по операторам</td></tr>';
+          } else {
+            ispTbody.innerHTML = ispRows.map(r => `
+              <tr>
+                <td><b>${esc(r.isp)}</b></td>
+                <td style="font-size:12px">${esc(r.route)}</td>
+                <td style="text-align:right;font-weight:bold;color:var(--orange);font-family:monospace">${r.count}</td>
+              </tr>
+            `).join('');
+          }
+        }
+
+        // Populate ISP filter options from userStates + ispSwitches
+        const ispSelect = document.getElementById('sw-isp-filter');
+        if (ispSelect) {
+          const currentVal = ispSelect.value;
+          for (const u of Object.values(userStates)) {
+            if (u.isp) ispSet.add(u.isp);
+          }
+          const sortedIsps = Array.from(ispSet).sort();
+          ispSelect.innerHTML = '<option value="">Все операторы</option>' + sortedIsps.map(isp => `<option value="${esc(isp)}">${esc(isp)}</option>`).join('');
+          if (sortedIsps.includes(currentVal)) ispSelect.value = currentVal;
+        }
+
+        // 4. Render User States Table
+        renderSwitchUserTable();
+
+        // 5. Recent Events Feed
+        if (eventsEl) {
+          const events = d.recent_events || [];
+          if (!events.length) {
+            eventsEl.textContent = 'Нет последних событий переключений';
+          } else {
+            eventsEl.innerHTML = events.slice().reverse().map(ev => {
+              let color = '#93c5fd';
+              if (ev.includes('🔄 [SWITCH]')) color = '#a78bfa';
+              else if (ev.includes('📡 [ROAMING]')) color = '#fbbf24';
+              return `<div style="color:${color};margin-bottom:4px">${esc(ev)}</div>`;
+            }).join('');
+          }
+        }
+
+      } catch (e) {
+        console.error("Failed to load inbound switches data:", e);
+      }
+    }
+
+    function renderSwitchUserTable() {
+      if (!_switchMonitorData) return;
+      const tbody = document.getElementById('sw-users-tbody');
+      if (!tbody) return;
+
+      const q = (document.getElementById('sw-user-filter')?.value || '').trim().toLowerCase();
+      const selectedIsp = document.getElementById('sw-isp-filter')?.value || '';
+
+      const userStates = _switchMonitorData.user_states || {};
+      const userSwitches = _switchMonitorData.user_switch_counts || {};
+
+      let list = Object.entries(userStates).map(([email, info]) => ({
+        email,
+        inbound: info.inbound || '—',
+        isp: info.isp || '—',
+        ip: info.ip || '—',
+        ts: info.ts || 0,
+        last_seen: info.last_seen || '',
+        switches: userSwitches[email] || 0
+      }));
+
+      // Sort by recent activity
+      list.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+      if (q) {
+        list = list.filter(u =>
+          u.email.toLowerCase().includes(q) ||
+          u.isp.toLowerCase().includes(q) ||
+          u.inbound.toLowerCase().includes(q) ||
+          u.ip.toLowerCase().includes(q)
+        );
+      }
+
+      if (selectedIsp) {
+        list = list.filter(u => u.isp === selectedIsp);
+      }
+
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:12px;color:var(--muted)">Нет пользователей, соответствующих фильтру</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = list.map(u => {
+        let inbColor = '#3b82f6';
+        if (u.inbound.includes('Hysteria')) inbColor = '#10b981';
+        else if (u.inbound.includes('xHTTP')) inbColor = '#8b5cf6';
+        else if (u.inbound.includes('Reality')) inbColor = '#f59e0b';
+
+        let ispBadgeStyle = 'background:var(--bg);color:var(--text);border:1px solid var(--border)';
+        if (u.isp.includes('MTS')) ispBadgeStyle = 'background:#ef444422;color:#fca5a5;border:1px solid #ef444444';
+        else if (u.isp.includes('MegaFon')) ispBadgeStyle = 'background:#10b98122;color:#6ee7b7;border:1px solid #10b98144';
+        else if (u.isp.includes('Beeline')) ispBadgeStyle = 'background:#f59e0b22;color:#fcd34d;border:1px solid #f59e0b44';
+        else if (u.isp.includes('Rostelecom')) ispBadgeStyle = 'background:#3b82f622;color:#93c5fd;border:1px solid #3b82f644';
+        else if (u.isp.includes('Sakhtelecom')) ispBadgeStyle = 'background:#06b6d422;color:#67e8f9;border:1px solid #06b6d444';
+
+        const lastSeenDate = u.ts ? toUTC9Date(u.ts * 1000) : (u.last_seen ? toUTC9Date(u.last_seen) : null);
+        const lastSeenStr = lastSeenDate ? fmtDateFull(lastSeenDate) : (u.last_seen || '—');
+
+        return `
+          <tr>
+            <td style="font-family:monospace;font-weight:600;color:#93c5fd">${esc(u.email)}</td>
+            <td><span class="badge" style="background:${inbColor}22;color:${inbColor};font-weight:600">${esc(u.inbound)}</span></td>
+            <td><span class="badge" style="${ispBadgeStyle};font-weight:600">${esc(u.isp)}</span></td>
+            <td style="font-family:monospace;font-size:12px;color:var(--muted)">${esc(u.ip)}</td>
+            <td style="font-size:12px;color:var(--green)">${lastSeenStr}</td>
+            <td style="text-align:right;font-family:monospace;font-weight:bold;color:${u.switches > 0 ? 'var(--accent)' : 'var(--muted)'}">${u.switches}</td>
+          </tr>
+        `;
+      }).join('');
+    }
 
     function openModal(html) {
       document.getElementById('modal-content').innerHTML = html;
@@ -1379,6 +1955,7 @@
             case 'online':
               _onlineUsers = msg.data;
               _renderOnline();
+              renderOffline();
               break;
             case 'monitoring':
               _renderMonitoringData(msg.data);
@@ -1496,43 +2073,124 @@
       const remark = (ib && ib.remark) || '';
       const isRu = _isRuBridgeInbound(ib) || Boolean(ib && ib.is_ru);
       const flag = isRu ? '🇷🇺' : '🇩🇪';
+      const shortLabel = isRu ? '🇷🇺 RU' : '🇩🇪 DE';
 
       let protoName = 'VLESS';
-      let cls = 'on';
-
-      if (port === 4443 || port === 35443 || (ib.protocol && ib.protocol.includes('hysteria')) || tag.includes('hyst')) {
+      if (port === 4443 || port === 35443 || (ib && ib.protocol && ib.protocol.includes('hysteria')) || tag.includes('hyst')) {
         protoName = 'HYST2';
-        cls = 'hyst';
       } else if (port === 7443 || tag.includes('7443')) {
         protoName = 'Reality';
-        cls = 'on';
       } else if (port === 47447 || tag.includes('47447')) {
         protoName = 'xHTTP';
-        cls = 'on';
       } else if (port === 38745 || tag.includes('38745')) {
         protoName = 'Ultra';
-        cls = 'on';
       } else if (port === 48745 || tag.includes('48745')) {
         protoName = 'Armor';
-        cls = 'on';
-      } else if (port === 8443 || (isRu && ib.protocol === 'vless')) {
+      } else if (port === 8443 || (isRu && ib && ib.protocol === 'vless')) {
         protoName = 'VLESS';
-        cls = 'on';
       } else if (port === 51822 || tag.includes('awg')) {
         protoName = 'AWG';
-        cls = 'awg';
       } else if (tag.includes('14715') || port === 14715) {
         protoName = 'WS';
-        cls = 'on';
       }
 
-      const shortLabel = `${flag} ${protoName}`;
       const idTag = ibId ? `#${ibId}` : '';
       const portStr = port ? `:${port}` : '';
       const fullLabel = `${flag} ${protoName} ${idTag}${portStr}`.trim();
       const title = (isRu ? '[🇷🇺 RU Gateway] ' : '[🇩🇪 DE Direct] ') + (remark ? `${fullLabel} — ${remark}` : fullLabel);
 
-      return `<span class="badge ${cls}" style="margin-right:4px;font-size:11px;padding:2px 6px;${isRu ? 'border:1px solid rgba(255,255,255,0.4);font-weight:600' : ''}" title="${esc(title)}">${shortLabel}</span>`;
+      return `<span class="badge on" style="margin-right:4px;font-size:11px;padding:2px 6px;${isRu ? 'border:1px solid rgba(255,255,255,0.4);font-weight:600' : ''}" title="${esc(title)}">${shortLabel}</span>`;
+    }
+
+    function _getUserCategory(u) {
+      const names = (u.names || []).map(n => (n || '').toLowerCase());
+      const tgId = u.tg_id ? Number(u.tg_id) : 0;
+      const userId = u.user_id ? Number(u.user_id) : 0;
+      
+      // 1. System / Admin accounts: bwd2scof, test_awg_user_01, tiin_web_32
+      const isSystem = names.some(n => 
+        n === 'bwd2scof' || n.startsWith('bwd2scof') ||
+        n === 'test_awg_user_01' || n.startsWith('test_awg_user') ||
+        n === 'tiin_web_32' || n.startsWith('tiin_web_32') ||
+        n.includes('admin') || n.includes('bridge')
+      ) || userId === 32 || tgId === 364224373 || tgId === 397547537;
+      if (isSystem) return 'system';
+
+      // 2. Relatives
+      if (u.is_relative || tgId === 88486656 || tgId === 909509933 || tgId === 6335998601 || tgId === 6648354839) {
+        return 'relative';
+      }
+
+      // 3. Paid
+      if (u.has_paid) {
+        return 'paid';
+      }
+
+      // 4. Trial / Other
+      return 'trial';
+    }
+
+    function _renderOnlineRow(u) {
+      const inbounds = u.inbounds || [];
+      let badges = '';
+      if (inbounds.length > 0) {
+        const seenLocs = new Set();
+        badges = inbounds.map(ib => {
+          const isRu = _isRuBridgeInbound(ib) || Boolean(ib && ib.is_ru);
+          const locKey = isRu ? 'ru' : 'de';
+          if (seenLocs.has(locKey)) return '';
+          seenLocs.add(locKey);
+          return _formatInboundBadge(ib);
+        }).filter(Boolean).join('');
+      } else {
+        const isRu = Boolean(u.is_ru);
+        const locLabel = isRu ? '🇷🇺 RU' : '🇩🇪 DE';
+        badges = `<span class="badge on" style="margin-right:4px;font-size:11px;padding:2px 6px;${isRu ? 'border:1px solid rgba(255,255,255,0.4);font-weight:600' : ''}">${locLabel}</span>`;
+      }
+
+      const platforms = u.platforms || [];
+      const platformIcons = {
+        'android': '📱',
+        'ios': '🍎',
+        'macos': '💻',
+        'windows': '🪟',
+        'linux': '🐧',
+      };
+      const activePlatform = platforms[0];
+      let platformHtml = '<span style="color:var(--muted);font-size:0.85em">—</span>';
+      if (activePlatform) {
+        const icon = platformIcons[activePlatform.platform] || '📱';
+        const appName = activePlatform.client_app || activePlatform.platform || 'Client';
+        const ver = activePlatform.client_version ? ` <span style="color:var(--muted);font-size:10px">v${activePlatform.client_version}</span>` : '';
+        const title = `${activePlatform.platform}${activePlatform.client_app ? ' / ' + activePlatform.client_app : ''} (seen ×${activePlatform.seen_count})`;
+        platformHtml = `<span title="${esc(title)}" style="cursor:help;white-space:nowrap">${icon} <b>${esc(appName)}</b>${ver}</span>`;
+      }
+
+      const uniqueNames = Array.from(new Set(u.names || []));
+      const namesHtml = uniqueNames
+        .map(n => `<span onclick="copyText(this)" style="cursor:copy" title="Click to copy">${n}</span>`)
+        .join(', ') || '—';
+      const paidTag = u.has_paid
+        ? ' <span class="badge paid" style="font-size:0.65em;padding:1px 4px;margin-left:2px" title="Оплачивал подписку">💳 PAID</span>'
+        : '';
+
+      const speedHtml = u.speed_mbps > 0
+        ? `<span style="color:var(--green);font-weight:600">${u.speed_mbps}<span class="speed-unit"> Mbps</span></span>`
+        : (u.last_speed_mbps > 0
+            ? `<span style="color:var(--muted)">${u.last_speed_mbps}<span class="speed-unit"> Mbps</span></span>`
+            : '<span style="color:var(--muted)">—</span>');
+
+      return `<tr>
+        <td style="white-space:nowrap"><span class="pulse-dot"></span>${badges}</td>
+        <td style="font-weight:500">${portalLink(u.web_token, u.first_name)}${paidTag}</td>
+        <td class="mono" style="font-size:0.85em">${namesHtml}</td>
+        <td class="mono">${speedHtml}</td>
+        <td>${u.ip_count > 1
+            ? '<span style="color:var(--orange);font-weight:600">' + u.ip_count + '</span>'
+            : u.ip_count}</td>
+        <td>${u.expires ? fmtDate(u.expires) + (u.is_test ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>' : '') : '—'}</td>
+        <td>${platformHtml}</td>
+      </tr>`;
     }
 
     function _renderOnline() {
@@ -1570,71 +2228,38 @@
       );
 
       if (tableEl) {
-        tableEl.innerHTML = online.length
-          ? online.map(u => {
-              const inbounds = u.inbounds || [];
-              const protos = u.protocols || (u.type ? [u.type] : []);
-              let badges = '';
-              if (inbounds.length > 0) {
-                const seen = new Set();
-                badges = inbounds.map(ib => {
-                  const key = (ib.id || '') + '-' + (ib.port || '') + '-' + (ib.tag || '');
-                  if (seen.has(key)) return '';
-                  seen.add(key);
-                  return _formatInboundBadge(ib);
-                }).filter(Boolean).join('');
-              } else {
-                badges = protos.map(p => {
-                  const label = p === 'awg' ? '🇩🇪 AWG #100' : `🇩🇪 ${p.toUpperCase()}`;
-                  return `<span class="badge ${_protoBadgeClass(p)}" style="margin-right:4px;font-size:11px;padding:2px 6px">${label}</span>`;
-                }).join('');
-              }
+        if (!online.length) {
+          tableEl.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:16px">Нет активных подключений в данной категории</td></tr>';
+          return;
+        }
 
-              const platforms = u.platforms || [];
-              const platformIcons = {
-                'android': '📱',
-                'ios': '🍎',
-                'macos': '💻',
-                'windows': '🪟',
-                'linux': '🐧',
-              };
-              const activePlatform = platforms[0];
-              let platformHtml = '<span style="color:var(--muted);font-size:0.85em">—</span>';
-              if (activePlatform) {
-                const icon = platformIcons[activePlatform.platform] || '📱';
-                const appName = activePlatform.client_app || activePlatform.platform || 'Client';
-                const ver = activePlatform.client_version ? ` <span style="color:var(--muted);font-size:10px">v${activePlatform.client_version}</span>` : '';
-                const title = `${activePlatform.platform}${activePlatform.client_app ? ' / ' + activePlatform.client_app : ''} (seen ×${activePlatform.seen_count})`;
-                platformHtml = `<span title="${esc(title)}" style="cursor:help;white-space:nowrap">${icon} <b>${esc(appName)}</b>${ver}</span>`;
-              }
+        const categories = [
+          { key: 'paid', title: '💳 Платные аккаунты', color: 'var(--green)' },
+          { key: 'relative', title: '👨‍👩‍👧‍👦 Аккаунты Relatives', color: '#a78bfa' },
+          { key: 'system', title: '⚙️ Системные / Админские аккаунты (bwd2scof, test_awg, web_32)', color: 'var(--orange)' },
+          { key: 'trial', title: '⏳ Тестовые / Пробные аккаунты', color: 'var(--muted)' },
+        ];
 
-              const uniqueNames = Array.from(new Set(u.names || []));
-              const namesHtml = uniqueNames
-                .map(n => `<span onclick="copyText(this)" style="cursor:copy" title="Click to copy">${n}</span>`)
-                .join(', ') || '—';
-              const paidTag = u.has_paid
-                ? ' <span class="badge paid" style="font-size:0.65em;padding:1px 4px;margin-left:2px" title="Оплачивал подписку">💳 PAID</span>'
-                : '';
+        const groups = { paid: [], relative: [], system: [], trial: [] };
+        online.forEach(u => {
+          const cat = _getUserCategory(u);
+          if (groups[cat]) groups[cat].push(u);
+          else groups.trial.push(u);
+        });
 
-              const speedHtml = u.speed_mbps > 0
-                ? `<span style="color:var(--green);font-weight:600">${u.speed_mbps}<span class="speed-unit"> Mbps</span></span>`
-                : (u.last_speed_mbps > 0
-                    ? `<span style="color:var(--muted)">${u.last_speed_mbps}<span class="speed-unit"> Mbps</span></span>`
-                    : '<span style="color:var(--muted)">—</span>');
+        let html = '';
+        categories.forEach(cat => {
+          const list = groups[cat.key];
+          if (!list || list.length === 0) return;
+          html += `<tr style="background:rgba(255,255,255,0.035);border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+            <td colspan="7" style="padding:7px 10px;font-size:11px;font-weight:700;letter-spacing:0.5px;color:${cat.color}">
+              ${cat.title} <span style="font-weight:600;opacity:0.85">(${list.length})</span>
+            </td>
+          </tr>`;
+          html += list.map(u => _renderOnlineRow(u)).join('');
+        });
 
-              return `<tr>
-                <td style="white-space:nowrap"><span class="pulse-dot"></span>${badges}</td>
-                <td style="font-weight:500">${portalLink(u.web_token, u.first_name)}${paidTag}</td>
-                <td class="mono" style="font-size:0.85em">${namesHtml}</td>
-                <td class="mono">${speedHtml}</td>
-                <td>${u.ip_count > 1
-                    ? '<span style="color:var(--orange);font-weight:600">' + u.ip_count + '</span>'
-                    : u.ip_count}</td>
-                <td>${u.expires ? fmtDate(u.expires) + (u.is_test ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>' : '') : '—'}</td>
-                <td>${platformHtml}</td>
-              </tr>`;
-            }).join('')
-          : '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:16px">Нет активных подключений в данной категории</td></tr>';
+        tableEl.innerHTML = html || '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:16px">Нет активных подключений в данной категории</td></tr>';
       }
     }
 
@@ -1648,16 +2273,51 @@
       }
     }
 
+    let _offlineUsers = [];
+
+    async function refreshOffline() {
+      try {
+        const offline = await api('/api/admin/offline');
+        _offlineUsers = offline || [];
+        renderOffline(_offlineUsers);
+      } catch (e) {
+        console.warn('offline fetch error', e);
+      }
+    }
+    setInterval(refreshOffline, 30000);
+
     function renderOffline(users) {
+      if (!users) users = _offlineUsers || [];
       const countEl = document.getElementById('offline-count');
       const tableEl = document.getElementById('dash-offline');
       const adminCountEl = document.getElementById('offline-admin-count');
       const adminTableEl = document.getElementById('dash-offline-admin');
 
-      users.sort((a, b) => (b.last_seen_ts || 0) - (a.last_seen_ts || 0));
+      // Filter out anyone who is currently online
+      const onlineTgIds = new Set((_onlineUsers || []).map(u => u.tg_id).filter(id => id && id !== 0));
+      const onlineUserIds = new Set((_onlineUsers || []).map(u => u.user_id).filter(Boolean));
+      const onlineNames = new Set();
+      (_onlineUsers || []).forEach(u => {
+        (u.names || []).forEach(nm => {
+          if (nm) {
+            onlineNames.add(nm);
+            if (nm.endsWith('_h')) onlineNames.add(nm.slice(0, -2));
+            else onlineNames.add(nm + '_h');
+          }
+        });
+      });
 
-      const withExpires = users.filter(u => !!u.expires);
-      const withoutExpires = users.filter(u => !u.expires);
+      const activeOffline = users.filter(u => {
+        if (u.tg_id && onlineTgIds.has(u.tg_id)) return false;
+        if (u.user_id && onlineUserIds.has(u.user_id)) return false;
+        if ((u.names || []).some(nm => onlineNames.has(nm))) return false;
+        return true;
+      });
+
+      activeOffline.sort((a, b) => (b.last_seen_ts || 0) - (a.last_seen_ts || 0));
+
+      const withExpires = activeOffline.filter(u => !!u.expires);
+      const withoutExpires = activeOffline.filter(u => !u.expires);
 
       if (countEl) countEl.textContent = `(${withExpires.length})`;
       if (adminCountEl) adminCountEl.textContent = `(${withoutExpires.length})`;
@@ -1671,7 +2331,8 @@
           const lastTs = u.last_seen_ts || 0;
           const hoursAgo = lastTs ? (now - lastTs) / 3600000 : Infinity;
           let dot;
-          if (hoursAgo < 2) dot = '<span class="pulse-dot" style="background:var(--green)"></span>';
+          if (!lastTs) dot = '<span style="color:var(--muted);font-size:14px" title="Ни разу не подключался">⚪</span>';
+          else if (hoursAgo < 2) dot = '<span class="pulse-dot" style="background:var(--green)"></span>';
           else if (hoursAgo < 24) dot = '<span style="color:var(--orange);font-size:18px">◉</span>';
           else dot = '<span style="color:var(--red);font-size:18px">◉</span>';
 
@@ -1687,11 +2348,16 @@
           const namesHtml = uniqueNames
             .map(n => `<span onclick="copyText(this)" style="cursor:copy" title="Click to copy">${n}</span>`)
             .join(', ') || '—';
+
+          const lastSeenHtml = u.last_seen
+            ? u.last_seen
+            : '<span class="badge" style="background:rgba(255,255,255,0.06);color:var(--muted);font-size:0.75em;padding:2px 5px">НЕ ПОДКЛЮЧАЛСЯ</span>';
+
           return `<tr>
             <td>${dot} ${portalLink(u.web_token, displayName)}${testTag}</td>
             <td class="mono" style="font-size:0.85em">${namesHtml}</td>
             <td>${badges}</td>
-            <td class="mono">${u.last_seen || '—'}</td>
+            <td class="mono">${lastSeenHtml}</td>
             <td class="mono">${u.expires ? fmtDate(u.expires) : '—'}</td>
           </tr>`;
         }).join('');
@@ -1965,141 +2631,175 @@
     }
 
     async function loadDashboard() {
-      const d = await api('/api/admin/dashboard');
-      xuiLoadBackups();
+      let d = null;
+      try {
+        d = await api('/api/admin/dashboard');
+      } catch (e) {
+        console.error('Failed to fetch /api/admin/dashboard:', e);
+      }
+      if (!d || typeof d !== 'object') d = {};
 
-      document.getElementById('dash-cards').innerHTML = `
-        <div class="card">
-          <h3>VLESS Clients</h3>
-          <div class="val">${d.xui.clients}</div>
-          <div class="sub">
-            <span class="dot ${d.xui.xray_running ? 'on' : 'off'}"></span>
-            xray ${d.xui.xray_running ? 'UP' : 'DOWN'}
-          </div>
-          <div class="sub">↑${d.xui.traffic_up_fmt} ↓${d.xui.traffic_down_fmt}</div>
-        </div>
+      const xui = d.xui || {};
+      const users = d.users || {};
+      const nl_proxy = d.nl_proxy || {};
+      const proxy = d.proxy || {};
+      const payments = d.payments || {};
 
-        <div class="card">
-          <h3>Users</h3>
-          <div class="val">${d.users.total}</div>
-          <div class="sub">${d.users.active} active (${d.users.active_sub} sub + ${d.users.active_key_only} key)</div>
-        </div>
-        <div class="card" style="border-color:${d.users.expiring_soon > 0 ? 'var(--orange)' : 'var(--border)'}">
-          <h3>Expiring Soon</h3>
-          <div class="val" style="color:${d.users.expiring_soon > 0 ? 'var(--orange)' : 'var(--text)'}">${d.users.expiring_soon || 0}</div>
-          <div class="sub">истекают в течение 3 дней</div>
-        </div>
-        <div class="card" style="border-color:${d.users.recently_expired > 0 ? 'var(--red)' : 'var(--border)'}">
-          <h3>Recently Expired</h3>
-          <div class="val" style="color:${d.users.recently_expired > 0 ? 'var(--red)' : 'var(--text)'}">${d.users.recently_expired || 0}</div>
-          <div class="sub">истекли 0-30 дней назад</div>
-        </div>
-        <div class="card">
-          <h3>NL Proxy</h3>
-          <div class="val" style="font-size:13px">${d.nl_proxy.host}:${d.nl_proxy.port}</div>
-          <div class="sub">
-            <span class="dot ${(d.nl_proxy.status || '').startsWith('up') ? 'on' : 'off'}"></span>
-            ${(d.nl_proxy.status || '').startsWith('up') ? 'UP' : 'DOWN'}
-          </div>
-          <div class="sub" style="font-size:11px;color:var(--muted)">
-            YouTube → ${d.nl_proxy.routing === 'direct' ? 'DIRECT' : 'NL'}
-          </div>
-        </div>
-        <div class="card">
-          <h3>MTProxy</h3>
-          <div class="val">${d.proxy.connections}</div>
-          <div class="sub">
-            <span class="dot ${d.proxy.running ? 'on' : 'off'}"></span>
-            mtg ${d.proxy.running ? 'UP' : 'DOWN'}
-          </div>
-          <div class="sub">↑${d.proxy.traffic_in_fmt} ↓${d.proxy.traffic_out_fmt}</div>
-          <div class="sub">${d.proxy.ping_ms != null
-            ? (d.proxy.ping_ms < 50
-              ? '<span style="color:var(--green)">' + d.proxy.ping_ms + ' ms</span>'
-              : d.proxy.ping_ms < 150
-                ? '<span style="color:var(--orange)">' + d.proxy.ping_ms + ' ms</span>'
-                : '<span style="color:var(--red)">' + d.proxy.ping_ms + ' ms</span>')
-            : '<span style="color:var(--muted)">ping N/A</span>'} to TG DC2</div>
-        </div>
-        <div class="card">
-          <h3>Revenue</h3>
-          <div class="val">${d.payments.revenue.toLocaleString()} ₽</div>
-          <div class="sub">${d.payments.paid} paid / ${d.payments.total} total</div>
-        </div>`;
+      try {
+        const dashCardsEl = document.getElementById('dash-cards');
+        if (dashCardsEl) {
+          dashCardsEl.innerHTML = `
+            <div class="card">
+              <h3>VLESS Clients</h3>
+              <div class="val">${xui.clients ?? 0}</div>
+              <div class="sub">
+                <span class="dot ${xui.xray_running ? 'on' : 'off'}"></span>
+                xray ${xui.xray_running ? 'UP' : 'DOWN'}
+              </div>
+              <div class="sub">↑${xui.traffic_up_fmt || '0 B'} ↓${xui.traffic_down_fmt || '0 B'}</div>
+            </div>
 
-      document.getElementById('dash-extra-cards').innerHTML = '';
+            <div class="card">
+              <h3>Users</h3>
+              <div class="val">${users.total ?? 0}</div>
+              <div class="sub">${users.active_paying ?? 0} активных / ${users.active_trial ?? 0} на 3-дневном триале</div>
+              <div class="sub">${users.paying ?? 0} платящих за всё время</div>
+            </div>
+            <div class="card" style="border-color:${(users.expiring_soon || 0) > 0 ? 'var(--orange)' : 'var(--border)'}">
+              <h3>Expiring Soon</h3>
+              <div class="val" style="color:${(users.expiring_soon || 0) > 0 ? 'var(--orange)' : 'var(--text)'}">${users.expiring_soon || 0}</div>
+              <div class="sub">истекают в течение 3 дней</div>
+            </div>
+            <div class="card" style="border-color:${(users.recently_expired || 0) > 0 ? 'var(--red)' : 'var(--border)'}">
+              <h3>Recently Expired</h3>
+              <div class="val" style="color:${(users.recently_expired || 0) > 0 ? 'var(--red)' : 'var(--text)'}">${users.recently_expired || 0}</div>
+              <div class="sub">истекли 0-30 дней назад</div>
+            </div>
+            <div class="card">
+              <h3>NL Proxy</h3>
+              <div class="val" style="font-size:13px">${nl_proxy.host || '—'}:${nl_proxy.port || ''}</div>
+              <div class="sub">
+                <span class="dot ${(nl_proxy.status || '').startsWith('up') ? 'on' : 'off'}"></span>
+                ${(nl_proxy.status || '').startsWith('up') ? 'UP' : 'DOWN'}
+              </div>
+              <div class="sub" style="font-size:11px;color:var(--muted)">
+                YouTube → ${nl_proxy.routing === 'direct' ? 'DIRECT' : 'NL'}
+              </div>
+            </div>
+            <div class="card">
+              <h3>MTProxy</h3>
+              <div class="val">${proxy.connections ?? 0}</div>
+              <div class="sub">
+                <span class="dot ${proxy.running ? 'on' : 'off'}"></span>
+                mtg ${proxy.running ? 'UP' : 'DOWN'}
+              </div>
+              <div class="sub">↑${proxy.traffic_in_fmt || '0 B'} ↓${proxy.traffic_out_fmt || '0 B'}</div>
+              <div class="sub">${proxy.ping_ms != null
+                ? (proxy.ping_ms < 50
+                  ? '<span style="color:var(--green)">' + proxy.ping_ms + ' ms</span>'
+                  : proxy.ping_ms < 150
+                    ? '<span style="color:var(--orange)">' + proxy.ping_ms + ' ms</span>'
+                    : '<span style="color:var(--red)">' + proxy.ping_ms + ' ms</span>')
+                : '<span style="color:var(--muted)">ping N/A</span>'} to TG DC2</div>
+            </div>`;
+        }
+      } catch (e) { console.error('dash-cards render error:', e); }
+
+      try {
+        const extraCardsEl = document.getElementById('dash-extra-cards');
+        if (extraCardsEl) extraCardsEl.innerHTML = '';
+      } catch (_) {}
 
       // Render Expiring Soon Table (0-3 days)
-      const subSum = d.subscription_summary || {};
-      const expiringSoon = subSum.expiring_soon || [];
-      document.getElementById('expiring-soon-count').textContent = `(${expiringSoon.length})`;
-      document.getElementById('dash-expiring-soon').innerHTML = expiringSoon.length
-        ? expiringSoon.map(u => {
-            const hours = u.hours_left != null ? u.hours_left : 0;
-            const daysLeft = Math.floor(hours / 24);
-            const hoursMod = hours % 24;
-            const leftText = daysLeft > 0 ? `${daysLeft}д ${hoursMod}ч` : `${hoursMod}ч`;
-            return `
-              <tr>
-                <td class="mono">${u.tg_id}</td>
-                <td>${portalLink(u.web_token, (u.first_name || '') + ' ' + (u.last_name || ''))}</td>
-                <td>${fmtDate(u.subscription_until)}</td>
-                <td><span class="badge" style="background:#f59e0b22;color:var(--orange)">осталось ${leftText}</span></td>
-                <td>
-                  <button class="btn sm primary" onclick="showUserDetail(${u.tg_id})">Продлить / Профиль</button>
-                </td>
-              </tr>`;
-          }).join('')
-        : '<tr><td colspan="5" style="color:var(--muted);text-align:center">Нет подписок, истекающих в ближайшие 3 дня</td></tr>';
+      try {
+        const subSum = d.subscription_summary || {};
+        const expiringSoon = subSum.expiring_soon || [];
+        const expSoonCountEl = document.getElementById('expiring-soon-count');
+        if (expSoonCountEl) expSoonCountEl.textContent = `(${expiringSoon.length})`;
+        const expSoonTable = document.getElementById('dash-expiring-soon');
+        if (expSoonTable) {
+          expSoonTable.innerHTML = expiringSoon.length
+            ? expiringSoon.map(u => {
+                const hours = u.hours_left != null ? u.hours_left : 0;
+                const daysLeft = Math.floor(hours / 24);
+                const hoursMod = hours % 24;
+                const leftText = daysLeft > 0 ? `${daysLeft}д ${hoursMod}ч` : `${hoursMod}ч`;
+                return `
+                  <tr>
+                    <td class="mono">${u.tg_id || '—'}</td>
+                    <td>${portalLink(u.web_token, (u.first_name || '') + ' ' + (u.last_name || ''))}</td>
+                    <td>${fmtDate(u.subscription_until)}</td>
+                    <td><span class="badge" style="background:#f59e0b22;color:var(--orange)">осталось ${leftText}</span></td>
+                    <td>
+                      <button class="btn sm primary" onclick="showUserDetail(${u.tg_id})">Продлить / Профиль</button>
+                    </td>
+                  </tr>`;
+              }).join('')
+            : '<tr><td colspan="5" style="color:var(--muted);text-align:center">Нет подписок, истекающих в ближайшие 3 дня</td></tr>';
+        }
+      } catch (e) { console.error('expiring-soon render error:', e); }
 
-      // Render Recently Expired Table (0-30 days ago)
-      const recentlyExpired = subSum.recently_expired || [];
-      document.getElementById('recently-expired-count').textContent = `(${recentlyExpired.length})`;
-      document.getElementById('dash-recently-expired').innerHTML = recentlyExpired.length
-        ? recentlyExpired.map(u => {
-            const hours = u.hours_ago != null ? u.hours_ago : 0;
-            const daysAgo = Math.floor(hours / 24);
-            const hoursMod = hours % 24;
-            const agoText = daysAgo > 0 ? `${daysAgo}д ${hoursMod}ч назад` : `${hoursMod}ч назад`;
-            return `
-              <tr>
-                <td class="mono">${u.tg_id || '—'}</td>
-                <td>${portalLink(u.web_token, (u.first_name || '') + ' ' + (u.last_name || ''))}</td>
-                <td>${fmtDate(u.subscription_until)}</td>
-                <td><span class="badge" style="background:#ef444422;color:var(--red)">истекла ${agoText}</span></td>
-                <td>
-                  <button class="btn sm red" onclick="showUserDetail(${u.tg_id})">Детали / Возврат</button>
-                </td>
-              </tr>`;
-          }).join('')
-        : '<tr><td colspan="5" style="color:var(--muted);text-align:center">Нет недавно истекших подписок (за 30 дней)</td></tr>';
+      // Render Recently Expired Table (0-30 days ago) with Smart Funnel Filters
+      try {
+        const subSum = d.subscription_summary || {};
+        const recentlyExpired = subSum.recently_expired || [];
+        const stats = subSum.stats || {};
+        window._recentlyExpiredData = recentlyExpired;
+
+        // Refresh TSPU DPI & Trigger status
+        loadTspuStatus();
+
+        // Update KPI summary numbers
+        const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        setTxt('recently-expired-count', `(${recentlyExpired.length})`);
+        setTxt('rec-stat-total', stats.total_expired ?? recentlyExpired.length);
+        setTxt('rec-stat-gift-act', stats.gift_activated_count ?? 0);
+        setTxt('rec-stat-gift-pend', stats.gift_pending_count ?? 0);
+        setTxt('rec-stat-ready', stats.ready_to_send_count ?? 0);
+        setTxt('rec-stat-paid', stats.paid_users_count ?? 0);
+
+        // Update counts in filter buttons
+        setTxt('rec-cnt-all', recentlyExpired.length);
+        setTxt('rec-cnt-gift-act', stats.gift_activated_count ?? 0);
+        setTxt('rec-cnt-gift-pend', stats.gift_pending_count ?? 0);
+        setTxt('rec-cnt-ready', stats.ready_to_send_count ?? 0);
+        setTxt('rec-cnt-paid', stats.paid_users_count ?? 0);
+        setTxt('rec-cnt-blocked', stats.bot_blocked_count ?? 0);
+
+        if (typeof window.renderRecentlyExpiredTable === 'function') {
+          window.renderRecentlyExpiredTable();
+        }
+      } catch (e) { console.error('recently-expired render error:', e); }
 
       // Site analytics
       try {
         const ss = await api('/api/admin/site-stats');
-        const t = ss.total, td = ss.today;
-        document.getElementById('dash-site-stats').innerHTML = `
-          <div class="card">
-            <h3>Unique Guests</h3>
-            <div class="val">${t.unique_visitors || 0}</div>
-            <div class="sub">today: ${td.unique_visitors || 0}</div>
-          </div>
-          <div class="card">
-            <h3>Proxy Clicks</h3>
-            <div class="val">${t.click_proxy || 0}</div>
-            <div class="sub">today: ${td.click_proxy || 0}</div>
-          </div>
-          <div class="card">
-            <h3>Connect Clicks</h3>
-            <div class="val">${t.click_connect || 0}</div>
-            <div class="sub">today: ${td.click_connect || 0}</div>
-          </div>
-          <div class="card">
-            <h3>Codes Sent</h3>
-            <div class="val">${ss.codes_sent || 0}</div>
-            <div class="sub">today: ${ss.codes_sent_today || 0}</div>
-          </div>`;
-      } catch(e) { console.warn('site-stats:', e) }
+        const t = (ss && ss.total) || {}, td = (ss && ss.today) || {};
+        const siteStatsEl = document.getElementById('dash-site-stats');
+        if (siteStatsEl) {
+          siteStatsEl.innerHTML = `
+            <div class="card">
+              <h3>Unique Guests</h3>
+              <div class="val">${t.unique_visitors || 0}</div>
+              <div class="sub">today: ${td.unique_visitors || 0}</div>
+            </div>
+            <div class="card">
+              <h3>Proxy Clicks</h3>
+              <div class="val">${t.click_proxy || 0}</div>
+              <div class="sub">today: ${td.click_proxy || 0}</div>
+            </div>
+            <div class="card">
+              <h3>Connect Clicks</h3>
+              <div class="val">${t.click_connect || 0}</div>
+              <div class="sub">today: ${td.click_connect || 0}</div>
+            </div>
+            <div class="card">
+              <h3>Codes Sent</h3>
+              <div class="val">${(ss && ss.codes_sent) || 0}</div>
+              <div class="sub">today: ${(ss && ss.codes_sent_today) || 0}</div>
+            </div>`;
+        }
+      } catch(e) { console.warn('site-stats:', e); }
 
       // Active users (personal page visits in last 24h)
       function hesc(s) {
@@ -2122,7 +2822,7 @@
         try {
           const events = await api('/api/admin/webpage-events/journey/' + encodeURIComponent(token));
           var groups = [], last = null;
-          events.forEach(function(e) {
+          (events || []).forEach(function(e) {
             var key = e.event_type + '|' + (e.element_id || '');
             if (last && last.key === key && (e.event_type === 'view_section' || e.event_type === 'page_unload')) {
               last.count++;
@@ -2171,118 +2871,189 @@
         } catch(e) {
           body.innerHTML = '<div style="padding:6px 0;font-size:11px;color:var(--red)">Failed to load</div>';
         }
-      }
+      };
+
       try {
         const users = await api('/api/admin/webpage-events/active-users');
-        document.getElementById('dash-web-events').innerHTML = users.length
-          ?           users.map(function(u) {
-            return '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:0;margin-bottom:8px;overflow:hidden">' +
-              '<div class="user-events-header" onclick="toggleUserEvents(\'' + hesc(u.web_token) + '\', this)" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:12px">' +
-              '<div>' +
-                '<strong>' + hesc(u.first_name || '') + ' ' + hesc(u.last_name || '') + '</strong>' +
-                '<div style="font-size:11px;color:var(--muted);margin-top:2px">' +
-                  '<span class="mono">' + u.tg_id + '</span> &middot; ' + u.event_count + ' events &middot; ' + timeSince(u.last_event_ts != null ? u.last_event_ts : u.last_event) +
+        const webEventsEl = document.getElementById('dash-web-events');
+        if (webEventsEl) {
+          webEventsEl.innerHTML = (users && users.length)
+            ? users.map(function(u) {
+                return '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:0;margin-bottom:8px;overflow:hidden">' +
+                  '<div class="user-events-header" onclick="toggleUserEvents(\'' + hesc(u.web_token) + '\', this)" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:12px">' +
+                  '<div>' +
+                    '<strong>' + hesc(u.first_name || '') + ' ' + hesc(u.last_name || '') + '</strong>' +
+                    '<div style="font-size:11px;color:var(--muted);margin-top:2px">' +
+                      '<span class="mono">' + u.tg_id + '</span> &middot; ' + u.event_count + ' events &middot; ' + timeSince(u.last_event_ts != null ? u.last_event_ts : u.last_event) +
+                    '</div>' +
+                  '</div>' +
+                  '<span class="expand-icon" style="color:var(--muted);font-size:10px">\u25B6</span>' +
                 '</div>' +
-              '</div>' +
-              '<span class="expand-icon" style="color:var(--muted);font-size:10px">\u25B6</span>' +
-            '</div>' +
-            '<div class="user-events-body" style="display:none;padding:0 12px 12px"></div>' +
-            '</div>';
-          }).join('')
-          : '<div class="card"><h3 style="color:var(--muted)">No visitors in 24h</h3></div>';
-      } catch(e) { console.warn('active-users:', e) }
+                '<div class="user-events-body" style="display:none;padding:0 12px 12px"></div>' +
+                '</div>';
+              }).join('')
+            : '<div class="card"><h3 style="color:var(--muted)">No visitors in 24h</h3></div>';
+        }
+      } catch(e) { console.warn('active-users:', e); }
 
       // Online users
-      await refreshOnline();
+      try {
+        await refreshOnline();
+      } catch (e) { console.warn('refreshOnline error:', e); }
 
       // Offline users
-      try {
-        const offline = await api('/api/admin/offline');
-        renderOffline(offline);
-      } catch (e) {
-        console.warn('offline fetch error', e);
-      }
+      await refreshOffline();
 
       // New users today
-      const newUsers = await api('/api/admin/users/today');
-      document.getElementById('new-users-count').textContent = `(${newUsers.length})`;
-      document.getElementById('dash-new-users').innerHTML = newUsers.length
-        ? newUsers.map(u => `
-            <tr>
-              <td class="mono">${u.tg_id || '<span style="color:var(--muted)">web</span>'}</td>
-              <td>${portalLink(u.web_token, (u.first_name || u.email || '') + ' ' + (u.last_name || ''))}</td>
-              <td class="mono">↑${u.traffic_up_fmt || '0 B'} ↓${u.traffic_down_fmt || '0 B'}</td>
-              <td class="mono">${u.speed_mbps > 0
-                ? '<span style="color:var(--green)">' + u.speed_mbps + ' Mbps</span>'
-                : '<span style="color:var(--muted)">—</span>'}</td>
-              <td>${fmtDate(u.created_at)}</td>
-            </tr>`).join('')
-        : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No new users in last 24 hours</td></tr>';
+      try {
+        const newUsers = await api('/api/admin/users/today');
+        const newUsersCountEl = document.getElementById('new-users-count');
+        if (newUsersCountEl) newUsersCountEl.textContent = `(${newUsers ? newUsers.length : 0})`;
+        const newUsersTable = document.getElementById('dash-new-users');
+        if (newUsersTable) {
+          newUsersTable.innerHTML = (newUsers && newUsers.length)
+            ? newUsers.map(u => `
+                <tr>
+                  <td class="mono">${u.tg_id || '<span style="color:var(--muted)">web</span>'}</td>
+                  <td>${portalLink(u.web_token, (u.first_name || u.email || '') + ' ' + (u.last_name || ''))}</td>
+                  <td class="mono">↑${u.traffic_up_fmt || '0 B'} ↓${u.traffic_down_fmt || '0 B'}</td>
+                  <td class="mono">${u.speed_mbps > 0
+                    ? '<span style="color:var(--green)">' + u.speed_mbps + ' Mbps</span>'
+                    : '<span style="color:var(--muted)">—</span>'}</td>
+                  <td>${fmtDate(u.created_at)}</td>
+                </tr>`).join('')
+            : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No new users in last 24 hours</td></tr>';
+        }
+      } catch (e) { console.warn('new-users error:', e); }
 
-       // Promocodes
-      const promos = await api('/api/admin/promocodes');
-      document.getElementById('dash-promos').innerHTML = promos.map(p => {
-        const used = `${p.used_count}/${p.max_uses ?? '∞'}`;
-        const typeLabel = p.type === 'days'
-          ? `${p.value} дней`
-          : p.type === 'permanent_discount'
-            ? `${p.value}% навсегда`
-            : `${p.value}%`;
-        return `
-          <tr>
-            <td><b>${p.code}</b></td>
-            <td>${p.type}</td>
-            <td>${typeLabel}</td>
-            <td>${used}</td>
-            <td class="col-limit">${p.per_user_limit ?? '∞'}/user</td>
-            <td class="col-expires-promo">${p.expires_at ? fmtDate(p.expires_at) : '∞'}</td>
-            <td>${p.is_active ? '🟢' : '🔴'}</td>
-          </tr>`;
-      }).join('');
+      // Promocodes
+      try {
+        const promos = await api('/api/admin/promocodes');
+        const promosTable = document.getElementById('dash-promos');
+        if (promosTable) {
+          promosTable.innerHTML = (promos && promos.length) ? promos.map(p => {
+            const used = `${p.used_count}/${p.max_uses ?? '∞'}`;
+            const typeLabel = p.type === 'days'
+              ? `${p.value} дней`
+              : p.type === 'permanent_discount'
+                ? `${p.value}% навсегда`
+                : `${p.value}%`;
+            return `
+              <tr>
+                <td><b>${p.code}</b></td>
+                <td>${p.type}</td>
+                <td>${typeLabel}</td>
+                <td>${used}</td>
+                <td class="col-limit">${p.per_user_limit ?? '∞'}/user</td>
+                <td class="col-expires-promo">${p.expires_at ? fmtDate(p.expires_at) : '∞'}</td>
+                <td>${p.is_active ? '🟢' : '🔴'}</td>
+              </tr>`;
+          }).join('') : '<tr><td colspan="7" style="color:var(--muted);text-align:center">No promo codes</td></tr>';
+        }
+      } catch (e) { console.warn('promocodes error:', e); }
 
       // Finance
-      const fin = await api('/api/admin/finance');
-      const profitColor = fin.profit >= 0 ? 'var(--green)' : 'var(--red)';
-      const monthlyProfitColor = fin.monthly_profit >= 0 ? 'var(--green)' : 'var(--red)';
+      let fin = null;
+      try {
+        fin = await api('/api/admin/finance');
+        if (fin) {
+          const profitColor = (fin.profit || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+          const monthlyProfitColor = (fin.monthly_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+          const dashFinEl = document.getElementById('dash-finance');
+          if (dashFinEl) {
+            let cardsHtml = `
+              <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <h3>Total Revenue</h3>
+                  <span class="badge" style="background:#05966933;color:var(--green);font-size:11px">ROI: ${fin.roi_percent || 0}%</span>
+                </div>
+                <div class="val">${Number(fin.total_revenue || 0).toLocaleString()} ₽</div>
+                <div class="sub" style="margin-top:4px">
+                  <span style="color:${profitColor};font-weight:600">
+                    Прибыль: ${(fin.profit || 0) >= 0 ? '+' : ''}${Number(fin.profit || 0).toLocaleString()} ₽
+                  </span>
+                  <span style="color:var(--muted)"> • ${fin.days_running || 0} дней работы</span>
+                </div>
+              </div>
+              <div class="card">
+                <h3>Server Cost</h3>
+                <div class="val">${Number(fin.server_monthly_cost || 0).toLocaleString()} ₽ <small style="font-size:12px;font-weight:normal;color:var(--muted)">тек. мес</small></div>
+                <div class="sub">Итого за все месяцы: ${Number(fin.total_cost || 0).toLocaleString()} ₽</div>
+              </div>
+              <div class="card">
+                <h3>Monthly Avg</h3>
+                <div class="val">${Number(fin.avg_monthly_revenue || 0).toLocaleString()} ₽ <small style="font-size:12px;font-weight:normal;color:var(--muted)">выручка/мес</small></div>
+                <div class="sub" style="color:${monthlyProfitColor}">
+                  Прибыль: ${(fin.monthly_profit || 0) >= 0 ? '+' : ''}${Number(fin.monthly_profit || 0).toLocaleString()} ₽/мес
+                </div>
+              </div>`;
 
-      document.getElementById('dash-finance').innerHTML = `
-        <div class="card">
-          <h3>Total Revenue</h3>
-          <div class="val">${fin.total_revenue.toLocaleString()} ₽</div>
-          <div class="sub">${fin.days_running} дней работы</div>
-        </div>
-        <div class="card">
-          <h3>Server Cost</h3>
-          <div class="val">${fin.server_monthly_cost.toLocaleString()} ₽/мес</div>
-          <div class="sub">Итого: ${fin.total_cost.toLocaleString()} ₽</div>
-        </div>
-        <div class="card">
-          <h3>Profit</h3>
-          <div class="val" style="color:${profitColor}">
-            ${fin.profit >= 0 ? '+' : ''}${fin.profit.toLocaleString()} ₽
-          </div>
-          <div class="sub">ROI: ${fin.roi_percent}%</div>
-        </div>
-        <div class="card">
-          <h3>Monthly Avg</h3>
-          <div class="val">${fin.avg_monthly_revenue.toLocaleString()} ₽</div>
-          <div class="sub" style="color:${monthlyProfitColor}">
-            Прибыль: ${fin.monthly_profit >= 0 ? '+' : ''}${fin.monthly_profit.toLocaleString()} ₽/мес
-          </div>
-        </div>`;
+            if (fin.projections) {
+              const p = fin.projections;
+              const fc = p.forecast || {};
+              const tm = p.target_maintenance || {};
+              const mtd = p.mtd || {};
+              const projProfitColor = (fc.projected_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+              const statusBadgeBg = tm.status === 'ACHIEVED' ? '#05966933' : (tm.status === 'ON_TRACK' ? '#0284c733' : '#d9770633');
+              const statusBadgeColor = tm.status === 'ACHIEVED' ? 'var(--green)' : (tm.status === 'ON_TRACK' ? '#38bdf8' : 'var(--orange)');
+
+              cardsHtml += `
+                <div class="card" style="border-color:#38bdf844;background:linear-gradient(180deg, #0b1329 0%, var(--card) 100%)">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <h3 style="color:#38bdf8">🔮 Прогноз на месяц</h3>
+                    <span class="badge" style="background:#0284c733;color:#38bdf8;font-size:10px">${esc(mtd.month || '')}</span>
+                  </div>
+                  <div class="val" style="color:#38bdf8">~${Number(fc.projected_revenue || 0).toLocaleString()} ₽</div>
+                  <div class="sub" style="color:${projProfitColor}">
+                    Прибыль: +${Number(fc.projected_profit || 0).toLocaleString()} ₽ (${fc.growth_pct >= 0 ? '+' : ''}${fc.growth_pct}% к пред. мес)
+                  </div>
+                </div>
+
+                <div class="card" style="border-color:#a855f744;background:linear-gradient(180deg, #18122b 0%, var(--card) 100%)">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <h3 style="color:#c084fc">🎯 Удержание прибыли</h3>
+                    <span class="badge" style="background:${statusBadgeBg};color:${statusBadgeColor};font-size:10px">${esc(tm.status || '')}</span>
+                  </div>
+                  <div class="val" style="color:#c084fc">${tm.payments_completed || 0} / ${tm.target_payments_needed || 0} опл.</div>
+                  <div style="margin:6px 0 4px 0;background:var(--bg);height:6px;border-radius:3px;overflow:hidden;border:1px solid #333">
+                    <div style="background:var(--green);width:${Math.min(100, tm.progress_percent || 0)}%;height:100%"></div>
+                  </div>
+                  <div class="sub" style="color:var(--muted)">
+                    ${tm.payments_remaining > 0 ? `Осталось <b>${tm.payments_remaining} опл.</b> для цели +${Number(tm.target_profit).toLocaleString()} ₽` : '✅ Цель месяца выполнена!'}
+                  </div>
+                </div>
+
+                <div class="card">
+                  <h3>🔄 Регулярный доход (MRR)</h3>
+                  <div class="val" style="color:var(--green)">${Number(fc.mrr || 0).toLocaleString()} ₽/мес</div>
+                  <div class="sub" style="color:var(--muted)">
+                    ⚡ ${tm.autopay_subscribers_count || 0} авто • ${tm.paying_subscribers_total || 0} платящих (🎁 ${tm.trial_subscribers_count || 0} триалов)
+                  </div>
+                </div>`;
+            }
+
+            dashFinEl.innerHTML = cardsHtml;
+          }
+        }
+      } catch (e) { console.warn('finance error:', e); }
 
       // Recent payments (from dashboard data)
-      document.getElementById('dash-recent-payments').innerHTML = (d.recent_payments || []).map(p => {
-        const sc = p.status === 'paid' ? 'paid' : 'pending';
-        return `<tr>
-          <td class="mono">${p.tg_id || '—'}</td>
-          <td>${p.first_name || ''} ${p.last_name || ''}</td>
-          <td>${p.tariff || ''}</td>
-          <td>${p.amount} ₽</td>
-          <td><span class="badge ${sc}">${p.status}</span>${p.is_test ? ' <span class="badge" style="background:var(--orange);color:#000">TEST</span>' : ''}</td>
-          <td>${fmtDate(p.created_at)}</td>
-        </tr>`;
-      }).join('') || '<tr><td colspan="6" style="color:var(--muted);text-align:center">No payments</td></tr>';
+      try {
+        const recPayTable = document.getElementById('dash-recent-payments');
+        if (recPayTable) {
+          recPayTable.innerHTML = (d.recent_payments || []).map(p => {
+            const sc = p.status === 'paid' ? 'paid' : 'pending';
+            return `<tr>
+              <td class="mono">${p.tg_id || '—'}</td>
+              <td>${p.first_name || ''} ${p.last_name || ''}</td>
+              <td>${p.tariff || ''}</td>
+              <td>${p.amount} ₽</td>
+              <td><span class="badge ${sc}">${p.status}</span>${p.is_test ? ' <span class="badge" style="background:var(--orange);color:#000">TEST</span>' : ''}</td>
+              <td>${fmtDate(p.created_at)}</td>
+            </tr>`;
+          }).join('') || '<tr><td colspan="6" style="color:var(--muted);text-align:center">No payments</td></tr>';
+        }
+      } catch (e) { console.warn('recent payments error:', e); }
 
       // Secondary data (parallel fetch)
       Promise.all([
@@ -2293,53 +3064,68 @@
         api('/api/admin/test-conversion').catch(() => []),
       ]).then(([fp, af, refs, pu, tc]) => {
         // Failed payments
-        document.getElementById('dash-failed-payments').innerHTML = fp.length
-          ? fp.map(p => `<tr>
-              <td class="mono">${p.tg_id || '—'}</td><td>${p.first_name || ''}</td>
-              <td>${p.tariff || ''}</td><td>${p.amount} ₽</td>
-              <td><span class="badge pending">${p.status}</span></td>
-              <td>${fmtDate(p.created_at)}</td></tr>`).join('')
-          : '<tr><td colspan="6" style="color:var(--muted);text-align:center">No failed payments</td></tr>';
+        const fpEl = document.getElementById('dash-failed-payments');
+        if (fpEl) {
+          fpEl.innerHTML = (fp && fp.length)
+            ? fp.map(p => `<tr>
+                <td class="mono">${p.tg_id || '—'}</td><td>${p.first_name || ''}</td>
+                <td>${p.tariff || ''}</td><td>${p.amount} ₽</td>
+                <td><span class="badge pending">${p.status}</span></td>
+                <td>${fmtDate(p.created_at)}</td></tr>`).join('')
+            : '<tr><td colspan="6" style="color:var(--muted);text-align:center">No failed payments</td></tr>';
+        }
 
         // Autopay log
-        document.getElementById('dash-autopay-log').innerHTML = af.length
-          ? af.map(a => `<tr>
-              <td class="mono">${a.tg_id || '—'}</td><td>${a.first_name || ''}</td>
-              <td>${a.tariff || ''}</td><td>${a.amount} ₽</td>
-              <td><span class="badge ${a.status === 'pending' ? 'pending' : a.status === 'paid' ? 'paid' : 'off'}">${a.status}</span></td>
-              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(a.error_message||'').replace(/"/g,'&quot;')}">${a.error_message || '—'}</td>
-              <td>${fmtDate(a.created_at)}</td></tr>`).join('')
-          : '<tr><td colspan="7" style="color:var(--muted);text-align:center">No autopay log entries</td></tr>';
+        const afEl = document.getElementById('dash-autopay-log');
+        if (afEl) {
+          afEl.innerHTML = (af && af.length)
+            ? af.map(a => `<tr>
+                <td class="mono">${a.tg_id || '—'}</td><td>${a.first_name || ''}</td>
+                <td>${a.tariff || ''}</td><td>${a.amount} ₽</td>
+                <td><span class="badge ${a.status === 'pending' ? 'pending' : a.status === 'paid' ? 'paid' : 'off'}">${a.status}</span></td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(a.error_message||'').replace(/"/g,'&quot;')}">${a.error_message || '—'}</td>
+                <td>${fmtDate(a.created_at)}</td></tr>`).join('')
+            : '<tr><td colspan="7" style="color:var(--muted);text-align:center">No autopay log entries</td></tr>';
+        }
 
         // Referral network
-        document.getElementById('dash-referrals').innerHTML = refs.length
-          ? refs.map(r => `<tr>
-              <td>${r.first_name || '—'}</td><td class="mono">${r.tg_id || '—'}</td>
-              <td>${r.referrer_name || '—'}</td><td class="mono">${r.referrer_tg_id || '—'}</td>
-              <td>${fmtDate(r.created_at)}</td></tr>`).join('')
-          : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No referrals</td></tr>';
+        const refsEl = document.getElementById('dash-referrals');
+        if (refsEl) {
+          refsEl.innerHTML = (refs && refs.length)
+            ? refs.map(r => `<tr>
+                <td>${r.first_name || '—'}</td><td class="mono">${r.tg_id || '—'}</td>
+                <td>${r.referrer_name || '—'}</td><td class="mono">${r.referrer_tg_id || '—'}</td>
+                <td>${fmtDate(r.created_at)}</td></tr>`).join('')
+            : '<tr><td colspan="5" style="color:var(--muted);text-align:center">No referrals</td></tr>';
+        }
 
         // Promo usage log
-        document.getElementById('dash-promo-usages').innerHTML = pu.length
-          ? pu.map(p => `<tr>
-              <td>${p.first_name || '—'}</td><td class="mono">${p.tg_id || '—'}</td>
-              <td><b>${p.code}</b></td><td>${p.type}</td><td>${p.value}${p.type.includes('discount') ? '%' : ' дней'}</td>
-              <td>${fmtDate(p.used_at)}</td></tr>`).join('')
-          : '<tr><td colspan="6" style="color:var(--muted);text-align:center">No promo usage</td></tr>';
+        const puEl = document.getElementById('dash-promo-usages');
+        if (puEl) {
+          puEl.innerHTML = (pu && pu.length)
+            ? pu.map(p => `<tr>
+                <td>${p.first_name || '—'}</td><td class="mono">${p.tg_id || '—'}</td>
+                <td><b>${p.code}</b></td><td>${p.type}</td><td>${p.value}${(p.type || '').includes('discount') ? '%' : ' дней'}</td>
+                <td>${fmtDate(p.used_at)}</td></tr>`).join('')
+            : '<tr><td colspan="6" style="color:var(--muted);text-align:center">No promo usage</td></tr>';
+        }
 
         // Test conversion by protocol
-        document.getElementById('dash-test-conversion').innerHTML = tc.length
-          ? tc.map(t => {
-              const rate = t.users > 0 ? (t.converted / t.users * 100).toFixed(1) : '0.0';
-              return `<tr>
-                <td>${t.test_protocol}</td><td>${t.users}</td><td>${t.converted}</td>
-                <td><b>${rate}%</b></td></tr>`;
-            }).join('')
-          : '<tr><td colspan="4" style="color:var(--muted);text-align:center">No data</td></tr>';
-      });
+        const tcEl = document.getElementById('dash-test-conversion');
+        if (tcEl) {
+          tcEl.innerHTML = (tc && tc.length)
+            ? tc.map(t => {
+                const rate = t.users > 0 ? (t.converted / t.users * 100).toFixed(1) : '0.0';
+                return `<tr>
+                  <td>${t.test_protocol}</td><td>${t.users}</td><td>${t.converted}</td>
+                  <td><b>${rate}%</b></td></tr>`;
+              }).join('')
+            : '<tr><td colspan="4" style="color:var(--muted);text-align:center">No data</td></tr>';
+        }
+      }).catch(e => console.warn('secondary data error:', e));
 
       // Monthly breakdown
-      if (fin.monthly.length) {
+      if (fin && fin.monthly && fin.monthly.length) {
         let mhtml = `
           <div class="table-wrap">
             <table>
@@ -2348,30 +3134,300 @@
                   <th>Month</th>
                   <th>Payments</th>
                   <th>Revenue</th>
-                  <th>Server Cost</th>
+                  <th>Server Expense</th>
+                  <th>Details / Rate</th>
                   <th>Net Profit</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>`;
         fin.monthly.forEach(m => {
           const cost = m.server_cost || 0;
-          const net = m.revenue - cost;
+          const net = (m.revenue || 0) - cost;
           const netColor = net >= 0 ? 'var(--green)' : 'var(--red)';
+          const meta = m.cost_meta || {};
+          const items = meta.items || [];
+          
+          let metaStr = '';
+          if (items.length > 0) {
+            metaStr = items.map(it => {
+              const sym = it.currency === 'EUR' ? '€' : (it.currency === 'USD' ? '$' : '₽');
+              const rateStr = (it.currency !== 'RUB' && it.effective_rate) ? `@ ${it.effective_rate}₽` : '';
+              const origStr = (it.currency !== 'RUB' && it.amount_currency) ? `(${it.amount_currency}${sym} ${rateStr})` : '';
+              const itemEditJson = encodeURIComponent(JSON.stringify(it));
+              return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px;font-size:12px;background:#151515;padding:3px 6px;border-radius:4px">
+                <span><b>${it.server_name}</b>: ${Number(it.cost_rub).toLocaleString()} ₽ <small style="color:var(--muted)">${origStr}</small></span>
+                <button class="btn sm" style="padding:1px 6px;font-size:10px" onclick="openExpenseModal('${itemEditJson}')">✏️</button>
+              </div>`;
+            }).join('');
+          } else if (meta.amount_currency && meta.currency && meta.currency !== 'RUB') {
+            const sym = meta.currency === 'EUR' ? '€' : (meta.currency === 'USD' ? '$' : meta.currency);
+            metaStr = `<span class="badge" style="background:#222;color:#fff">${meta.amount_currency} ${sym}</span> `;
+            if (meta.effective_rate) {
+              metaStr += `<span style="font-size:11px;color:var(--muted)">@ ${meta.effective_rate} ₽</span>`;
+            }
+          } else if (meta.details) {
+            metaStr = `<span style="font-size:11px;color:var(--muted)">${meta.details}</span>`;
+          } else {
+            metaStr = '—';
+          }
+
+          const addForMonthJson = encodeURIComponent(JSON.stringify({
+            month: m.month,
+            server_key: 'hetzner_de',
+            currency: 'EUR'
+          }));
+
           mhtml += `
                 <tr>
-                  <td>${m.month}</td>
+                  <td><b>${m.month}</b></td>
                   <td>${m.payments}</td>
-                  <td>${m.revenue.toLocaleString()} ₽</td>
-                  <td>${cost.toLocaleString()} ₽</td>
-                  <td style="color:${netColor}">${net >= 0 ? '+' : ''}${net.toLocaleString()} ₽</td>
+                  <td>${Number(m.revenue || 0).toLocaleString()} ₽</td>
+                  <td><b>${Number(cost).toLocaleString()} ₽</b></td>
+                  <td style="min-width:240px">${metaStr}</td>
+                  <td style="color:${netColor};font-weight:600">${net >= 0 ? '+' : ''}${Number(net).toLocaleString()} ₽</td>
+                  <td>
+                    <button class="btn sm" style="padding:2px 8px;font-size:11px" title="Добавить сервер за этот месяц" onclick="openExpenseModal('${addForMonthJson}')">+ Сервер</button>
+                  </td>
                 </tr>`;
         });
         mhtml += `
               </tbody>
             </table>
           </div>`;
-        document.getElementById('dash-monthly').innerHTML = mhtml;
+        const dashMonthlyEl = document.getElementById('dash-monthly');
+        if (dashMonthlyEl) dashMonthlyEl.innerHTML = mhtml;
       }
+
+      if (fin && fin.projections) {
+        renderUpcomingRenewals(fin.projections);
+      }
+    }
+
+    // ── Financial Forecast & Upcoming Renewals ─────────────────────────────────
+
+    window._currentProjections = null;
+    window._renewalsFilter = 'all';
+
+    function filterRenewals(type) {
+      window._renewalsFilter = type;
+      if (window._currentProjections) {
+        renderUpcomingRenewals(window._currentProjections);
+      }
+    }
+
+    function jumpToUser(tgId) {
+      const inp = document.getElementById('user-search');
+      if (inp) inp.value = String(tgId);
+      showTab('users');
+      if (typeof loadUsers === 'function') loadUsers();
+    }
+
+    function renderUpcomingRenewals(proj) {
+      if (!proj) return;
+      window._currentProjections = proj;
+      const el = document.getElementById('dash-upcoming-renewals-block');
+      if (!el) return;
+
+      const h = proj.horizons || {};
+      const renewals = proj.upcoming_renewals || [];
+      const tm = proj.target_maintenance || {};
+      const fc = proj.forecast || {};
+
+      const currentFilter = window._renewalsFilter || 'all';
+      const totalRenewals = renewals.length;
+      const payingCount = renewals.filter(r => r.user_type === 'autopay' || r.user_type === 'manual').length;
+      const autoCount = renewals.filter(r => r.user_type === 'autopay').length;
+      const manualCount = renewals.filter(r => r.user_type === 'manual').length;
+      const trialCount = renewals.filter(r => r.user_type === 'trial').length;
+      const specialCount = renewals.filter(r => r.user_type === 'special').length;
+
+      let filtered = renewals;
+      if (currentFilter === 'paying') {
+        filtered = renewals.filter(r => r.user_type === 'autopay' || r.user_type === 'manual');
+      } else if (currentFilter === 'auto') {
+        filtered = renewals.filter(r => r.user_type === 'autopay');
+      } else if (currentFilter === 'manual') {
+        filtered = renewals.filter(r => r.user_type === 'manual');
+      } else if (currentFilter === 'trial') {
+        filtered = renewals.filter(r => r.user_type === 'trial');
+      } else if (currentFilter === 'special') {
+        filtered = renewals.filter(r => r.user_type === 'special');
+      }
+
+      let html = `
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+            <div>
+              <h3 style="color:var(--text);margin:0;font-size:15px;display:flex;align-items:center;gap:8px">
+                <span>📅 ПРЕДСТОЯЩИЕ ПЛАТЕЖИ И АВТОСПИСАНИЯ</span>
+                <span class="badge" style="background:#0284c733;color:#38bdf8;font-size:11px">${renewals.length} активных</span>
+              </h3>
+              <p style="margin:4px 0 0 0;font-size:12px;color:var(--muted)">
+                График окончания подписок: <b>${payingCount} платящих</b> (${autoCount} на автоплатеже), <b>${trialCount} на триале</b>. Для цели прибыли ~${Number(tm.target_profit||0).toLocaleString()} ₽ требуется ${tm.target_payments_needed || 0} оплат (осталось <b>${tm.payments_remaining || 0}</b>).
+              </p>
+            </div>
+            
+            <div style="display:flex;gap:5px;flex-wrap:wrap">
+              <button class="btn sm" 
+                      style="${currentFilter === 'all' ? 'background:var(--accent);color:#fff' : 'background:#222;color:var(--muted)'}" 
+                      onclick="filterRenewals('all')">Все (${totalRenewals})</button>
+              <button class="btn sm" 
+                      style="${currentFilter === 'paying' ? 'background:#2563eb;color:#fff' : 'background:#222;color:var(--muted)'}" 
+                      onclick="filterRenewals('paying')">💳 Платящие (${payingCount})</button>
+              <button class="btn sm" 
+                      style="${currentFilter === 'auto' ? 'background:#059669;color:#fff' : 'background:#222;color:var(--muted)'}" 
+                      onclick="filterRenewals('auto')">⚡ Авто (${autoCount})</button>
+              <button class="btn sm" 
+                      style="${currentFilter === 'manual' ? 'background:#3b82f6;color:#fff' : 'background:#222;color:var(--muted)'}" 
+                      onclick="filterRenewals('manual')">🖐️ Ручные (${manualCount})</button>
+              <button class="btn sm" 
+                      style="${currentFilter === 'trial' ? 'background:#d97706;color:#fff' : 'background:#222;color:var(--muted)'}" 
+                      onclick="filterRenewals('trial')">🎁 Триалы (${trialCount})</button>
+              <button class="btn sm" 
+                      style="${currentFilter === 'special' ? 'background:#7c3aed;color:#fff' : 'background:#222;color:var(--muted)'}" 
+                      onclick="filterRenewals('special')">👑 Спец (${specialCount})</button>
+            </div>
+          </div>
+
+          <!-- Summary Horizons Cards -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:12px;margin-bottom:14px">
+            <div style="background:#13151b;border:1px solid #232733;border-radius:6px;padding:10px 14px">
+              <div style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase">⚡ Ближайшие 7 дней</div>
+              <div style="font-size:18px;font-weight:700;color:#f8fafc;margin:4px 0">
+                ${Number(h.next_7_days?.amount_total || 0).toLocaleString()} ₽
+                <small style="font-size:12px;color:#94a3b8;font-weight:normal">(платящие)</small>
+              </div>
+              <div style="font-size:11px;color:#64748b">
+                ⚡ ${Number(h.next_7_days?.amount_autopay || 0).toLocaleString()} ₽ авто (${h.next_7_days?.count_autopay || 0}) • 🖐️ ${Number(h.next_7_days?.amount_manual || 0).toLocaleString()} ₽ ручные (${h.next_7_days?.count_manual || 0}) • 🎁 ${h.next_7_days?.count_trial || 0} триалов
+              </div>
+            </div>
+
+            <div style="background:#13151b;border:1px solid #232733;border-radius:6px;padding:10px 14px">
+              <div style="font-size:11px;color:#38bdf8;font-weight:600;text-transform:uppercase">📅 До конца месяца</div>
+              <div style="font-size:18px;font-weight:700;color:#38bdf8;margin:4px 0">
+                ${Number(h.rest_of_month?.amount_total || 0).toLocaleString()} ₽
+                <small style="font-size:12px;color:#94a3b8;font-weight:normal">(платящие)</small>
+              </div>
+              <div style="font-size:11px;color:#64748b">
+                ⚡ ${Number(h.rest_of_month?.amount_autopay || 0).toLocaleString()} ₽ гарантировано авто • 🎁 ${h.rest_of_month?.count_trial || 0} триалов (~${Number(fc.trial_conversion_expected_rest_of_month || 0).toLocaleString()} ₽ прогноз)
+              </div>
+            </div>
+
+            <div style="background:#13151b;border:1px solid #232733;border-radius:6px;padding:10px 14px">
+              <div style="font-size:11px;color:#a855f7;font-weight:600;text-transform:uppercase">🗓️ Следующие 30 дней</div>
+              <div style="font-size:18px;font-weight:700;color:#c084fc;margin:4px 0">
+                ${Number(h.next_30_days?.amount_total || 0).toLocaleString()} ₽
+                <small style="font-size:12px;color:#94a3b8;font-weight:normal">(платящие)</small>
+              </div>
+              <div style="font-size:11px;color:#64748b">
+                ⚡ ${h.next_30_days?.count_autopay || 0} авто • 🖐️ ${h.next_30_days?.count_manual || 0} ручных • 🎁 ${h.next_30_days?.count_trial || 0} триалов
+              </div>
+            </div>
+          </div>`;
+
+      function renderRenewalRow(r) {
+        const isUrgent = r.days_left <= 3;
+        const daysColor = isUrgent ? 'var(--orange)' : 'var(--muted)';
+        
+        let typeBadge = '';
+        let amountStr = '';
+        if (r.user_type === 'autopay') {
+          typeBadge = `<span class="badge paid" style="font-size:11px;background:#05966933;color:#10b981">⚡ Автоплатеж</span>`;
+          amountStr = `<b style="color:#f8fafc">${Number(r.amount).toLocaleString()} ₽</b>`;
+        } else if (r.user_type === 'manual') {
+          typeBadge = `<span class="badge" style="font-size:11px;background:#1e3a8a44;color:#60a5fa">🖐️ Ручное</span>`;
+          amountStr = `<b style="color:#f8fafc">${Number(r.amount).toLocaleString()} ₽</b>`;
+        } else if (r.user_type === 'trial') {
+          typeBadge = `<span class="badge" style="font-size:11px;background:#78350f44;color:#fbbf24">🎁 Триал (тест 3д)</span>`;
+          amountStr = `<span style="color:#fbbf24">${Number(r.amount).toLocaleString()} ₽</span> <small style="color:var(--muted);font-size:10px">(конверсия ~16%)</small>`;
+        } else {
+          typeBadge = `<span class="badge" style="font-size:11px;background:#581c8744;color:#c084fc">👑 Спец / Админ</span>`;
+          amountStr = `<span style="color:var(--muted);font-size:11px">0 ₽ (бесплатно)</span>`;
+        }
+
+        return `
+          <tr>
+            <td>
+              <b style="color:${daysColor}">через ${r.days_left} дн</b>
+              <div style="font-size:11px;color:var(--muted)">${r.subscription_until}</div>
+            </td>
+            <td>
+              <b>${esc(r.first_name)}</b>
+              <div class="mono" style="font-size:11px;color:var(--muted);cursor:pointer" 
+                   onclick="jumpToUser('${r.tg_id}')" title="Открыть в Users">${r.tg_id || '—'}</div>
+            </td>
+            <td>${typeBadge}</td>
+            <td><span class="badge" style="background:#222;color:#eee">${esc(r.tariff_name)}</span></td>
+            <td>${amountStr}</td>
+            <td>
+              <button class="btn sm" style="font-size:11px;padding:3px 8px;background:var(--card);border:1px solid #444" 
+                      onclick="jumpToUser('${r.tg_id}')">Открыть ↗</button>
+            </td>
+          </tr>`;
+      }
+
+      const tableHeadHtml = `
+        <thead>
+          <tr>
+            <th>Срок / Дата</th>
+            <th>Пользователь</th>
+            <th>Категория / Тип</th>
+            <th>Тариф</th>
+            <th>Ожидаемая сумма</th>
+            <th>Действие</th>
+          </tr>
+        </thead>`;
+
+      const thisMonthItems = filtered.filter(r => r.expires_this_month);
+      const futureMonthItems = filtered.filter(r => !r.expires_this_month);
+
+      if (filtered.length === 0) {
+        html += `<div style="text-align:center;color:var(--muted);padding:24px;border:1px dashed #333;border-radius:6px;margin-top:10px">Нет пользователей по выбранному фильтру</div>`;
+      } else {
+        // 1. Ближайшие оплаты текущего месяца (всегда открыты)
+        html += `
+          <div style="margin-top:10px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <span style="font-size:12px;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:0.5px;display:flex;align-items:center;gap:6px">
+                <span>📅 Ближайшие оплаты текущего месяца</span>
+                <span class="badge" style="background:#0284c733;color:#38bdf8;font-size:10px">${thisMonthItems.length}</span>
+              </span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                ${tableHeadHtml}
+                <tbody>
+                  ${thisMonthItems.length > 0 
+                    ? thisMonthItems.map(renderRenewalRow).join('') 
+                    : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:14px">В текущем месяце нет оплат по выбранному фильтру</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>`;
+
+        // 2. Аккордеон для оплат будущих месяцев (свернут по умолчанию)
+        if (futureMonthItems.length > 0) {
+          html += `
+            <details style="margin-top:14px;background:#10141f;border:1px solid #1e2538;border-radius:6px;padding:10px 14px">
+              <summary style="cursor:pointer;color:#94a3b8;font-weight:600;font-size:13px;user-select:none;display:flex;align-items:center;justify-content:space-between">
+                <span>🗓️ Оплаты будущих месяцев (${futureMonthItems.length} активных)</span>
+                <span style="font-size:11px;color:#38bdf8">Показать / скрыть таблицу ▾</span>
+              </summary>
+              <div class="table-wrap" style="margin-top:10px">
+                <table>
+                  ${tableHeadHtml}
+                  <tbody>
+                    ${futureMonthItems.map(renderRenewalRow).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </details>`;
+        }
+      }
+
+      html += `</div>`;
+      el.innerHTML = html;
     }
 
     // ── AWG ────────────────────────────────────────────────────────────────────
@@ -2821,11 +3877,89 @@
       openModal(html);
     }
 
-    // ── Init ───────────────────────────────────────────────────────────────────
+    // ── Auth & Init ───────────────────────────────────────────────────────────
 
-    const AWG_PASS = '{{AWG_PASSWORD}}';
-    loadDashboard();
-    startWebSocket();
+    function showLoginScreen(errorMsg = '') {
+      document.getElementById('login-screen').style.display = 'flex';
+      document.getElementById('main-container').style.display = 'none';
+      const errEl = document.getElementById('login-error');
+      if (errorMsg) {
+        errEl.textContent = errorMsg;
+        errEl.style.display = 'block';
+      } else {
+        errEl.style.display = 'none';
+      }
+    }
+
+    async function checkAuthAndInit() {
+      try {
+        const s = await fetch(`${B}/api/session`, { credentials: 'same-origin' });
+        const res = await s.json();
+        if (res && res.authenticated) {
+          document.getElementById('login-screen').style.display = 'none';
+          document.getElementById('main-container').style.display = 'block';
+          loadDashboard();
+          setTimeout(startWebSocket, 100);
+        } else {
+          showLoginScreen();
+        }
+      } catch (e) {
+        showLoginScreen();
+      }
+    }
+
+    async function handleLoginForm(e) {
+      e.preventDefault();
+      const u = document.getElementById('login-username').value.trim();
+      const p = document.getElementById('login-password').value.trim();
+      const btn = document.getElementById('login-btn');
+      const errEl = document.getElementById('login-error');
+      errEl.style.display = 'none';
+      btn.disabled = true;
+      btn.textContent = 'Вход...';
+
+      try {
+        const r = await fetch(`${B}/api/session`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u, password: p }),
+          credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (r.ok && data.success) {
+          const urlParams = new URLSearchParams(window.location.search);
+          const nextUrl = urlParams.get('next');
+          if (nextUrl && nextUrl.startsWith('/') && !nextUrl.startsWith('//')) {
+            window.location.href = nextUrl;
+            return;
+          }
+          document.getElementById('login-screen').style.display = 'none';
+          document.getElementById('main-container').style.display = 'block';
+          loadDashboard();
+          setTimeout(startWebSocket, 100);
+        } else {
+          errEl.textContent = data.detail || 'Неверный логин или пароль';
+          errEl.style.display = 'block';
+        }
+      } catch (err) {
+        errEl.textContent = 'Ошибка сети: ' + err.message;
+        errEl.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Войти';
+      }
+    }
+
+    async function handleLogout() {
+      if (!confirm('Выйти из панели управления?')) return;
+      try {
+        await fetch(`${B}/api/logout`, { method: 'POST', credentials: 'same-origin' });
+      } catch (_) {}
+      showLoginScreen();
+    }
+
+    // Auto-start auth check
+    checkAuthAndInit();
 
     // Auto-refresh dashboard at 00:00 UTC+9 (keep for date-boundary refresh)
     (function scheduleUtc9Midnight() {
@@ -2878,6 +4012,45 @@
       openModal(html);
     }
     window.viewFullMsg = viewFullMsg;
+
+    async function loadMsgAnalytics() {
+      try {
+        const data = await api('/api/admin/api/messages/analytics');
+        if (!data || !data.funnel) return;
+        const f = data.funnel;
+        const setVal = (id, val) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = val;
+        };
+        setVal('fn-start', f.seen_start || 0);
+        setVal('fn-trial', f.activated_trial || 0);
+        setVal('fn-trial-pct', (f.trial_pct || 0) + '% от старта');
+        setVal('fn-tariffs', f.viewed_tariffs || 0);
+        setVal('fn-tariffs-pct', (f.tariffs_pct || 0) + '% смотрели');
+        setVal('fn-pay-intent', f.reached_payment || 0);
+        setVal('fn-pay-intent-pct', (f.payment_intent_pct || 0) + '% перешли');
+        setVal('fn-paid', f.paid_users || 0);
+        setVal('fn-paid-pct', (f.paid_conversion_pct || 0) + '% конверсия');
+
+        const retEl = document.getElementById('msg-retention-triggers');
+        if (retEl && data.retention) {
+          const retHtml = data.retention.slice(0, 4).map(r => {
+            let label = r.scenario;
+            if (r.scenario === 'manual_last_minute_warning') label = '🚨 Предупреждение за 30 мин (дожим)';
+            else if (r.scenario === 'manual_phase1_reminder') label = '⏰ Напоминание за 1 день';
+            else if (r.scenario === 'expiry_0d') label = '🔴 Истекает сегодня';
+            else if (r.scenario === 'never_activated' || r.scenario === 'never_activated_3d') label = '👋 Возврат не начавших тест';
+            else if (r.scenario === 'loyalty_gift_10d') label = '🎁 Подарок лояльности +10 дней';
+            else if (r.scenario === 'autopay_phase1_reminder') label = '💳 Автоплатеж завтра';
+            return `• <b>${esc(label)}:</b> ${r.count} отправлено`;
+          }).join('<br>');
+          retEl.innerHTML = retHtml || 'Нет активных сценариев';
+        }
+      } catch (e) {
+        console.error('Failed to load message analytics:', e);
+      }
+    }
+    window.loadMsgAnalytics = loadMsgAnalytics;
 
     async function loadMsgLog(reset){
       if(reset) msgOffset = 0;
@@ -2967,10 +4140,418 @@
       }
     }
 
+    window._recentlyExpiredData = [];
+    window._recentlyExpiredFilter = 'all';
+    window._hideBlockedBots = true;
+
+    function setRecentlyExpiredFilter(filter) {
+      window._recentlyExpiredFilter = filter;
+      const btns = document.querySelectorAll('#rec-filter-bar .btn');
+      btns.forEach(b => b.classList.remove('active'));
+      const activeBtnMap = {
+        'all': 'rec-btn-all',
+        'gift_activated': 'rec-btn-gift-act',
+        'gift_pending': 'rec-btn-gift-pend',
+        'ready_to_send': 'rec-btn-ready',
+        'paid': 'rec-btn-paid'
+      };
+      const activeEl = document.getElementById(activeBtnMap[filter] || 'rec-btn-all');
+      if (activeEl) activeEl.classList.add('active');
+      renderRecentlyExpiredTable();
+    }
+
+    function toggleHideBlockedBots(checked) {
+      window._hideBlockedBots = checked;
+      renderRecentlyExpiredTable();
+    }
+
+    function renderRecentlyExpiredTable() {
+      const data = window._recentlyExpiredData || [];
+      const filter = window._recentlyExpiredFilter || 'all';
+      const hideBlocked = window._hideBlockedBots;
+
+      let filtered = data.filter(u => {
+        if (hideBlocked && u.bot_blocked) return false;
+        if (filter === 'gift_activated') return u.winback_stage === 'gift_activated' || u.gift_activated;
+        if (filter === 'gift_pending') return u.winback_stage === 'gift_pending' || (u.gift_sent && !u.gift_activated);
+        if (filter === 'ready_to_send') return u.winback_stage === 'ready_to_send';
+        if (filter === 'paid') return u.is_paid || (u.payments_count > 0);
+        return true;
+      });
+
+      const recExpTable = document.getElementById('dash-recently-expired');
+      if (!recExpTable) return;
+
+      if (!filtered.length) {
+        recExpTable.innerHTML = '<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:16px">Нет пользователей, соответствующих выбранному фильтру</td></tr>';
+        return;
+      }
+
+      recExpTable.innerHTML = filtered.map(u => {
+        const hours = u.hours_ago != null ? u.hours_ago : 0;
+        const daysAgo = Math.floor(hours / 24);
+        const hoursMod = hours % 24;
+        const agoText = daysAgo > 0 ? `${daysAgo}д ${hoursMod}ч назад` : `${hoursMod}ч назад`;
+
+        // Payment / LTV badge
+        let payBadge = '';
+        if (u.is_paid || (u.payments_count > 0)) {
+          payBadge = `<span class="badge" style="background:#10b98122;color:var(--green);font-weight:600">💎 ${u.payments_count} ${u.payments_count === 1 ? 'оплата' : 'оплат'} (${Math.round(u.paid_amount || 0)} ₽)</span>`;
+        } else {
+          payBadge = `<span class="badge" style="background:#6b728022;color:var(--muted)">🆓 Только триал</span>`;
+        }
+
+        // Winback status badge
+        let wbBadge = '';
+        if (u.bot_blocked) {
+          wbBadge = `<span class="badge" style="background:#ef444422;color:var(--red)">🚫 Бот заблокирован</span>`;
+        } else if (u.gift_activated) {
+          wbBadge = `<span class="badge" style="background:#10b98122;color:var(--green);font-weight:600">🎁 Доп. тест активирован</span>` +
+                    (u.gift_activated_at ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${u.gift_activated_at}</div>` : '');
+        } else if (u.gift_sent) {
+          wbBadge = `<span class="badge" style="background:#f59e0b22;color:var(--orange)">⏳ Доп. тест (ожидает)</span>` +
+                    (u.gift_sent_at ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${u.gift_sent_at}</div>` : '');
+        } else if (u.last_winback_scenario) {
+          wbBadge = `<span class="badge" style="background:#3b82f622;color:var(--accent)">📨 ${u.last_winback_scenario}</span>` +
+                    (u.last_winback_at ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${u.last_winback_at}</div>` : '');
+        } else {
+          wbBadge = `<span class="badge" style="background:#8b5cf622;color:#a78bfa">✉️ Оффер не отправлялся</span>`;
+        }
+
+        return `
+          <tr>
+            <td class="mono">
+              ${u.tg_id || '—'}
+              ${u.bot_blocked ? ' <span title="Бот заблокирован" style="color:var(--red)">🚫</span>' : ''}
+            </td>
+            <td>${portalLink(u.web_token, (u.first_name || '') + ' ' + (u.last_name || ''))}</td>
+            <td>
+              <div>${fmtDate(u.subscription_until)}</div>
+              <div style="font-size:11px;color:var(--red);margin-top:2px">истекла ${agoText}</div>
+            </td>
+            <td>${payBadge}</td>
+            <td>${wbBadge}</td>
+            <td>
+              <button class="btn sm red" onclick="showUserDetail(${u.tg_id})">Детали / Возврат</button>
+            </td>
+          </tr>`;
+      }).join('');
+    }
+
+    // ── TSPU Wave Trigger & DPI Retention ──────────────────────────
+    let _tspuData = null;
+
+    async function loadTspuStatus() {
+      try {
+        const res = await api('/api/admin/tspu-status');
+        if (!res || res.error) return;
+        _tspuData = res;
+
+        const dpi = res.dpi || {};
+        const score = dpi.score != null ? dpi.score : 0;
+        const b = res.breakdown || {};
+
+        const scoreBadge = document.getElementById('tspu-score-badge');
+        const statusDesc = document.getElementById('tspu-status-desc');
+        const readyCount = document.getElementById('tspu-ready-count');
+
+        if (scoreBadge) {
+          let bg = '#22c55e22', color = 'var(--green)';
+          if (dpi.level === 'wave_detected') { bg = '#ef444422'; color = 'var(--red)'; }
+          else if (dpi.level === 'elevated') { bg = '#f59e0b22'; color = 'var(--orange)'; }
+          scoreBadge.style.background = bg;
+          scoreBadge.style.color = color;
+          scoreBadge.textContent = `DPI Score: ${score}/100 [${(dpi.level || 'normal').toUpperCase()}]`;
+        }
+
+        if (statusDesc) {
+          let isps = (dpi.affected_isps && dpi.affected_isps.length) ? ` (Среди затронутых: ${dpi.affected_isps.join(', ')})` : '';
+          statusDesc.textContent = `${dpi.status_text || ''}${isps}`;
+        }
+
+        if (readyCount) {
+          readyCount.textContent = b.total || 0;
+        }
+
+        const cp = document.getElementById('tspu-cnt-pending');
+        const cu = document.getElementById('tspu-cnt-used');
+        const cf = document.getElementById('tspu-cnt-fresh');
+        if (cp) cp.textContent = b.pending_gift || 0;
+        if (cu) cu.textContent = b.used_gift || 0;
+        if (cf) cf.textContent = b.fresh_gift || 0;
+
+        updateTspuSelectionCount();
+      } catch (e) {
+        console.error('Error loading TSPU status:', e);
+      }
+    }
+
+    function openTspuModal() {
+      const m = document.getElementById('tspu-modal');
+      if (m) m.classList.add('show');
+      loadTspuStatus();
+    }
+
+    function closeTspuModal() {
+      const m = document.getElementById('tspu-modal');
+      if (m) m.classList.remove('show');
+    }
+
+    function updateTspuSelectionCount() {
+      if (!_tspuData) return;
+      const b = _tspuData.breakdown || {};
+      let count = 0;
+      if (document.getElementById('tspu-chk-pending')?.checked) count += (b.pending_gift || 0);
+      if (document.getElementById('tspu-chk-used')?.checked) count += (b.used_gift || 0);
+      if (document.getElementById('tspu-chk-fresh')?.checked) count += (b.fresh_gift || 0);
+      const btnCount = document.getElementById('tspu-btn-count');
+      if (btnCount) btnCount.textContent = count;
+    }
+
+    async function submitTspuWinback() {
+      const scenarios = [];
+      if (document.getElementById('tspu-chk-pending')?.checked) scenarios.push('tspu_pending_gift');
+      if (document.getElementById('tspu-chk-used')?.checked) scenarios.push('tspu_used_gift');
+      if (document.getElementById('tspu-chk-fresh')?.checked) scenarios.push('tspu_fresh_gift');
+
+      if (!scenarios.length) {
+        alert('Выберите хотя бы одну категорию получателей');
+        return;
+      }
+
+      const count = document.getElementById('tspu-btn-count')?.textContent || '0';
+      if (!confirm(`Подтверждаете запуск рассылки для ${count} пользователей?`)) return;
+
+      const btn = document.getElementById('tspu-btn-submit');
+      const statusEl = document.getElementById('tspu-send-status');
+      if (btn) btn.disabled = true;
+      if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.style.color = 'var(--orange)';
+        statusEl.textContent = '⏳ Выполняется отправка сообщений...';
+      }
+
+      try {
+        const res = await api('/api/admin/tspu-winback/send', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ scenarios })
+        });
+
+        if (statusEl) {
+          statusEl.style.color = 'var(--green)';
+          const r = res.result || {};
+          statusEl.textContent = `✅ Успешно отправлено: ${r.sent || 0}, ошибок: ${r.failed || 0}`;
+        }
+        setTimeout(() => {
+          closeTspuModal();
+          loadDashboard();
+          loadTspuStatus();
+        }, 2000);
+      } catch (e) {
+        if (statusEl) {
+          statusEl.style.color = 'var(--red)';
+          statusEl.textContent = `❌ Ошибка: ${e.message}`;
+        }
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    // ── Server Expense Modal Handlers ─────────────────────────────────────────
+
+    function onServerSelectChange() {
+      const srv = document.getElementById('exp-server')?.value;
+      const customBox = document.getElementById('exp-custom-name-box');
+      if (customBox) {
+        customBox.style.display = (srv === 'other') ? 'block' : 'none';
+      }
+      const currSelect = document.getElementById('exp-currency');
+      if (currSelect && !document.getElementById('exp-id')?.value) {
+        if (srv === 'selectel_ru') currSelect.value = 'RUB';
+        else if (srv === 'domain_dns') currSelect.value = 'USD';
+        else currSelect.value = 'EUR';
+        calcEffectiveRatePreview();
+      }
+    }
+
+    function openExpenseModal(editDataJson = null) {
+      const modal = document.getElementById('expense-modal');
+      if (!modal) return;
+
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const delBtn = document.getElementById('exp-delete-btn');
+
+      if (editDataJson) {
+        try {
+          const item = JSON.parse(decodeURIComponent(editDataJson));
+          document.getElementById('exp-id').value = item.id || '';
+          document.getElementById('exp-month').value = item.month || currentMonth;
+          
+          const srvKey = item.server_key || 'hetzner_de';
+          const srvSelect = document.getElementById('exp-server');
+          if (srvSelect) {
+            const hasOpt = Array.from(srvSelect.options).some(o => o.value === srvKey);
+            if (hasOpt) {
+              srvSelect.value = srvKey;
+              document.getElementById('exp-custom-name-box').style.display = (srvKey === 'other') ? 'block' : 'none';
+            } else {
+              srvSelect.value = 'other';
+              document.getElementById('exp-custom-name-box').style.display = 'block';
+              document.getElementById('exp-custom-name').value = item.server_name || '';
+            }
+          }
+          if (item.server_name && srvKey === 'other') {
+            document.getElementById('exp-custom-name').value = item.server_name;
+          }
+
+          document.getElementById('exp-currency').value = item.currency || 'EUR';
+          document.getElementById('exp-amount-currency').value = item.amount_currency || '';
+          document.getElementById('exp-cost-rub').value = item.cost_rub || '';
+          document.getElementById('exp-details').value = item.details || '';
+          if (delBtn) delBtn.style.display = item.id ? 'inline-block' : 'none';
+        } catch (e) {
+          console.warn('Error parsing editDataJson:', e);
+        }
+      } else {
+        document.getElementById('exp-id').value = '';
+        document.getElementById('exp-server').value = 'hetzner_de';
+        document.getElementById('exp-custom-name-box').style.display = 'none';
+        document.getElementById('exp-custom-name').value = '';
+        document.getElementById('exp-month').value = currentMonth;
+        document.getElementById('exp-currency').value = 'EUR';
+        document.getElementById('exp-amount-currency').value = '';
+        document.getElementById('exp-cost-rub').value = '';
+        document.getElementById('exp-details').value = '';
+        if (delBtn) delBtn.style.display = 'none';
+      }
+
+      calcEffectiveRatePreview();
+      modal.classList.add('show');
+    }
+
+    function closeExpenseModal() {
+      const modal = document.getElementById('expense-modal');
+      if (modal) modal.classList.remove('show');
+    }
+
+    function calcEffectiveRatePreview() {
+      const cur = document.getElementById('exp-currency')?.value || 'EUR';
+      const amountVal = parseFloat(document.getElementById('exp-amount-currency')?.value) || 0;
+      const rubVal = parseFloat(document.getElementById('exp-cost-rub')?.value) || 0;
+      const previewEl = document.getElementById('exp-rate-preview');
+      if (!previewEl) return;
+
+      if (cur === 'RUB') {
+        previewEl.innerHTML = `Валюта в рублях (без конвертации)`;
+        previewEl.style.color = 'var(--muted)';
+        return;
+      }
+
+      if (amountVal > 0 && rubVal > 0) {
+        const rate = (rubVal / amountVal).toFixed(2);
+        const sym = cur === 'EUR' ? '€' : (cur === 'USD' ? '$' : cur);
+        previewEl.innerHTML = `💡 Эффективный курс: <b>${rate} ₽/${sym}</b> (с учетом всех комиссий)`;
+        previewEl.style.color = 'var(--green)';
+      } else {
+        previewEl.innerHTML = `Эффективный курс: укажите сумму в инвойсе и сумму в рублях`;
+        previewEl.style.color = 'var(--orange)';
+      }
+    }
+
+    async function submitExpense() {
+      const itemId = document.getElementById('exp-id')?.value ? parseInt(document.getElementById('exp-id').value) : null;
+      const month = document.getElementById('exp-month')?.value;
+      const srvKey = document.getElementById('exp-server')?.value || 'hetzner_de';
+      const srvSelect = document.getElementById('exp-server');
+      let srvName = srvSelect ? srvSelect.options[srvSelect.selectedIndex].text : srvKey;
+      if (srvKey === 'other') {
+        const customName = document.getElementById('exp-custom-name')?.value.trim();
+        if (customName) srvName = customName;
+      }
+
+      const currency = document.getElementById('exp-currency')?.value || 'EUR';
+      const amountCurrency = parseFloat(document.getElementById('exp-amount-currency')?.value) || null;
+      const costRub = parseFloat(document.getElementById('exp-cost-rub')?.value) || 0;
+      const details = document.getElementById('exp-details')?.value || '';
+
+      if (!month) {
+        alert('Укажите месяц');
+        return;
+      }
+      if (costRub <= 0) {
+        alert('Укажите списанную сумму в рублях');
+        return;
+      }
+
+      const btn = document.getElementById('exp-submit-btn');
+      if (btn) btn.disabled = true;
+
+      try {
+        await api('/api/admin/server-costs', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            id: itemId,
+            month,
+            server_key: srvKey,
+            server_name: srvName,
+            currency,
+            amount_currency: amountCurrency,
+            cost_rub: costRub,
+            details
+          })
+        });
+
+        closeExpenseModal();
+        await loadDashboard();
+      } catch (e) {
+        alert('Ошибка при сохранении: ' + (e.message || e));
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function deleteExpenseItem() {
+      const itemId = document.getElementById('exp-id')?.value;
+      if (!itemId) return;
+      if (!confirm('Удалить эту запись расхода?')) return;
+
+      const btn = document.getElementById('exp-delete-btn');
+      if (btn) btn.disabled = true;
+
+      try {
+        await api('/api/admin/server-costs/' + itemId, { method: 'DELETE' });
+        closeExpenseModal();
+        await loadDashboard();
+      } catch (e) {
+        alert('Ошибка при удалении: ' + (e.message || e));
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    window.openExpenseModal = openExpenseModal;
+    window.closeExpenseModal = closeExpenseModal;
+    window.calcEffectiveRatePreview = calcEffectiveRatePreview;
+    window.onServerSelectChange = onServerSelectChange;
+    window.submitExpense = submitExpense;
+    window.deleteExpenseItem = deleteExpenseItem;
+    window.setRecentlyExpiredFilter = setRecentlyExpiredFilter;
+    window.toggleHideBlockedBots = toggleHideBlockedBots;
+    window.renderRecentlyExpiredTable = renderRecentlyExpiredTable;
     window.refundPayment = refundPayment;
     window.loadMsgLog = loadMsgLog;
+    window.loadMsgAnalytics = loadMsgAnalytics;
     window.resetMsgFilters = resetMsgFilters;
-
+    window.loadTspuStatus = loadTspuStatus;
+    window.openTspuModal = openTspuModal;
+    window.closeTspuModal = closeTspuModal;
+    window.updateTspuSelectionCount = updateTspuSelectionCount;
+    window.submitTspuWinback = submitTspuWinback;
+    window.refreshOffline = refreshOffline;
+    window.refreshOnline = refreshOnline;
 
   })();
   </script>

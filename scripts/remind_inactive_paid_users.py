@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 MIN_HOURS_SINCE_PAYMENT = 2
 MAX_HOURS_SINCE_PAYMENT = 48
 
+# Threshold in bytes below which traffic is considered purely handshake/ping noise (e.g. 50 KB)
+MIN_ACTIVE_TRAFFIC_BYTES = 50 * 1024
+
 XUI_DB_PATH = "/etc/x-ui/x-ui.db"
 
 
@@ -73,8 +76,8 @@ def get_xui_client_traffic_map():
 
 def get_candidate_paid_users():
     """Поиск пользователей с успешной оплатой за последние MAX_HOURS_SINCE_PAYMENT часов."""
-    min_time = datetime.now() - timedelta(hours=MAX_HOURS_SINCE_PAYMENT)
-    max_time = datetime.now() - timedelta(hours=MIN_HOURS_SINCE_PAYMENT)
+    min_time = datetime.utcnow() - timedelta(hours=MAX_HOURS_SINCE_PAYMENT)
+    max_time = datetime.utcnow() - timedelta(hours=MIN_HOURS_SINCE_PAYMENT)
 
     query = """
         SELECT u.id as user_id, u.tg_id, u.first_name, u.old_first_name, u.web_token, u.subscription_until,
@@ -154,7 +157,17 @@ def build_message_and_buttons(name: str, app_name: str | None, web_token: str):
     return text, buttons
 
 
+def is_quiet_hours() -> bool:
+    """Check if current time is within quiet hours (23:00 - 08:00 MSK)."""
+    now_msk = datetime.utcnow() + timedelta(hours=3)
+    return now_msk.hour >= 23 or now_msk.hour < 8
+
+
 async def process_reminders(send_messages: bool = False):
+    if send_messages and is_quiet_hours():
+        logger.info("🌙 [QUIET-HOURS] Ночное время (23:00-08:00 МСК) — откладываем отправку напоминаний до утра")
+        return
+
     traffic_map = get_xui_client_traffic_map()
     candidates = get_candidate_paid_users()
 
@@ -179,8 +192,8 @@ async def process_reminders(send_messages: bool = False):
         tr = traffic_map.get(email, {"up": 0, "down": 0, "total": 0, "last_online": 0, "last_sub_fetch": 0})
         total_traffic = tr["up"] + tr["down"]
 
-        if total_traffic > 0 or tr["last_online"] > 0:
-            logger.info(f"⏩ {name} ({tg_id}): есть трафик ({total_traffic} байт, online={tr['last_online']}) — пропускаем")
+        if total_traffic >= MIN_ACTIVE_TRAFFIC_BYTES:
+            logger.info(f"⏩ {name} ({tg_id}): есть активный трафик ({total_traffic} байт, online={tr['last_online']}) — пропускаем")
             continue
 
         if is_already_reminded(tg_id):
@@ -218,15 +231,85 @@ async def process_reminders(send_messages: bool = False):
     )
 
 
+async def process_web_active_invitations(traffic_map: dict, send_messages: bool = False):
+    """Поиск пользователей веба с активной подпиской/тестом, без tg_id, но с трафиком > 50 МБ.
+    Отправляет email с приглашением привязать бота."""
+    logger.info("🌐 Проверка активных веб-пользователей (> 50 МБ) для привязки Telegram...")
+    WEB_ACTIVE_THRESHOLD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+    # Находим веб-пользователей без tg_id с активной подпиской или недавней регистрацией
+    query = """
+        SELECT id, email, web_token, subscription_until
+        FROM users
+        WHERE email IS NOT NULL 
+          AND tg_id IS NULL
+          AND web_token IS NOT NULL
+          AND subscription_until > NOW()
+    """
+    web_users = execute_query(query, fetch="all") or []
+    total_eligible = 0
+    total_sent = 0
+
+    from api.notifications import send_link_bot_invitation_email
+
+    for u in web_users:
+        user_id = u["id"]
+        email = u["email"]
+        web_token = u["web_token"]
+
+        # Проверяем трафик по ключам tiin_web_{user_id}
+        client_name = f"tiin_web_{user_id}"
+        tr = traffic_map.get(client_name, {"up": 0, "down": 0})
+        total_traffic = tr["up"] + tr["down"]
+
+        if total_traffic < WEB_ACTIVE_THRESHOLD_BYTES:
+            continue
+
+        # Проверяем, не отправляли ли уже это письмо
+        check_query = """
+            SELECT id FROM web_users_email_message_texts
+            WHERE email = %s 
+              AND subject LIKE '%Подключите Telegram-бота%'
+              AND status = 'sent'
+            LIMIT 1
+        """
+        already_sent = execute_query(check_query, (email,), fetch="one")
+        if already_sent:
+            continue
+
+        total_eligible += 1
+        logger.info(f"📧 [Веб-активен >50МБ] User ID {user_id} | Email: {email} | Трафик: {total_traffic // (1024*1024)} МБ")
+
+        if send_messages:
+            ok = send_link_bot_invitation_email(email, web_token)
+            if ok:
+                total_sent += 1
+                logger.info(f"✅ Email с приглашением в бота отправлен на {email}")
+            else:
+                logger.error(f"❌ Ошибка отправки email на {email}")
+        else:
+            logger.info(f"🔎 [DRY-RUN] Email для {email} не отправлен (запустите с флагом --send)")
+
+    logger.info(f"🌐 Итог веб-приглашений: Подходит: {total_eligible}, Отправлено писем: {total_sent}")
+
+
+
+async def _run_all(send: bool):
+    traffic_map = get_xui_client_traffic_map()
+    await process_reminders(send_messages=send)
+    await process_web_active_invitations(traffic_map=traffic_map, send_messages=send)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Remind paid users who have not yet connected to VPN")
+    parser = argparse.ArgumentParser(description="Remind paid users and invite active web users")
     parser.add_argument("--send", action="store_true", help="Send messages to eligible users")
     parser.add_argument("--dry-run", action="store_true", help="Dry run without sending messages (default)")
     args = parser.parse_args()
 
     send = args.send and not args.dry_run
-    asyncio.run(process_reminders(send_messages=send))
+    asyncio.run(_run_all(send))
 
 
 if __name__ == "__main__":
     main()
+

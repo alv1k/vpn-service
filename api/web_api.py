@@ -48,6 +48,7 @@ class PromoResponse(BaseModel):
 
 class OrderCodeRequest(BaseModel):
     email: EmailStr
+    company: str | None = None  # Honeypot field for bot trapping
 
 
 class OrderRequest(BaseModel):
@@ -147,8 +148,24 @@ async def validate_promo(req: PromoRequest):
 
 
 @web_api_router.post("/order/send-code")
-async def order_send_code(req: OrderCodeRequest):
+async def order_send_code(req: OrderCodeRequest, request: Request):
     """Send verification code to email before placing an order."""
+    if req.company and req.company.strip():
+        logger.warning(f"Honeypot triggered in /api/web/order/send-code from bot: {req.company}")
+        return {"ok": True, "message": "Код отправлен на почту"}
+
+    token = request.headers.get("x-handshake-token")
+    from api.handshake import consume_handshake_token
+    if not consume_handshake_token(token):
+        client_ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+        logger.warning(f"Missing or invalid handshake token in /api/web/order/send-code from {client_ip}")
+        raise HTTPException(403, "Сессия устарела. Обновите страницу.")
+
+    from api.disposable_email import is_disposable_email
+    if is_disposable_email(req.email):
+        logger.warning(f"Blocked disposable email in /api/web/order/send-code: {req.email}")
+        raise HTTPException(400, "Использование временных email не поддерживается")
+
     from api.notifications import create_auth_code
     code = create_auth_code(req.email.lower().strip(), "email")
     if not code:
@@ -265,6 +282,7 @@ async def create_order(req: OrderRequest):
         tariff=req.tariff_id,
         amount=price,
         status="pending",
+        web_user_id=user.get("id"),
     )
 
     logger.info(f"Web order: {payment.id} for {req.email}, tariff={req.tariff_id}, price={price}")
@@ -303,7 +321,8 @@ class TestCheckResponse(BaseModel):
 
 class TestActivateRequest(BaseModel):
     email: EmailStr
-    code: str | None = None
+    code: str
+    company: str | None = None  # Honeypot field for bot trapping
 
 
 class TestActivateResponse(BaseModel):
@@ -337,12 +356,38 @@ async def test_check_email(req: TestCheckEmailRequest):
 
 
 @web_api_router.post("/test/activate", response_model=TestActivateResponse)
-async def test_activate(req: TestActivateRequest):
+async def test_activate(req: TestActivateRequest, request: Request):
     """Activate free test subscription for user."""
-    from api.notifications import verify_code
-    from api.db import get_db
+    # Honeypot: trap bots that blindly fill invisible fields
+    if req.company and req.company.strip():
+        logger.warning(f"Honeypot triggered in /api/web/test/activate from bot: {req.company}")
+        return TestActivateResponse(
+            ok=False,
+            message="Ошибка запроса",
+        )
 
+    token = request.headers.get("x-handshake-token")
+    from api.handshake import consume_handshake_token
+    if not consume_handshake_token(token):
+        client_ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+        logger.warning(f"Missing or invalid handshake token in /api/web/test/activate from {client_ip}")
+        raise HTTPException(403, "Сессия устарела. Обновите страницу.")
+
+    from api.disposable_email import is_disposable_email
     email = req.email.lower().strip()
+    if is_disposable_email(email):
+        logger.warning(f"Blocked disposable email in /api/web/test/activate: {email}")
+        raise HTTPException(400, "Использование временных email не поддерживается")
+
+    code = req.code.strip() if req.code else ""
+    if not code:
+        raise HTTPException(400, "Необходимо указать код подтверждения")
+
+    from api.notifications import verify_code
+    if not verify_code(email, code):
+        raise HTTPException(400, "Неверный или истёкший код")
+
+    from api.db import get_db
 
     # Find or create user
     user = _get_or_create_web_user(email)
@@ -355,11 +400,6 @@ async def test_activate(req: TestActivateRequest):
             already_activated=True,
             message="Тестовая подписка уже активирована",
         )
-
-    # Verify code for existing users (security)
-    if req.code:
-        if not verify_code(email, req.code):
-            raise HTTPException(400, "Неверный или истёкший код")
 
     # Activate test (same logic as activate-test endpoint)
     result = await _do_activate_test(user_id, email)
@@ -517,7 +557,7 @@ async def _do_activate_test(user_id: int, email: str) -> dict:
 
     # Get subscription URL by email (web users all have tg_id=0)
     sub_id = result.get("subId")
-    sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}" if sub_id else ""
+    sub_url = f"{XUI_SUB_PATH}/updates_ui/{sub_id}" if sub_id else ""
     if not sub_url:
         sub_url = xui.get_client_subscription_url_by_email(client_email) or ""
 
@@ -659,7 +699,7 @@ async def activate_test(req: TestActivateRequest):
 
     from config import XUI_SUB_PATH
     sub_id = result.get("subId")
-    sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}" if sub_id else ""
+    sub_url = f"{XUI_SUB_PATH}/updates_ui/{sub_id}" if sub_id else ""
     if not sub_url:
         sub_url = xui.get_client_subscription_url_by_email(client_email) or ""
 

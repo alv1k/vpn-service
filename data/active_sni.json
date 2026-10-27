@@ -7,5 +7,7 @@
   "active_sni_1": "tile.openstreetmap.org",
   "active_sni_2": "www.speedtest.net",
   "active_sni_14": "www.speedtest.net",
-  "last_check": 1789351202
+  "last_check": 1793082604,
+  "active_sni_10": "www.amazon.com",
+  "active_sni_15": "swscan.apple.com"
 }

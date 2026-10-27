@@ -6,17 +6,19 @@
 #
 # Fixes:
 #   - flock to prevent parallel runs
-#   - sudo for config write and xray reload
+#   - Updates both /etc/x-ui/x-ui.db (xrayTemplateConfig) and /usr/local/x-ui/bin/config.json
+#   - systemctl restart x-ui to apply configuration reliably
 #   - hysteresis: 2 consecutive failures before switching to direct,
 #                 2 consecutive successes before switching back to NL
 
 set -uo pipefail
 
+DB_FILE="/etc/x-ui/x-ui.db"
 CONFIG="/usr/local/x-ui/bin/config.json"
 STATE_FILE="/home/alvik/vpn-service/data/yt_nl_proxy_state"
 LOG_FILE="/home/alvik/vpn-service/logs/yt-failover.log"
 ENV_FILE="/home/alvik/vpn-service/.env"
-LOCK_FILE="/tmp/yt_nl_failover.lock"
+LOCK_FILE="/home/alvik/vpn-service/data/yt_nl_failover.lock"
 NL_HOST="2.26.76.210"
 NL_PORT="15687"
 NL_UUID="a498b8a6-4a13-4f00-8c53-a895320cfc6e"
@@ -116,7 +118,7 @@ EOF
     sleep 3
 
     local result=1
-    if curl -s --socks5 127.0.0.1:19999 --connect-timeout 8 --max-time 15 -o /dev/null -w "%{http_code}" https://www.youtube.com 2>/dev/null | grep -qE '^[23]'; then
+    if curl -s --socks5-hostname 127.0.0.1:19999 --connect-timeout 8 --max-time 15 -o /dev/null -w "%{http_code}" https://www.youtube.com 2>/dev/null | grep -qE '^[23]'; then
         result=0
     fi
 
@@ -130,19 +132,44 @@ switch_youtube() {
     local new_tag="$1"
     local result
     result=$(sudo python3 -c "
-import json
-with open('$CONFIG', 'r') as f:
-    cfg = json.load(f)
-changed = False
-for rule in cfg['routing']['rules']:
-    if any(d in rule.get('domain', []) for d in ['youtube.com', 'googlevideo.com', 'geosite:youtube']):
-        if rule.get('outboundTag') != '$new_tag':
-            rule['outboundTag'] = '$new_tag'
-            changed = True
-        break
-if changed:
-    with open('$CONFIG', 'w') as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+import sqlite3, json, os
+
+db_changed = False
+cfg_changed = False
+
+# 1. Update x-ui.db xrayTemplateConfig
+if os.path.exists('$DB_FILE'):
+    conn = sqlite3.connect('$DB_FILE')
+    c = conn.cursor()
+    row = c.execute('SELECT value FROM settings WHERE key=\"xrayTemplateConfig\"').fetchone()
+    if row:
+        cfg_db = json.loads(row[0])
+        for rule in cfg_db.get('routing', {}).get('rules', []):
+            if 'inboundTag' not in rule and any(d in rule.get('domain', []) for d in ['youtube.com', 'googlevideo.com', 'geosite:youtube']):
+                if rule.get('outboundTag') != '$new_tag':
+                    rule['outboundTag'] = '$new_tag'
+                    db_changed = True
+                break
+        if db_changed:
+            c.execute('UPDATE settings SET value=? WHERE key=\"xrayTemplateConfig\"', (json.dumps(cfg_db, indent=2),))
+            conn.commit()
+    conn.close()
+
+# 2. Update config.json directly if present
+if os.path.exists('$CONFIG'):
+    with open('$CONFIG', 'r') as f:
+        cfg_file = json.load(f)
+    for rule in cfg_file.get('routing', {}).get('rules', []):
+        if 'inboundTag' not in rule and any(d in rule.get('domain', []) for d in ['youtube.com', 'googlevideo.com', 'geosite:youtube']):
+            if rule.get('outboundTag') != '$new_tag':
+                rule['outboundTag'] = '$new_tag'
+                cfg_changed = True
+            break
+    if cfg_changed:
+        with open('$CONFIG', 'w') as f:
+            json.dump(cfg_file, f, indent=2, ensure_ascii=False)
+
+if db_changed or cfg_changed:
     print('CHANGED')
 else:
     print('NO_CHANGE')
@@ -151,14 +178,9 @@ else:
 }
 
 reload_xray() {
-    local xray_pid
-    xray_pid=$(pgrep -f "xray-linux-amd64" | head -1)
-    if [ -n "$xray_pid" ]; then
-        sudo kill -USR1 "$xray_pid" 2>/dev/null
-        sleep 2
-        return 0
-    fi
-    return 1
+    sudo systemctl restart x-ui
+    sleep 2
+    return 0
 }
 
 CURRENT_STATE=$(read_state)
@@ -175,6 +197,11 @@ if check_nl_proxy; then
 
     if [ "$STATE" = "up" ]; then
         write_state "up:0:$UP_COUNT"
+        res=$(switch_youtube "de-to-nl-youtube")
+        if [ "$res" = "CHANGED" ]; then
+            reload_xray
+            log "Enforced de-to-nl-youtube routing while in UP state"
+        fi
     else
         if [ "$UP_COUNT" -ge "$RECOVER_THRESHOLD" ]; then
             write_state "up:0:0"
@@ -193,6 +220,11 @@ else
 
     if [ "$STATE" = "down" ]; then
         write_state "down:${DOWN_COUNT}:0"
+        res=$(switch_youtube "direct")
+        if [ "$res" = "CHANGED" ]; then
+            reload_xray
+            log "Enforced direct routing while in DOWN state"
+        fi
     else
         if [ "$DOWN_COUNT" -ge "$FAIL_THRESHOLD" ]; then
             write_state "down:0:0"

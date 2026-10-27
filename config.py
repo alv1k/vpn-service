@@ -79,8 +79,8 @@ _RAW_ACTIVE_INBOUNDS = os.getenv("ACTIVE_INBOUND_IDS", _DEFAULT_ACTIVE_INBOUNDS)
 ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_ACTIVE_INBOUNDS.split(",") if x.strip().isdigit()]
 
 # RU Server (Secondary Node) 3x-ui API
-RU_XUI_HOST = os.getenv("RU_XUI_HOST", "https://139.100.207.18:2053/0ruabxwdsz96R7jSIN")
-RU_XUI_USERNAME = os.getenv("RU_XUI_USERNAME", XUI_USERNAME)
+RU_XUI_HOST = os.getenv("RU_XUI_HOST", "https://10.50.0.2:2053/0ruabxwdsz96R7jSIN/")
+RU_XUI_USERNAME = os.getenv("RU_XUI_USERNAME", "alvik")
 RU_XUI_PASSWORD = os.getenv("RU_XUI_PASSWORD", XUI_PASSWORD)
 _RAW_RU_INBOUNDS = os.getenv("RU_ACTIVE_INBOUND_IDS", "1,2")
 RU_ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_RU_INBOUNDS.split(",") if x.strip().isdigit()]

@@ -1,6 +1,7 @@
 # Environment variables
 .env
 *.env
+.env.*
 !.env.example
 !.env.dev.example
 YOO_KASSA_SECRET_KEY.txt
@@ -69,6 +70,20 @@ backups-moved/
 # Built website assets
 website_dist/
 
-# Docker compose только в docker/amneziawg/
+# Telethon / Telegram userbot sessions
+*.session
+*.session-journal
+qa_agent/data/*.session
+qa_agent/data/*.session-journal
+
+# Runtime state & metrics
+data/inbound_switches.json
+data/selectel_migration_state.json
+data/*.lock
+data/yt_nl_proxy_state
+
+# Temporary, orig & MCP ignores
+.socraticodeignore
+*.orig
 
 *.bak*

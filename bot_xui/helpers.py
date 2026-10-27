@@ -174,7 +174,7 @@ def get_user_sub_url(tg_id: int, users_id: int) -> str:
                         sub_id = client.get('subId')
                         if sub_id:
                             conn.close()
-                            return f"{XUI_SUB_PATH}/sub/{sub_id}"
+                            return f"{XUI_SUB_PATH}/updates_ui/{sub_id}"
                                     
         conn.close()
         return ""

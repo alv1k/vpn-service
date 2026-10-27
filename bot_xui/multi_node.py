@@ -38,6 +38,7 @@ def sync_client_to_ru_node(
     expiry_ms: int | None = None,
     enable: bool | None = None,
     uuid_str: str | None = None,
+    auth: str | None = None,
     sub_id: str | None = None,
     tg_id: int = 0,
     limit_ip: int = 10,
@@ -46,8 +47,8 @@ def sync_client_to_ru_node(
 ) -> bool:
     """
     Синхронизирует данные клиента с RU-нодой:
-    1. Если клиент существует в RU 3x-ui — обновляет expiryTime, enable, limitIp.
-    2. Если клиента нет — создаёт его в RU 3x-ui с сохранением оригинальных UUID/subId и привязкой к RU-инбаундам.
+    1. Если клиент существует в RU 3x-ui — обновляет expiryTime, enable, limitIp, а при несовпадении auth/uuid — обновляет их.
+    2. Если клиента нет — создаёт его в RU 3x-ui с сохранением оригинальных UUID/auth/subId и привязкой к RU-инбаундам.
     """
     if not email or not RU_XUI_HOST:
         return False
@@ -65,6 +66,8 @@ def sync_client_to_ru_node(
             new_expiry = expiry_ms if expiry_ms is not None else current_expiry
             new_enable = enable if enable is not None else client.get("enable", True)
 
+            target_auth = auth or (uuid_str.replace("-", "") if uuid_str else client.get("auth"))
+
             payload = {
                 "email": email,
                 "totalGB": total_gb if total_gb else client.get("totalGB", 0),
@@ -75,6 +78,9 @@ def sync_client_to_ru_node(
                 "reset": client.get("reset", 0),
                 "flow": client.get("flow") or flow,
             }
+            if target_auth:
+                payload["auth"] = str(target_auth)
+                payload["password"] = str(target_auth)
 
             url = f"{ru_xui.host}/panel/api/clients/update/{email}"
             resp = ru_xui._request("POST", url, json=payload, headers={"Content-Type": "application/json"})
@@ -88,6 +94,7 @@ def sync_client_to_ru_node(
         else:
             # Клиент не найден на RU-ноде — создаём его
             logger.info(f"ℹ️ [RU-Node] Client {email} not found on RU node. Creating...")
+            target_auth = auth or (uuid_str.replace("-", "") if uuid_str else None)
             client_payload = {
                 "email": email,
                 "limitIp": limit_ip,
@@ -100,7 +107,9 @@ def sync_client_to_ru_node(
             }
             if uuid_str:
                 client_payload["id"] = str(uuid_str)
-                client_payload["auth"] = str(uuid_str).replace("-", "")
+            if target_auth:
+                client_payload["auth"] = str(target_auth)
+                client_payload["password"] = str(target_auth)
             if sub_id:
                 client_payload["subId"] = str(sub_id)
 
@@ -114,6 +123,7 @@ def sync_client_to_ru_node(
             result = resp.json()
             if result.get("success"):
                 logger.info(f"✅ [RU-Node] Successfully created client {email} on RU node")
+                ru_xui._request("POST", f"{ru_xui.host}/panel/api/server/restartXrayService")
                 return True
             else:
                 logger.warning(f"⚠️ [RU-Node] Failed to create client {email} on RU node: {result}")

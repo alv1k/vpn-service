@@ -125,6 +125,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await log_and_reply_text(update, text, reply_markup=markup, parse_mode="HTML")
         return
 
+    # Deep link: /start awg or /start amnezia → immediately send AWG .conf file
+    if args and args[0].lower() in ("awg", "amnezia", "amneziawg", "get_awg"):
+        from bot_xui.vpn_factory import send_awg_config_to_user
+        register_user_with_referral(tg_id, None, first_name, last_name)
+        await send_awg_config_to_user(update.message, tg_id)
+        return
+
+    # Deep link: /start <web_token> (привязка веб-аккаунта)
+    if args and len(args[0]) >= 16 and not args[0].isdigit():
+        from api.db import get_user_by_web_token, link_tg_id_to_user
+        web_user = get_user_by_web_token(args[0])
+        if web_user:
+            link_tg_id_to_user(web_user["id"], tg_id)
+            register_user_with_referral(tg_id, None, first_name, last_name)
+            sub_date = ""
+            current_u = get_user_by_tg_id(tg_id)
+            if current_u and current_u.get("subscription_until"):
+                sub_date = current_u["subscription_until"].strftime("%d.%m.%Y")
+            
+            link_msg = (
+                "✅ <b>Аккаунт успешно привязан к Telegram!</b>\n\n"
+                "Ваш веб-профиль и VPN-подписка объединены с ботом.\n"
+            )
+            if sub_date:
+                link_msg += f"⏳ Подписка активна до: <b>{sub_date}</b>\n\n"
+            link_msg += "Теперь вы можете продлевать тариф, проверять баланс и обращаться в поддержку прямо здесь! 🚀"
+            
+            await log_and_reply_text(update, link_msg, parse_mode="HTML", reply_markup=make_main_keyboard(tg_id))
+            return
+
     # Parse referral deep link: /start <referrer_tg_id>
     referrer_tg_id = None
     if args and args[0].isdigit():
@@ -141,8 +171,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await log_and_reply_photo(update,
                 photo=bio,
                 caption=(
-                    f"🎁 Вы перешли по реферальной ссылке!\n"
-                    f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дня</b> VPN подписки!\n\n"
+                    f"🎁 <b>Вы перешли по реферальной ссылке!</b>\n"
+                    f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дней</b> VPN подписки!\n\n"
+                    f"💡 <i>Подключите VPN по кнопке ниже — как только вы израсходуете первые 50 МБ трафика, ваш друг тоже получит свои бонусные +{REFERRAL_REWARD_DAYS} дней!</i>\n\n"
                     f'📲 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
                 ),
                 parse_mode="HTML",
@@ -150,21 +181,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await log_and_reply_text(update, 
-                "🎁 Вы перешли по реферальной ссылке!\n"
-                f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дня</b> подписки!\n"
-                f"Ваш друг тоже получил <b>+{REFERRAL_REWARD_DAYS} дней</b>.",
+                "🎁 <b>Вы перешли по реферальной ссылке!</b>\n"
+                f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дней</b> подписки!\n\n"
+                f"💡 <i>Подключите VPN в приложении — как только вы начнете пользоваться сервисом (от 50 МБ трафика), ваш друг тоже получит свои +{REFERRAL_REWARD_DAYS} дней бонуса!</i>",
                 parse_mode="HTML",
                 reply_markup=make_main_keyboard(tg_id)
             )
 
-        # Grant VPN to referrer (extend or create)
-        await grant_referral_vpn(referrer_tg_id, REFERRAL_REWARD_DAYS, xui)
-
-        # Notify referrer
+        # Notify referrer about pending bonus (activated upon >= 50 MB traffic)
         await send_message_by_tg_id(
             referrer_tg_id,
-            f"🎉 По вашей реферальной ссылке зарегистрировался новый пользователь!\n"
-            f"Вам начислено <b>+{REFERRAL_REWARD_DAYS} дней</b> VPN подписки.",
+            f"👥 <b>По вашей реферальной ссылке зарегистрировался новый друг!</b>\n\n"
+            f"Бонус <b>+{REFERRAL_REWARD_DAYS} дней</b> зарезервирован за вами.\n\n"
+            f"⏳ <i>Дни добавятся к вашей подписке автоматически, как только друг подключит VPN и использует первые 50 МБ трафика.</i>",
             parse_mode="HTML",
             bot=context.bot,
             source="bot_command", scenario="referral_notify",
@@ -233,6 +262,10 @@ async def _refer_text(context, tg_id: int) -> tuple[str, str]:
     text = (
         f"👥 <b>Пригласите друга</b>\n\n"
         f"Получайте <b>+{REFERRAL_REWARD_DAYS} дней</b> подписки за каждого друга!\n\n"
+        f"💡 <b>Как это работает:</b>\n"
+        f"1️⃣ Отправьте другу персональную ссылку ниже.\n"
+        f"2️⃣ Друг запускает бота и получает <b>+{REFERRAL_NEWCOMER_DAYS} дней</b> триала в подарок 🎁\n"
+        f"3️⃣ Как только друг подключит VPN и использует первые <b>50 МБ</b> трафика — вам мгновенно зачислятся <b>+{REFERRAL_REWARD_DAYS} дней</b>!\n\n"
         f"📱 <b>Ссылка для Telegram:</b>\n"
         f"<code>{link}</code>\n\n"
     )
@@ -260,13 +293,13 @@ async def post_init(application):
     scheduler.add_job(
         notify_expiring_subscriptions,
         trigger="cron",
-        hour=10,           # каждый день в 10:00
+        hour=10,           # каждый день в 10:00 МСК
         minute=0,
-        timezone=pytz.timezone("Asia/Tokyo"),
+        timezone=pytz.timezone("Europe/Moscow"),
         args=[application.bot],
     )
 
-    from bot_xui.autopay import process_autopayments
+    from bot_xui.autopay import process_autopayments, refresh_today_expiring_cache, check_last_minute_warnings
     scheduler.add_job(
         process_autopayments,
         trigger="cron",
@@ -275,6 +308,25 @@ async def post_init(application):
         timezone=pytz.timezone("Asia/Tokyo"),
         args=[application.bot],
     )
+
+    # 1. Сбор кэша истекающих пользователей (каждые 30 минут)
+    scheduler.add_job(
+        refresh_today_expiring_cache,
+        trigger="interval",
+        minutes=30,
+        args=[application.bot],
+    )
+    # Первичный сбор кэша сразу при запуске бота
+    await refresh_today_expiring_cache(application.bot)
+
+    # 2. 5-минутный воркер горячих предупреждений по кэшу (0-30 минут до отключения)
+    scheduler.add_job(
+        check_last_minute_warnings,
+        trigger="interval",
+        minutes=5,
+        args=[application.bot],
+    )
+
 
     from bot_xui.sharing_monitor import cleanup_stale_ips
     scheduler.add_job(
@@ -288,7 +340,7 @@ async def post_init(application):
         cleanup_expired_sessions,
         trigger="cron",
         hour=4, minute=0,
-        timezone=pytz.timezone("Asia/Tokyo"),
+        timezone=pytz.timezone("Europe/Moscow"),
     )
 
     scheduler.add_job(
@@ -298,8 +350,15 @@ async def post_init(application):
         args=[application.bot],
     )
 
+    scheduler.add_job(
+        check_pending_referral_rewards,
+        trigger="interval",
+        minutes=2,
+        args=[application.bot],
+    )
+
     scheduler.start()
-    logger.info("[NOTIFY] Subscription expiry + autopay + IP cleanup + session cleanup + 15m onboarding reminder scheduler started")
+    logger.info("[NOTIFY] Subscription expiry + autopay + IP cleanup + session cleanup + 15m onboarding + referral check scheduler started")
 
 
 async def send_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -698,6 +757,8 @@ _BOT_RATE_WINDOW = 30
 
 def _bot_rate_check(tg_id: int) -> bool:
     """Returns True if allowed, False if rate-limited."""
+    if ADMIN_TG_ID and tg_id == ADMIN_TG_ID:
+        return True
     now = _time.time()
     bucket = _bot_rate.get(tg_id, [])
     bucket = [t for t in bucket if now - t < _BOT_RATE_WINDOW]
@@ -1036,15 +1097,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Подписка действует до <b>{sub_msk} МСК</b>.\n"
                     "Все ваши ключи доступны в разделе «Мои конфиги»."
                 )
+                markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
+                    [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+                ])
             else:
                 reply_text = (
                     "ℹ️ <b>Вы уже использовали этот подарок.</b>\n\n"
                     "Для продления доступа выберите подходящий тариф в разделе «Тарифы»."
                 )
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
-                [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
-            ])
+                markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💎 Тарифы", callback_data="tariffs")],
+                    [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+                ])
             await safe_edit_text_logged(query, reply_text, "loyalty_gift_already_used", reply_markup=markup)
             return
 
@@ -1501,11 +1566,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "autopay_on":
-        from api.db import execute_query
-        execute_query(
-            "UPDATE users SET autopay_enabled = 1 WHERE tg_id = %s AND payment_method_id IS NOT NULL",
-            (query.from_user.id,),
-        )
+        from api.db import enable_autopay
+        enable_autopay(query.from_user.id)
         text = (
             "✅ Автопродление <b>включено</b>.\n\n"
             "Списание произойдёт за 1 день до окончания подписки.\n"
@@ -1518,6 +1580,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disable_autopay(query.from_user.id)
         text = (
             "🔴 Автопродление <b>выключено</b>.\n\n"
+            "Мы не будем списывать средства автоматически и сохраним этот выбор при ваших следующих оплатах.\n\n"
             "Включить снова: /autopay"
         )
         await safe_edit_text_logged(query, text, "autopay_off")
@@ -1573,20 +1636,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from api.db import execute_query
         tg_id = query.from_user.id
         user = execute_query(
-            "SELECT autopay_enabled, payment_method_id, autopay_tariff FROM users WHERE tg_id = %s",
+            "SELECT autopay_enabled, payment_method_id, autopay_tariff, autopay_disabled_at FROM users WHERE tg_id = %s",
             (tg_id,), fetch='one',
         )
         if not user or not user.get('payment_method_id'):
             await safe_edit_text(query, "❌ Карта не привязана")
             return
-        enabled = user['autopay_enabled']
+        enabled = bool(user['autopay_enabled'])
         tariff_id = user.get('autopay_tariff') or 'monthly_30d'
         tariff = TARIFFS.get(tariff_id, {})
         toggle_text = "Выключить" if enabled else "Включить"
         toggle_data = "autopay_off" if enabled else "autopay_on"
+        
+        if enabled:
+            status_text = "✅ Включено"
+        elif user.get('autopay_disabled_at'):
+            d_at = user['autopay_disabled_at']
+            d_str = d_at.strftime('%d.%m.%Y') if hasattr(d_at, 'strftime') else str(d_at)
+            status_text = f"❌ Выключено (отключено вами {d_str})"
+        else:
+            status_text = "❌ Выключено"
+
         text = (
             f"🔄 <b>Автопродление</b>\n\n"
-            f"Статус: {'✅ Включено' if enabled else '❌ Выключено'}\n"
+            f"Статус: {status_text}\n"
             f"Тариф: {tariff.get('name', tariff_id)}\n"
             f"💳 Карта сохранена\n\n"
             f"При автопродлении списание происходит за 1 день до окончания подписки."
@@ -1688,16 +1761,69 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+    elif data.startswith("admin_grace_12h_"):
+        if query.from_user.id != ADMIN_TG_ID:
+            await safe_edit_text(query, "❌ Доступно только администратору")
+            return
+
+        target_tg_id = int(data.removeprefix("admin_grace_12h_"))
+        from api.db import grant_grace_period, log_message_sent
+        new_exp = grant_grace_period(target_tg_id, hours=12)
+        if new_exp:
+            exp_str = new_exp.strftime("%d.%m.%Y %H:%M")
+            await safe_edit_text(
+                query,
+                f"✅ <b>Грейс-период продлён ещё на 12 часов!</b>\n\n"
+                f"Пользователь: <code>tg:{target_tg_id}</code>\n"
+                f"Новый срок: <b>до {exp_str}</b>\n"
+                f"Все узлы (DE / RU / AWG) обновлены.",
+                parse_mode="HTML",
+            )
+            user_notice = (
+                f"🎁 <b>Вам предоставлены дополнительные 12 часов доступа!</b>\n\n"
+                f"Новый срок действия: <b>до {exp_str}</b>.\n"
+                f"Продлить подписку: /start"
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=target_tg_id,
+                    text=user_notice,
+                    parse_mode="HTML"
+                )
+                log_message_sent(tg_id=target_tg_id, source="admin_action",
+                                 scenario="grace_extended_by_admin", message_text=user_notice, status='sent')
+            except Exception:
+                pass
+        else:
+            await safe_edit_text(query, f"❌ Ошибка при продлении для <code>tg:{target_tg_id}</code>", parse_mode="HTML")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Интервалы
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _format_hours_left(hours: int) -> str:
+    if hours <= 0:
+        return "менее 1 часа"
+    if 11 <= hours % 100 <= 14:
+        return f"{hours} часов"
+    last = hours % 10
+    if last == 1:
+        return f"{hours} час"
+    elif 2 <= last <= 4:
+        return f"{hours} часа"
+    else:
+        return f"{hours} часов"
+
+
 async def notify_expiring_subscriptions(bot):
     """Проверяет истекающие подписки и уведомляет пользователей."""
+    from datetime import datetime, timedelta
+
+    # Уведомляем за 3 дня только постоянных платных пользователей (тестовые пропускаются ниже).
+    # Уведомления в день окончания обрабатываются почасовым планировщиком (за 24ч и за 3ч до отключения).
     notifications = [
         (3, "3 дня", "⏳"),
-        (0, "сегодня", "🔴"),
     ]
 
     for days, label, icon in notifications:
@@ -1719,7 +1845,17 @@ async def notify_expiring_subscriptions(bot):
                     continue
 
             email = user.get('email')
-            until = user['subscription_until'].strftime("%d.%m.%Y")
+            sub_dt = user['subscription_until']
+            until = (sub_dt + timedelta(hours=3)).strftime("%d.%m.%Y")
+            if days == 0:
+                now_utc = datetime.utcnow()
+                diff_sec = (sub_dt - now_utc).total_seconds()
+                hours_left = max(0, int(round(diff_sec / 3600)))
+                hours_label = _format_hours_left(hours_left)
+                until_display = f"{until} (осталось {hours_label})"
+            else:
+                until_display = until
+
             has_autopay = user.get('autopay_enabled') and user.get('payment_method_id')
 
             # Telegram notification (if user has tg_id)
@@ -1734,7 +1870,8 @@ async def notify_expiring_subscriptions(bot):
                     msg = (
                         f"🔄 <b>Сегодня автоматически продлим подписку</b>\n\n"
                         f"📦 Тариф: {tariff_name}\n"
-                        f"💰 Сумма: {price} ₽\n\n"
+                        f"💰 Сумма: {price} ₽\n"
+                        f"📅 Окончание: <b>{until_display}</b>\n\n"
                         f"<i>Отменить автопродление: /autopay</i>"
                     )
                 else:
@@ -1753,7 +1890,7 @@ async def notify_expiring_subscriptions(bot):
                 if days == 0:
                     msg = (
                         f"🔴 <b>Подписка истекает сегодня!</b>\n\n"
-                        f"📅 Окончание: <b>{until}</b>\n\n"
+                        f"📅 Окончание: <b>{until_display}</b>\n\n"
                         f"Выберите тариф для продления:"
                     )
                 else:
@@ -1807,74 +1944,6 @@ async def notify_expiring_subscriptions(bot):
                 except Exception as e:
                     logger.warning(f"[NOTIFY] Failed to email {email}: {e}")
 
-    # Post-expiry: notify users whose subscription expired yesterday
-    from api.db import execute_query as _eq
-    expired_yesterday = _eq(
-        "SELECT tg_id, subscription_until FROM users "
-        "WHERE subscription_until BETWEEN NOW() - INTERVAL 2 DAY AND NOW() - INTERVAL 1 DAY "
-        "AND tg_id IS NOT NULL AND tg_id > 0 "
-        "AND bot_blocked = 0",
-        fetch='all',
-    )
-    for user in (expired_yesterday or []):
-        tg_id = user['tg_id']
-        try:
-            await bot.send_message(
-                chat_id=tg_id,
-                text=(
-                    "❌ <b>Подписка истекла</b>\n\n"
-                    "VPN больше не работает. Продлите подписку, "
-                    "чтобы вернуть доступ."
-                ),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💎 Продлить", callback_data="tariffs")]
-                ])
-            )
-            logger.info(f"[NOTIFY] Sent post-expiry to tg:{tg_id}")
-            try:
-                from api.db import log_message_sent
-                log_message_sent(tg_id=tg_id, source="cron_expiry",
-                                 scenario="expiry_0d",
-                                 message_text="❌ Подписка истекла\n\nVPN больше не работает. Продлите подписку, чтобы вернуть доступ.",
-                                 status='sent')
-            except Exception:
-                pass
-
-            # Notify admin
-            try:
-                sub_date = user.get('subscription_until')
-                client_name = get_user_email(tg_id)
-                await bot.send_message(
-                    chat_id=ADMIN_TG_ID,
-                    text=(
-                        f"⏰ <b>Подписка пользователя истекла</b>\n\n"
-                        f"Пользователь: <code>{tg_id}</code>" + (f" ({client_name})" if client_name else "") + f"\n"
-                        f"Дата окончания: {sub_date}\n\n"
-                        f"⚠️ <i>Подписка завершена. Проверьте конфиги (3x-ui / AWG).</i>"
-                    ),
-                    parse_mode="HTML"
-                )
-            except Exception as e:
-                logger.warning(f"[NOTIFY] Failed admin expiry notification tg:{tg_id}: {e}")
-        except Exception as e:
-            err_str = str(e).lower()
-            is_block = "blocked" in err_str or "deactivated" in err_str
-            if is_block:
-                try:
-                    execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
-                except Exception:
-                    pass
-            logger.warning(f"[NOTIFY] Failed post-expiry tg:{tg_id}: {e}")
-            try:
-                from api.db import log_message_sent
-                log_message_sent(tg_id=tg_id, source="cron_expiry",
-                                 scenario="expiry_0d",
-                                 message_text="❌ Подписка истекла\n\nVPN больше не работает. Продлите подписку, чтобы вернуть доступ.",
-                                 status='blocked' if is_block else 'failed',
-                                 error_text=str(e)[:255])
-            except Exception:
-                pass
 
 
 async def check_and_send_15m_test_reminders(bot):
@@ -1989,15 +2058,103 @@ async def check_and_send_15m_test_reminders(bot):
             except Exception:
                 pass
         except Exception as e:
-            logger.warning(f"[15M-REMINDER] Failed to send to tg:{tg_id}: {e}")
+            err_str = str(e).lower()
+            is_blocked = "bot was blocked" in err_str or "user is deactivated" in err_str or "chat not found" in err_str
+            if is_blocked:
+                logger.info(f"[15M-REMINDER] User tg:{tg_id} blocked bot — set bot_blocked=1 in DB")
+                try:
+                    execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
+                except Exception:
+                    pass
+            else:
+                logger.warning(f"[15M-REMINDER] Failed to send to tg:{tg_id}: {e}")
+
             try:
                 from api.db import log_message_sent
                 log_message_sent(
                     tg_id=tg_id, source="bot_system", scenario="test_15m_setup",
-                    message_text=msg, status="failed", error_text=str(e)[:255]
+                    message_text=msg, status="blocked" if is_blocked else "failed", error_text=str(e)[:255]
                 )
             except Exception:
                 pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Реферальная программа: проверка расхода трафика (>= 50 МБ)
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def check_pending_referral_rewards(bot):
+    """
+    Периодически проверяет пользователей с pending-рефералом (referral_rewarded = 0).
+    Если пользователь израсходовал >= 50 МБ трафика, активирует бонус для пригласившего.
+    """
+    try:
+        from api.db import execute_query, confirm_referral_reward
+        from bot_xui.vpn_factory import grant_referral_vpn
+        import sqlite3
+
+        pending = execute_query(
+            "SELECT id, tg_id, referred_by FROM users WHERE referred_by IS NOT NULL AND referral_rewarded = 0",
+            fetch='all'
+        )
+        if not pending:
+            return
+
+        traffics = {}
+        try:
+            xconn = sqlite3.connect('/etc/x-ui/x-ui.db')
+            xconn.row_factory = sqlite3.Row
+            cur = xconn.cursor()
+            cur.execute("SELECT email, up, down FROM client_traffics")
+            for r in cur.fetchall():
+                email = r['email']
+                bytes_total = (r['up'] or 0) + (r['down'] or 0)
+                traffics[email] = traffics.get(email, 0) + bytes_total
+            xconn.close()
+        except Exception as x_err:
+            logger.warning(f"[REFERRAL-CHECK] Error reading x-ui.db: {x_err}")
+            return
+
+        THRESHOLD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+        for user in pending:
+            user_id = user['id']
+            tg_id = user.get('tg_id')
+
+            email_tg = f"tiin_{tg_id}" if tg_id else None
+            email_web = f"tiin_web_{user_id}"
+
+            user_traffic = 0
+            if email_tg:
+                user_traffic += traffics.get(email_tg, 0)
+                user_traffic += traffics.get(f"{email_tg}_h", 0)
+            user_traffic += traffics.get(email_web, 0)
+            user_traffic += traffics.get(f"{email_web}_h", 0)
+
+            if user_traffic >= THRESHOLD_BYTES:
+                res = confirm_referral_reward(user_id)
+                if res and res.get("referrer_tg_id"):
+                    ref_tg_id = res["referrer_tg_id"]
+                    try:
+                        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+                        await grant_referral_vpn(ref_tg_id, REFERRAL_REWARD_DAYS, xui)
+                    except Exception as g_err:
+                        logger.error(f"[REFERRAL-CHECK] Failed to extend xui for referrer {ref_tg_id}: {g_err}")
+
+                    await send_message_by_tg_id(
+                        ref_tg_id,
+                        f"🚀 <b>Реферальный бонус активирован!</b>\n\n"
+                        f"Ваш приглашенный друг успешно подключился к VPN и начал пользоваться сервисом.\n\n"
+                        f"Вам начислено <b>+{REFERRAL_REWARD_DAYS} дней</b> VPN подписки. Спасибо, что делитесь сервисом ❤️",
+                        parse_mode="HTML",
+                        bot=bot,
+                        source="bot_system",
+                        scenario="referral_reward_confirmed",
+                    )
+                    logger.info(f"[REFERRAL-CHECK] Confirmed reward for referrer {ref_tg_id} from newcomer {user_id}")
+    except Exception as e:
+        logger.error(f"[REFERRAL-CHECK] Error in check_pending_referral_rewards: {e}")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Автопродление
@@ -2008,14 +2165,14 @@ async def autopay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
     from api.db import execute_query
     user = execute_query(
-        "SELECT autopay_enabled, payment_method_id, autopay_tariff FROM users WHERE tg_id = %s",
+        "SELECT autopay_enabled, payment_method_id, autopay_tariff, autopay_disabled_at FROM users WHERE tg_id = %s",
         (tg_id,), fetch='one',
     )
     if not user:
         await log_and_reply_text(update, "❌ Пользователь не найден")
         return
 
-    enabled = user['autopay_enabled']
+    enabled = bool(user['autopay_enabled'])
     has_method = bool(user['payment_method_id'])
     tariff_id = user.get('autopay_tariff') or 'monthly_30d'
     tariff = TARIFFS.get(tariff_id, {})
@@ -2033,7 +2190,15 @@ async def autopay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    status = "✅ Включено" if enabled else "❌ Выключено"
+    if enabled:
+        status = "✅ Включено"
+    elif user.get('autopay_disabled_at'):
+        d_at = user['autopay_disabled_at']
+        d_str = d_at.strftime('%d.%m.%Y') if hasattr(d_at, 'strftime') else str(d_at)
+        status = f"❌ Выключено (отключено вами {d_str})"
+    else:
+        status = "❌ Выключено"
+
     toggle_text = "Выключить" if enabled else "Включить"
     toggle_data = "autopay_off" if enabled else "autopay_on"
 

@@ -20,6 +20,7 @@ PLATFORM_RULES = [
     (re.compile(r'Hiddify[ ]?Next[ /\v]([\d.]+)', re.I),  None,      'HiddifyNext'),
     (re.compile(r'Hiddify[ /\v]([\d.]+)', re.I),          None,      'Hiddify'),
     (re.compile(r'Sing-box[ /\v]([\d.]+)', re.I),         None,      'Sing-box'),
+    (re.compile(r'Incy[ /\v]([\d.]+)', re.I),             None,      'INCY'),
     (re.compile(r'Karing[ /\v]([\d.]+)', re.I),           None,      'Karing'),
     (re.compile(r'Loon[ /\v]([\d.]+)', re.I),             'ios',     'Loon'),
     (re.compile(r'Surge[ /\v]([\d.]+)', re.I),            'ios',     'Surge'),

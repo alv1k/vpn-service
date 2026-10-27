@@ -8,7 +8,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 from admin.routes import (
@@ -19,7 +19,7 @@ from admin.routes import (
     _get_online_users,
     _clean,
 )
-from admin.auth import handle_login, _ws_authenticate
+from admin.auth import handle_login, handle_logout, get_session_status, _ws_authenticate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("admin_panel")
@@ -54,8 +54,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TIIN Admin Panel", lifespan=lifespan)
 
-# Mount main admin router
+from awg_api.router import router as awg_router
+
+# Mount main admin router & AWG router
 app.include_router(admin_router)
+app.include_router(awg_router)
 
 # Mount UI root and favicon
 _admin_page = get_admin_page_route()
@@ -68,10 +71,29 @@ async def favicon():
     return FileResponse(path, media_type="image/png")
 
 
-# Session Login
+# Session Login & Status
+@app.get("/api/session")
+async def session_check(request: Request):
+    return await get_session_status(request)
+
+
+@app.get("/api/auth-verify")
+async def auth_verify(request: Request):
+    """Endpoint for Nginx auth_request subrequests."""
+    status = await get_session_status(request)
+    if not status.get("authenticated"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return Response(status_code=200)
+
+
 @app.post("/api/session")
 async def session_login(request: Request, response: Response):
     return await handle_login(request, response)
+
+
+@app.post("/api/logout")
+async def session_logout(request: Request, response: Response):
+    return await handle_logout(request, response)
 
 
 # WebSocket Gateway

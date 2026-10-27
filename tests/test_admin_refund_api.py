@@ -1,8 +1,16 @@
 import unittest
 from unittest.mock import patch, MagicMock
 
-from admin.auth import _sessions
-_sessions["test_session_token"] = 9999999999.0
+import time
+from admin.auth import _get_db, init_auth_db
+
+init_auth_db()
+with _get_db() as conn:
+    conn.execute(
+        "INSERT OR REPLACE INTO admin_sessions (token, username, created_at, last_seen) VALUES (?, ?, ?, ?)",
+        ("test_session_token", "alvik", time.time(), time.time()),
+    )
+    conn.commit()
 
 from api.webhook import app
 from fastapi.testclient import TestClient

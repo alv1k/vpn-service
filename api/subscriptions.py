@@ -36,22 +36,21 @@ def activate_subscription(payment_id: str, user_id: int | None = None):
     else:
         base_date = paid_at
 
-    raw_until = base_date + duration
-
-    # Round to end of day in Yakutsk Time (+9) => 23:59:59 YST (which is 14:59:59 UTC)
-    if raw_until.tzinfo is None:
-        raw_until_tz = raw_until.replace(tzinfo=timezone.utc)
-    else:
-        raw_until_tz = raw_until
-
-    raw_until_ykt = raw_until_tz.astimezone(TZ_TOKYO)
-    raw_until_eod = raw_until_ykt.replace(hour=23, minute=59, second=59, microsecond=0)
-    new_until = raw_until_eod.astimezone(timezone.utc).replace(tzinfo=None)
+    # Exact timestamp calculation: preserves exact hour, minute, second
+    new_until = base_date + duration
 
     # Update subscription: by tg_id if available, otherwise by user_id
     if tg_id and tg_id != 0:
         upsert_user_subscription(tg_id=tg_id, subscription_until=new_until)
     elif user and user.get('id'):
         update_user_subscription_by_id(user['id'], new_until)
+
+    # If this user was referred by someone and referral reward is pending, confirm it now
+    if user and user.get('id') and user.get('referred_by') and not user.get('referral_rewarded'):
+        try:
+            from api.db import confirm_referral_reward
+            confirm_referral_reward(user['id'])
+        except Exception:
+            pass
 
     return new_until

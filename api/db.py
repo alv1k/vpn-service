@@ -4,6 +4,7 @@ import mysql.connector
 from mysql.connector import pooling
 from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS
 
+TZ_MSK = timezone(timedelta(hours=3))
 TZ_TOKYO = timezone(timedelta(hours=9))
 
 logger = logging.getLogger(__name__)
@@ -222,15 +223,70 @@ def create_user(first_name: str, last_name: str) -> dict:
 
 
 def link_tg_id_to_user(user_id: int, tg_id: int):
-    """Привязать tg_id к существующему пользователю (и к его vpn_keys)."""
-    execute_query(
-        "UPDATE users SET tg_id = %s WHERE id = %s",
-        (tg_id, user_id)
-    )
-    execute_query(
-        "UPDATE vpn_keys SET tg_id = %s WHERE user_id = %s",
-        (tg_id, user_id)
-    )
+    """Привязать tg_id к существующему пользователю из веба или объединить два профиля."""
+    web_u = get_user_by_id(user_id)
+    tg_u = get_user_by_tg_id(tg_id)
+
+    if not web_u:
+        return False
+
+    # Если уже есть отдельный пользователь для этого tg_id:
+    if tg_u and tg_u["id"] != user_id:
+        # Выбираем максимальную дату подписки (приоритет оплаченному)
+        web_sub = web_u.get("subscription_until")
+        tg_sub = tg_u.get("subscription_until")
+        final_sub = max(filter(None, [web_sub, tg_sub])) if (web_sub or tg_sub) else None
+
+        # Переносим email и дату в основной tg профиль
+        email = tg_u.get("email") or web_u.get("email")
+        execute_query(
+            "UPDATE users SET email = %s, subscription_until = %s WHERE id = %s",
+            (email, final_sub, tg_u["id"])
+        )
+        # Переносим платежи и ключи на tg_id
+        execute_query("UPDATE payments SET tg_id = %s WHERE web_user_id = %s", (tg_id, user_id))
+        execute_query("UPDATE vpn_keys SET tg_id = %s, user_id = %s WHERE user_id = %s", (tg_id, tg_u["id"], user_id))
+        # Деактивируем/удаляем дубликат web_u
+        execute_query("DELETE FROM users WHERE id = %s", (user_id,))
+    else:
+        execute_query(
+            "UPDATE users SET tg_id = %s WHERE id = %s",
+            (tg_id, user_id)
+        )
+        execute_query(
+            "UPDATE vpn_keys SET tg_id = %s WHERE user_id = %s",
+            (tg_id, user_id)
+        )
+
+    # В 3x-ui переименовываем tiin_web_{user_id} в приоритетный tiin_{tg_id}
+    try:
+        import sqlite3, json
+        conn = sqlite3.connect("/etc/x-ui/x-ui.db")
+        cur = conn.cursor()
+        cur.execute("SELECT id, settings FROM inbounds")
+        for ib_id, settings_str in cur.fetchall():
+            if not settings_str: continue
+            data = json.loads(settings_str)
+            clients = data.get("clients", [])
+            modified = False
+            for c in clients:
+                if c.get("email") == f"tiin_web_{user_id}":
+                    c["email"] = f"tiin_{tg_id}"
+                    modified = True
+            if modified:
+                cur.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(data), ib_id))
+        # Объединяем client_traffics если было старое имя
+        cur.execute("SELECT 1 FROM client_traffics WHERE email = ?", (f"tiin_{tg_id}",))
+        if cur.fetchone():
+            cur.execute("DELETE FROM client_traffics WHERE email = ?", (f"tiin_web_{user_id}",))
+        else:
+            cur.execute("UPDATE client_traffics SET email = ? WHERE email = ?", (f"tiin_{tg_id}", f"tiin_web_{user_id}"))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+    return True
 
 
 # ─────────────────────────────────────────────
@@ -310,16 +366,51 @@ def register_user_with_referral(
         return False  # another request already created this user
 
     if referrer_tg_id and referrer_tg_id != new_tg_id:
-        if get_user_by_tg_id(referrer_tg_id):
-            reward_referrer(referrer_tg_id)
+        referrer = get_user_by_tg_id(referrer_tg_id)
+        if referrer:
+            execute_query(
+                "UPDATE users SET referred_by = %s, referral_rewarded = 0 WHERE tg_id = %s",
+                (referrer["id"], new_tg_id)
+            )
             reward_newcomer(new_tg_id)
             return True
 
     return False
 
 
+def confirm_referral_reward(newcomer_user_id: int) -> dict | None:
+    """
+    Активирует реферальную награду для пригласившего после выполнения условий
+    (расход 50 МБ трафика или первая оплата).
+    Атомарно переводит referral_rewarded из 0 в 1, предотвращая повторное начисление.
+    """
+    row = execute_query(
+        "SELECT id, tg_id, referred_by, referral_rewarded FROM users WHERE id = %s",
+        (newcomer_user_id,), fetch='one'
+    )
+    if not row or not row.get("referred_by") or row.get("referral_rewarded"):
+        return None
+
+    affected = execute_query(
+        "UPDATE users SET referral_rewarded = 1 WHERE id = %s AND referral_rewarded = 0",
+        (newcomer_user_id,)
+    )
+    if not affected:
+        return None
+
+    referrer_id = row["referred_by"]
+    reward_referrer_by_id(referrer_id)
+    referrer = execute_query("SELECT id, tg_id FROM users WHERE id = %s", (referrer_id,), fetch='one')
+    return {
+        "newcomer_id": newcomer_user_id,
+        "newcomer_tg_id": row.get("tg_id"),
+        "referrer_id": referrer_id,
+        "referrer_tg_id": referrer.get("tg_id") if referrer else None
+    }
+
+
 def _round_subscription_eod(tg_id: int):
-    """Округляет subscription_until до 23:59:59 по Tokyo (+9)."""
+    """Округляет subscription_until до 23:59:59 по МСК (+3)."""
     row = execute_query(
         "SELECT subscription_until FROM users WHERE tg_id = %s",
         (tg_id,), fetch='one'
@@ -329,8 +420,8 @@ def _round_subscription_eod(tg_id: int):
     dt = row['subscription_until']
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    dt_tokyo = dt.astimezone(TZ_TOKYO)
-    eod = dt_tokyo.replace(hour=23, minute=59, second=59, microsecond=0)
+    dt_msk = dt.astimezone(TZ_MSK)
+    eod = dt_msk.replace(hour=23, minute=59, second=59, microsecond=0)
     new_until = eod.astimezone(timezone.utc).replace(tzinfo=None)
     execute_query(
         "UPDATE users SET subscription_until = %s WHERE tg_id = %s",
@@ -391,7 +482,7 @@ def get_referral_count(tg_id: int) -> int:
 # ─────────────────────────────────────────────
 
 def _round_subscription_eod_by_id(user_id: int):
-    """Округляет subscription_until до 23:59:59 по Tokyo (+9) — по user.id."""
+    """Округляет subscription_until до 23:59:59 по МСК (+3) — по user.id."""
     row = execute_query(
         "SELECT subscription_until FROM users WHERE id = %s",
         (user_id,), fetch='one'
@@ -401,8 +492,8 @@ def _round_subscription_eod_by_id(user_id: int):
     dt = row['subscription_until']
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    dt_tokyo = dt.astimezone(TZ_TOKYO)
-    eod = dt_tokyo.replace(hour=23, minute=59, second=59, microsecond=0)
+    dt_msk = dt.astimezone(TZ_MSK)
+    eod = dt_msk.replace(hour=23, minute=59, second=59, microsecond=0)
     new_until = eod.astimezone(timezone.utc).replace(tzinfo=None)
     execute_query(
         "UPDATE users SET subscription_until = %s WHERE id = %s",
@@ -566,14 +657,14 @@ def update_payment_status(payment_id: str, status: str):
 def claim_payment_for_processing(payment_id: str) -> bool:
     """Atomically claim a pending payment for processing.
 
-    Uses UPDATE ... WHERE status='pending' so only one concurrent call wins.
+    Uses UPDATE ... WHERE status IN ('pending', 'succeeded') so only one concurrent call wins.
     Returns True if this call claimed it, False if already claimed/processed.
     """
     db = get_db()
     cursor = db.cursor()
     try:
         cursor.execute(
-            "UPDATE payments SET status = 'paid' WHERE payment_id = %s AND status = 'pending'",
+            "UPDATE payments SET status = 'paid' WHERE payment_id = %s AND status IN ('pending', 'succeeded')",
             (payment_id,),
         )
         db.commit()
@@ -783,19 +874,23 @@ def sync_expiry(tg_id: int, expires_at_utc: datetime):
         from bot_xui.utils import XUIClient
         from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
         xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        existing = None
+        if tg_id and tg_id != 0:
+            existing = xui.get_client_by_tg_id(tg_id)
         vk = execute_query(
             "SELECT client_name, client_id FROM vpn_keys WHERE tg_id = %s AND vpn_type = 'vless' LIMIT 1",
             (tg_id,), fetch='one'
         )
-        email = vk['client_name'] if vk and vk.get('client_name') else f"tiin_{tg_id}"
-        existing = xui.get_client_by_email(email)
+        email = vk['client_name'] if vk and vk.get('client_name') else (existing['client'].get('email') if existing else f"tiin_{tg_id}")
+        if not existing and email:
+            existing = xui.get_client_by_email(email)
         exp_ms = int(expires_at_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
-        if existing:
+        if existing and existing.get('inbound_id') != 17:
             xui.update_client_expiry(existing['inbound_id'], existing['client'], exp_ms)
 
         # Re-enable in RU 3x-ui
         from bot_xui.multi_node import sync_client_to_ru_node
-        uuid_val = vk.get('client_id') if vk else None
+        uuid_val = vk.get('client_id') if vk else (existing['client'].get('id') if existing else None)
         sync_client_to_ru_node(email=email, expiry_ms=exp_ms, enable=True, tg_id=tg_id, uuid_str=uuid_val)
 
         # Re-enable in AWG if exists
@@ -813,6 +908,33 @@ def sync_expiry(tg_id: int, expires_at_utc: datetime):
             logger.info(f"🟢 Re-enabled AWG for tg_id={tg_id}")
     except Exception as e:
         logger.debug(f"sync_expiry: node sync skipped or failed: {e}")
+
+
+def get_user_paid_payments_count(tg_id: int) -> int:
+    """Возвращает количество успешных оплат пользователя."""
+    row = execute_query(
+        "SELECT COUNT(*) as cnt FROM payments WHERE tg_id = %s AND status = 'paid'",
+        (tg_id,), fetch='one'
+    )
+    return row['cnt'] if row else 0
+
+
+def grant_grace_period(tg_id: int, hours: int = 12) -> datetime | None:
+    """
+    Предоставляет аварийный доступ (Grace Period) на указанное количество часов.
+    Продлевает от текущего времени (или текущего окончания, если оно в будущем).
+    """
+    try:
+        current_sub = get_subscription_until(tg_id)
+        now_dt = datetime.now()
+        base_dt = current_sub if current_sub and current_sub > now_dt else now_dt
+        new_expiry = base_dt + timedelta(hours=hours)
+        sync_expiry(tg_id, new_expiry)
+        logger.info(f"🛡️ Grace period granted to tg_id={tg_id} for {hours}h until {new_expiry}")
+        return new_expiry
+    except Exception as e:
+        logger.error(f"Failed to grant grace period to tg_id={tg_id}: {e}")
+        return None
 
 
 def sync_expiry_by_user_id(user_id: int, expires_at_utc: datetime):
@@ -877,12 +999,12 @@ def update_vless_link(tg_id: int, vless_link: str):
 
 
 def get_users_expiring_in_days(days: int) -> list[dict]:
-    """Возвращает пользователей, у которых подписка истекает ровно через `days` дней."""
+    """Возвращает пользователей, у которых подписка истекает ровно через `days` дней (по МСК)."""
     return execute_query(
         """
         SELECT tg_id, email, subscription_until, autopay_enabled, payment_method_id, autopay_tariff, bot_blocked
         FROM users
-        WHERE DATE(subscription_until) = DATE(NOW() + INTERVAL %s DAY)
+        WHERE DATE(DATE_ADD(subscription_until, INTERVAL 3 HOUR)) = DATE(DATE_ADD(NOW() + INTERVAL %s DAY, INTERVAL 3 HOUR))
           AND bot_blocked = 0
         """,
         (days,), fetch='all'
@@ -1021,21 +1143,58 @@ def get_users_with_unused_activated_promos(min_days: int = 2) -> list[dict]:
 #  Autopay
 # ─────────────────────────────────────────────
 
-def save_user_payment_method(tg_id: int, payment_method_id: str, tariff: str, vpn_type: str = "vless"):
-    """Save payment method and enable autopay for user."""
-    execute_query(
-        "UPDATE users SET payment_method_id = %s, autopay_enabled = 1, "
-        "autopay_tariff = %s, autopay_vpn_type = %s WHERE tg_id = %s",
-        (payment_method_id, tariff, vpn_type, tg_id),
+def save_user_payment_method(tg_id: int, payment_method_id: str, tariff: str, vpn_type: str = "vless") -> dict:
+    """
+    Save payment method for user.
+    If the user previously manually disabled autopay (autopay_disabled_at is not NULL),
+    keep autopay_enabled = 0 and do not re-enable it automatically.
+    Returns a dict: {'autopay_enabled': bool, 'disabled_at': datetime | None}
+    """
+    user = execute_query(
+        "SELECT autopay_disabled_at, autopay_enabled FROM users WHERE tg_id = %s",
+        (tg_id,), fetch='one'
     )
+    if user and user.get('autopay_disabled_at'):
+        execute_query(
+            "UPDATE users SET payment_method_id = %s, autopay_tariff = %s, autopay_vpn_type = %s WHERE tg_id = %s",
+            (payment_method_id, tariff, vpn_type, tg_id),
+        )
+        return {"autopay_enabled": False, "disabled_at": user.get('autopay_disabled_at')}
+    else:
+        execute_query(
+            "UPDATE users SET payment_method_id = %s, autopay_enabled = 1, autopay_disabled_at = NULL, "
+            "autopay_tariff = %s, autopay_vpn_type = %s WHERE tg_id = %s",
+            (payment_method_id, tariff, vpn_type, tg_id),
+        )
+        return {"autopay_enabled": True, "disabled_at": None}
 
 
-def save_user_payment_method_by_id(user_id: int, payment_method_id: str, tariff: str, vpn_type: str = "vless"):
+def save_user_payment_method_by_id(user_id: int, payment_method_id: str, tariff: str, vpn_type: str = "vless") -> dict:
     """Save payment method by user_id (for web users)."""
+    user = execute_query(
+        "SELECT autopay_disabled_at, autopay_enabled FROM users WHERE id = %s",
+        (user_id,), fetch='one'
+    )
+    if user and user.get('autopay_disabled_at'):
+        execute_query(
+            "UPDATE users SET payment_method_id = %s, autopay_tariff = %s, autopay_vpn_type = %s WHERE id = %s",
+            (payment_method_id, tariff, vpn_type, user_id),
+        )
+        return {"autopay_enabled": False, "disabled_at": user.get('autopay_disabled_at')}
+    else:
+        execute_query(
+            "UPDATE users SET payment_method_id = %s, autopay_enabled = 1, autopay_disabled_at = NULL, "
+            "autopay_tariff = %s, autopay_vpn_type = %s WHERE id = %s",
+            (payment_method_id, tariff, vpn_type, user_id),
+        )
+        return {"autopay_enabled": True, "disabled_at": None}
+
+
+def enable_autopay(tg_id: int):
+    """Enable autopay for user and clear disabled timestamp."""
     execute_query(
-        "UPDATE users SET payment_method_id = %s, autopay_enabled = 1, "
-        "autopay_tariff = %s, autopay_vpn_type = %s WHERE id = %s",
-        (payment_method_id, tariff, vpn_type, user_id),
+        "UPDATE users SET autopay_enabled = 1, autopay_disabled_at = NULL WHERE tg_id = %s AND payment_method_id IS NOT NULL",
+        (tg_id,),
     )
 
 
@@ -1048,9 +1207,9 @@ def update_autopay_tariff(tg_id: int, tariff: str):
 
 
 def disable_autopay(tg_id: int):
-    """Disable autopay for user."""
+    """Disable autopay for user and record disabled timestamp."""
     execute_query(
-        "UPDATE users SET autopay_enabled = 0 WHERE tg_id = %s",
+        "UPDATE users SET autopay_enabled = 0, autopay_disabled_at = NOW() WHERE tg_id = %s",
         (tg_id,),
     )
 
@@ -1058,22 +1217,22 @@ def disable_autopay(tg_id: int):
 def remove_payment_method(tg_id: int):
     """Remove saved card and disable autopay."""
     execute_query(
-        "UPDATE users SET payment_method_id = NULL, autopay_enabled = 0 WHERE tg_id = %s",
+        "UPDATE users SET payment_method_id = NULL, autopay_enabled = 0, autopay_disabled_at = NOW() WHERE tg_id = %s",
         (tg_id,),
     )
 
 
 def disable_autopay_by_id(user_id: int):
     execute_query(
-        "UPDATE users SET autopay_enabled = 0 WHERE id = %s",
+        "UPDATE users SET autopay_enabled = 0, autopay_disabled_at = NOW() WHERE id = %s",
         (user_id,),
     )
 
 
 def get_user_target_charge_time(user_id: int, tg_id: int) -> tuple[int, int]:
     """
-    Get (hour, minute) when user usually pays, or default to 14:00.
-    Ensures target hour is within daytime range [08:00 - 22:00] (Night Guard).
+    Get (hour, minute) in MSK when user usually pays, or default to 14:00 MSK.
+    Ensures target hour is within daytime range [08:00 - 22:00] MSK (Night Guard).
     """
     # 1. Try to get time of last paid payment
     res = execute_query(
@@ -1090,9 +1249,11 @@ def get_user_target_charge_time(user_id: int, tg_id: int) -> tuple[int, int]:
 
     if res and res.get('created_at'):
         dt = res['created_at']
-        hour = dt.hour
-        minute = dt.minute
-        # Night Guard: if between 23:00 and 07:59, adjust to 12:00
+        # created_at in MySQL is UTC -> convert to MSK (+3)
+        dt_msk = dt + timedelta(hours=3)
+        hour = dt_msk.hour
+        minute = dt_msk.minute
+        # Night Guard: if between 23:00 and 07:59 MSK, adjust to 12:00 MSK
         if hour >= 23 or hour < 8:
             hour = 12
             minute = 0
@@ -1112,11 +1273,11 @@ def get_autopay_users_for_phase1() -> list[dict]:
         "FROM users u "
         "WHERE u.autopay_enabled = 1 AND u.payment_method_id IS NOT NULL "
         "AND u.subscription_until IS NOT NULL AND u.bot_blocked = 0 "
-        "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL 28 HOUR "
+        "AND u.subscription_until BETWEEN NOW() + INTERVAL 20 HOUR AND NOW() + INTERVAL 28 HOUR "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM message_log ml "
         "  WHERE (ml.tg_id = u.tg_id OR (u.tg_id IS NULL AND ml.tg_id = u.id)) "
-        "  AND ml.scenario IN ('autopay_reminder', 'autopay_phase1_reminder') "
+        "  AND ml.scenario IN ('autopay_reminder', 'autopay_phase1_reminder', 'expiry_1d', 'expiry_0d') "
         "  AND ml.created_at >= NOW() - INTERVAL 24 HOUR"
         ")",
         fetch='all'
@@ -1125,7 +1286,7 @@ def get_autopay_users_for_phase1() -> list[dict]:
 
 def get_autopay_users_for_phase2() -> list[dict]:
     """
-    Users with autopay enabled whose subscription expires within 2 to 4.5 hours (approx 3 hours),
+    Users with autopay enabled whose subscription expires within 1 to 5 hours (approx 3 hours),
     and who haven't received phase 2 warning in the last 12 hours.
     """
     return execute_query(
@@ -1134,30 +1295,36 @@ def get_autopay_users_for_phase2() -> list[dict]:
         "FROM users u "
         "WHERE u.autopay_enabled = 1 AND u.payment_method_id IS NOT NULL "
         "AND u.subscription_until IS NOT NULL AND u.bot_blocked = 0 "
-        "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL 5 HOUR "
+        "AND u.subscription_until BETWEEN NOW() + INTERVAL 1 HOUR AND NOW() + INTERVAL 5 HOUR "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM message_log ml "
         "  WHERE (ml.tg_id = u.tg_id OR (u.tg_id IS NULL AND ml.tg_id = u.id)) "
-        "  AND ml.scenario = 'autopay_phase2_warning' "
+        "  AND ml.scenario IN ('autopay_phase2_warning') "
         "  AND ml.created_at >= NOW() - INTERVAL 12 HOUR"
         ")",
         fetch='all'
     )
+
+
 def get_manual_users_for_phase1() -> list[dict]:
     """
     Users WITHOUT autopay enabled whose subscription expires within 20 to 28 hours (approx 1 day),
     and who haven't received phase 1 manual notification in the last 24 hours.
+    Trial users (active test without any paid payments) are skipped so they aren't bothered at 24h.
     """
     return execute_query(
         "SELECT u.id, u.tg_id, u.email, u.subscription_until "
         "FROM users u "
         "WHERE (u.autopay_enabled = 0 OR u.autopay_enabled IS NULL OR u.payment_method_id IS NULL) "
         "AND u.subscription_until IS NOT NULL AND u.bot_blocked = 0 "
-        "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL 28 HOUR "
+        "AND u.subscription_until BETWEEN NOW() + INTERVAL 20 HOUR AND NOW() + INTERVAL 28 HOUR "
+        "AND NOT ( (u.test_vless_activated = 1 OR u.test_awg_activated = 1) AND NOT EXISTS ("
+        "    SELECT 1 FROM payments p WHERE p.tg_id = u.tg_id AND p.status = 'paid' AND p.is_test = 0"
+        ")) "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM message_log ml "
         "  WHERE (ml.tg_id = u.tg_id OR (u.tg_id IS NULL AND ml.tg_id = u.id)) "
-        "  AND ml.scenario IN ('manual_phase1_reminder', 'autopay_phase1_reminder') "
+        "  AND ml.scenario IN ('manual_phase1_reminder', 'autopay_phase1_reminder', 'manual_phase2_warning', 'expiry_1d', 'expiry_0d') "
         "  AND ml.created_at >= NOW() - INTERVAL 24 HOUR"
         ")",
         fetch='all'
@@ -1166,21 +1333,36 @@ def get_manual_users_for_phase1() -> list[dict]:
 
 def get_manual_users_for_phase2() -> list[dict]:
     """
-    Users WITHOUT autopay enabled whose subscription expires within 2 to 5 hours (approx 3 hours),
+    Users WITHOUT autopay enabled whose subscription expires within 1 to 5 hours (approx 3 hours),
     and who haven't received phase 2 manual warning in the last 12 hours.
     """
     return execute_query(
-        "SELECT u.id, u.tg_id, u.email, u.subscription_until "
+        "SELECT u.id, u.tg_id, u.email, u.subscription_until, u.test_vless_activated, u.test_awg_activated "
         "FROM users u "
         "WHERE (u.autopay_enabled = 0 OR u.autopay_enabled IS NULL OR u.payment_method_id IS NULL) "
         "AND u.subscription_until IS NOT NULL AND u.bot_blocked = 0 "
-        "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL 5 HOUR "
+        "AND u.subscription_until BETWEEN NOW() + INTERVAL 1 HOUR AND NOW() + INTERVAL 5 HOUR "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM message_log ml "
         "  WHERE (ml.tg_id = u.tg_id OR (u.tg_id IS NULL AND ml.tg_id = u.id)) "
         "  AND ml.scenario IN ('manual_phase2_warning', 'autopay_phase2_warning') "
         "  AND ml.created_at >= NOW() - INTERVAL 12 HOUR"
         ")",
+        fetch='all'
+    )
+
+
+def get_manual_users_expiring_within_24h() -> list[dict]:
+    """
+    Users WITHOUT autopay enabled whose subscription expires within the next 24 hours.
+    Used by daily cache collector.
+    """
+    return execute_query(
+        "SELECT u.id, u.tg_id, u.email, u.subscription_until "
+        "FROM users u "
+        "WHERE (u.autopay_enabled = 0 OR u.autopay_enabled IS NULL OR u.payment_method_id IS NULL) "
+        "AND u.subscription_until IS NOT NULL AND u.bot_blocked = 0 "
+        "AND u.subscription_until BETWEEN NOW() AND NOW() + INTERVAL 24 HOUR",
         fetch='all'
     )
 
@@ -1227,10 +1409,21 @@ def get_autopay_users_due(days_before: int = 1) -> list[dict]:
 
 def log_autopay(tg_id: int, user_id: int, tariff: str, amount: float,
                 payment_id: str = None, status: str = "pending", error: str = None):
+    # Normalize status for ENUM('pending','success','failed','disabled','refunded')
+    norm_status = (status or "pending").lower()
+    if norm_status in ("succeeded", "paid", "success"):
+        norm_status = "success"
+    elif norm_status in ("canceled", "cancelled", "failed", "error"):
+        norm_status = "failed"
+    elif norm_status in ("disabled", "refunded", "pending"):
+        pass
+    else:
+        norm_status = "failed"
+
     execute_query(
         "INSERT INTO autopay_log (tg_id, user_id, tariff, amount, payment_id, status, error_message) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (tg_id, user_id, tariff, amount, payment_id, status, error),
+        (tg_id, user_id, tariff, amount, payment_id, norm_status, error),
     )
 
 
@@ -1238,11 +1431,11 @@ def log_message_sent(tg_id: int, source: str, scenario: str = None,
                        message_text: str = None, status: str = 'sent',
                        error_text: str = None):
     """Log a sent Telegram message to message_log table (ignoring test messages and test accounts)."""
-    # Skip test accounts and test scenarios
-    TEST_TG_IDS = {111, 444, 999, 123456, 3, 100}
+    # Skip test/admin accounts and unit-test mock scenarios
+    TEST_TG_IDS = {111, 444, 999, 123456, 3, 100, 364224373, 6648354839, 5254383247}
     if tg_id in TEST_TG_IDS:
         return
-    if scenario and ('test' in scenario.lower() or 'demo' in scenario.lower()):
+    if scenario and (scenario.startswith('unit_test') or scenario.startswith('mock_')):
         return
 
     if message_text and len(message_text) > 500:

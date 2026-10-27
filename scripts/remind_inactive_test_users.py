@@ -72,7 +72,7 @@ async def main():
         logger.info("Нет пользователей с активным тестом")
         return
 
-    now = datetime.now()
+    now = datetime.utcnow()
     sent = 0
 
     for u in users:
@@ -90,7 +90,7 @@ async def main():
             logger.info(f"{name} ({tg_id}) — напоминание уже отправлялось недавно ({last}), пропускаем")
             continue
 
-        until_str = until.strftime("%d.%m.%Y %H:%M") if until else "—"
+        until_str = (until + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M МСК") if until else "—"
         text = REMINDER_TEXT.format(web_token=web_token, until=until_str)
 
         buttons = [

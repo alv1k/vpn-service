@@ -520,6 +520,22 @@ margin-top:.8rem;transition:all .15s}}
     <div class="sub">Личный кабинет</div>
 </div>"""
 
+    # Быстрый переход в "Подключить в 1 клик"
+    if sub_url and web_token:
+        html += f"""
+<div class="card" style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(79, 70, 229, 0.08) 100%); border-color: rgba(99, 102, 241, 0.4); text-align: center;">
+    <div style="font-size: .85rem; font-weight: 600; color: #a5b4fc; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
+        🚀 Экспресс-подключение
+    </div>
+    <div style="font-size: .85rem; color: #cbd5e1; margin-bottom: 12px; line-height: 1.4;">
+        Хотите настроить VPN прямо сейчас без ручных шагов?
+    </div>
+    <a href="/go-connect/{web_token}" id="btnGoToOneClick" class="connect-btn primary"
+       style="text-decoration: none; display: block; text-align: center; font-weight: 600; background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); box-shadow: 0 4px 14px rgba(99,102,241,0.35);">
+        ⚡ Подключить в 1 клик
+    </a>
+</div>"""
+
     # Wizard или кнопка активации теста
     if sub_url or test_used:
         html += _render_wizard(sub_url, happ_routing_link, awg_link, awg_download_link)
@@ -637,20 +653,25 @@ const AWG_DOWNLOAD_LINK = {json_mod.dumps(awg_download_link)};
 const APPS = {{
     android: [
         {{ name: 'Happ', desc: '⚡ Простой и быстрый (Рекомендуется)', icon: '⚡', store: 'https://play.google.com/store/apps/details?id=com.happproxy&hl=ru', scheme: 'happ://add/' }},
+        {{ name: 'INCY', desc: '🔮 Умный и быстрый (Новинка)', icon: '🔮', store: 'https://play.google.com/store/apps/details?id=cc.incy.app', scheme: 'incy://import/' }},
         {{ name: 'Hiddify', desc: '🔷 Популярный, много функций', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
         {{ name: 'v2rayNG', desc: '🔶 Проверенный временем', icon: '🔶', store: 'https://play.google.com/store/apps/details?id=com.v2ray.ang', scheme: 'v2rayng://import/' }},
         {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://play.google.com/store/apps/details?id=io.nekohasekai.sagernet', scheme: 'karing://import/' }},
     ],
     ios: [
-        {{ name: 'Hiddify', desc: '🔷 Бесплатный, много функций', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
-        {{ name: 'Shadowrocket', desc: '🚀 Популярный, платный (249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},
-        {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://apps.apple.com/app/karing/id6472431552', scheme: 'karing://import/' }},
+        {{ name: 'INCY', desc: '🔮 Бесплатно в App Store (Рекомендуется)', icon: '🔮', store: 'https://apps.apple.com/app/incy/id6737525381', scheme: 'incy://import/' }},
+        {{ name: 'AmneziaVPN', desc: '🛡 Бесплатно в App Store (Доступен в РФ)', icon: '🛡', store: 'https://apps.apple.com/app/amneziavpn/id1600523882', useAwgLink: true }},
+        {{ name: 'Shadowrocket', desc: '🚀 Лучший для iOS (В App Store, 249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},
+        {{ name: 'Karing', desc: '🔵 Бесплатно (Универсальный)', icon: '🔵', store: 'https://apps.apple.com/app/karing/id6472431552', scheme: 'karing://import/' }},
+        {{ name: 'Hiddify', desc: '🔷 Бесплатный (нужен не-RU Apple ID)', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
     ],
     windows: [
         {{ name: 'Happ', desc: '⚡ Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
+        {{ name: 'INCY', desc: '🔮 Удобный и стильный', icon: '🔮', store: 'https://github.com/INCY-DEV/incy-platforms/releases', scheme: 'incy://import/' }},
         {{ name: 'Hiddify', desc: '🔷 Для Windows и macOS', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
     ],
     macos: [
+        {{ name: 'INCY', desc: '🔮 Бесплатно в App Store', icon: '🔮', store: 'https://apps.apple.com/app/incy/id6737525381', scheme: 'incy://import/' }},
         {{ name: 'Happ', desc: '⚡ Скачать с сайта', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
         {{ name: 'Hiddify', desc: '🔷 Бесплатно в App Store', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
         {{ name: 'Shadowrocket', desc: '🚀 Популярный, App Store (249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},
@@ -663,16 +684,23 @@ const APPS = {{
 }};
 
 if (AWG_LINK) {{
-    var amneziaApp = {{
+    var amneziaAndroid = {{
+        name: 'AmneziaVPN',
+        desc: '🛡 Обходит DPI-блокировки (Работает в РФ)',
+        icon: '🛡',
+        store: 'https://play.google.com/store/apps/details?id=org.amnezia.vpn',
+        useAwgLink: true
+    }};
+    var amneziaDesktop = {{
         name: 'AmneziaVPN',
         desc: '🛡 Обходит DPI-блокировки',
         icon: '🛡',
         store: 'https://amnezia.org/downloads',
         useAwgLink: true
     }};
-    ['android', 'ios', 'windows', 'macos'].forEach(function(d) {{
-        APPS[d].push(amneziaApp);
-    }});
+    APPS.android.push(amneziaAndroid);
+    APPS.windows.push(amneziaDesktop);
+    APPS.macos.push(amneziaDesktop);
 }}
 
 function selectDevice(device) {{
@@ -680,12 +708,19 @@ function selectDevice(device) {{
     var list = document.getElementById('appList');
     list.innerHTML = '';
     var apps = APPS[device] || [];
+    if (!AWG_LINK) {{
+        apps = apps.filter(function(a) {{ return !a.useAwgLink; }});
+    }}
     apps.forEach(function(app, i) {{
         list.innerHTML += '<div class=\"app-card\" onclick=\"selectApp(' + i + ')\">' +
             '<div class=\"app-icon\">' + app.icon + '</div>' +
             '<div class=\"app-info\"><div class=\"app-name\">' + app.name + '</div>' +
             '<div class=\"app-desc\">' + app.desc + '</div></div></div>';
     }});
+    var tip = document.getElementById('iosAppStoreTip');
+    if (tip) {{
+        tip.style.display = (device === 'ios') ? 'block' : 'none';
+    }}
     showStep(2);
 }}
 
@@ -724,6 +759,7 @@ function goBack(step) {{
 const HAPP_ROUTING_LINK = {json_mod.dumps(happ_routing_link)};
 
 const ROUTING_GUIDES = {{
+    'AmneziaVPN': '<p class=\"note\">AmneziaVPN автоматически настроен с умной раздельной маршрутизацией (Split-Tunneling). Российские банки и сайты работают напрямую на полной скорости.</p>',
     'Happ': '<p class=\"note\" style=\"margin-top:.8rem\">Нажмите для автоматической настройки:</p><a href=\"' + HAPP_ROUTING_LINK + '\" class=\"connect-btn primary\">Настроить маршруты в Happ</a>',
     'Hiddify': '<p class=\"note\">Настройки → Конфигурация → Правила маршрутизации → добавьте <b>geosite:category-ru</b> и <b>geoip:ru</b> в прямое подключение.</p>',
     'Shadowrocket': '<p class=\"note\">Настройки → Конфигурация → Правила → добавьте <b>geoip:ru</b> и <b>domain-suffix:ru</b> → Direct.</p>',
@@ -740,7 +776,28 @@ function showStep(n) {{
     }}
 }}
 
-showStep(1);
+function detectDevice() {{
+    var ua = navigator.userAgent || '';
+    if (/android/i.test(ua)) return 'android';
+    if (/iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'ios';
+    if (/Windows/i.test(ua)) return 'windows';
+    if (/Macintosh|Mac OS X/i.test(ua)) return 'macos';
+    return null;
+}}
+
+var autoDev = detectDevice();
+if (autoDev) {{
+    var devEl = document.getElementById('dev-' + autoDev);
+    if (devEl) {{
+        devEl.style.borderColor = '#a78bfa';
+        devEl.style.background = '#2e1065';
+        var lbl = devEl.querySelector('.label');
+        if (lbl) lbl.innerHTML += ' <span style="font-size:0.7rem;color:#c084fc;">(Ваше)</span>';
+    }}
+    selectDevice(autoDev);
+}} else {{
+    showStep(1);
+}}
 
 // ── Click tracking ──
 (function() {{
@@ -986,19 +1043,19 @@ def _render_wizard(sub_url, happ_routing_link="", awg_link="", awg_download_link
     <div class="step-indicator">Шаг 1 из 4</div>
     <h2>Ваше устройство</h2>
     <div class="device-grid">
-        <div class="device-btn" onclick="selectDevice('android')">
+        <div class="device-btn" id="dev-android" onclick="selectDevice('android')">
             <div class="icon">🤖</div><div class="label">Android</div>
         </div>
-        <div class="device-btn" onclick="selectDevice('ios')">
+        <div class="device-btn" id="dev-ios" onclick="selectDevice('ios')">
             <div class="icon">🍏</div><div class="label">iPhone / iPad</div>
         </div>
-        <div class="device-btn" onclick="selectDevice('windows')">
+        <div class="device-btn" id="dev-windows" onclick="selectDevice('windows')">
             <div class="icon">💻</div><div class="label">Windows</div>
         </div>
-        <div class="device-btn" onclick="selectDevice('macos')">
+        <div class="device-btn" id="dev-macos" onclick="selectDevice('macos')">
             <div class="icon">🖥</div><div class="label">macOS</div>
         </div>
-        <div class="device-btn" onclick="selectDevice('tv')">
+        <div class="device-btn" id="dev-tv" onclick="selectDevice('tv')">
             <div class="icon">📺</div><div class="label">Android TV</div>
         </div>
     </div>
@@ -1011,7 +1068,10 @@ def _render_wizard(sub_url, happ_routing_link="", awg_link="", awg_download_link
     <div class="step-indicator">Шаг 2 из 4</div>
     <h2>Выберите приложение</h2>
     <div id="appList"></div>
-    <div class="back-link"><a href="javascript:goBack(1)">&larr; Назад</a></div>
+    <div id="iosAppStoreTip" style="display:none; margin-top:.8rem; background:#1e1b2e; border:1px solid #7c3aed; border-radius:8px; padding:.75rem; font-size:.8rem; color:#d8b4fe; line-height:1.4;">
+        💡 <b>Подсказка для App Store (РФ):</b> Если Hiddify недоступен в вашем регионе — выберите <b>AmneziaVPN</b> (доступен в РФ) или <b>Shadowrocket</b>.
+    </div>
+    <div class="back-link"><a href="javascript:goBack(1)">&larr; Выбрать другое устройство</a></div>
 </div>
 </div>
 
@@ -1038,6 +1098,7 @@ def _render_wizard(sub_url, happ_routing_link="", awg_link="", awg_download_link
     <div id="awgExtras" style="display:none">
         <p class="note" style="margin-top:1.2rem">Или скачайте файл конфигурации и импортируйте вручную:</p>
         <a id="awgDownloadBtn" href="#" class="connect-btn secondary">&#128229; Скачать .conf файл</a>
+        <a href="https://t.me/tiin_service_bot?start=awg" class="connect-btn secondary" style="background:#1e1b2e; border-color:#7c3aed; color:#d8b4fe;">📱 Получить .conf файл в Telegram-боте</a>
         <p class="note" style="margin-top:.6rem">Маршрутизация уже настроена в конфиге — российские сайты пойдут напрямую.</p>
     </div>
 

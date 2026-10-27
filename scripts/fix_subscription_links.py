@@ -23,7 +23,7 @@ def get_correct_sub_url(client_email: str) -> str | None:
     sub_id = client.get('subId')
     if not sub_id:
         return None
-    return f"{XUI_SUB_PATH}/sub/{sub_id}"
+    return f"{XUI_SUB_PATH}/updates_ui/{sub_id}"
 
 
 def check_url(url: str) -> bool:

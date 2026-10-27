@@ -25,6 +25,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("winback")
 
 MB = 1024 * 1024
+KB = 1024
+MIN_ACTIVE_TRAFFIC_BYTES = 50 * KB  # Noise threshold for ping/TLS handshake
 NOW = datetime.utcnow()
 COOLDOWN_DAYS = 7     # Минимум 7 дней тишины между любыми сообщениями
 MAX_MESSAGES = 3      # Жесткий лимит сообщений на пользователя
@@ -205,7 +207,26 @@ MESSAGES = {
         "🔒 <b>Подарочный период завершён.</b>\n\n"
         "Ваш ключ сохранён. Мы закрепили за вашим аккаунтом единовременную скидку <b>20%</b> на первое продление любого тарифа.\n\n"
         "Больше не будем беспокоить вас уведомлениями. Если решите вернуться — мы всегда на связи по команде /start!"
-    )
+    ),
+    # ── Сценарии при волнах блокировок ТСПУ ──
+    'tspu_pending_gift': (
+        "⚡ <b>У вашего оператора перебои со связью?</b>\n\n"
+        "Напоминаем, что у вас в аккаунте уже готов <b>подарок — 3 дня бесплатного доступа</b> к TIIN VPN!\n\n"
+        "🛡️ Наши спец-протоколы <b>xHTTP Armor</b> и <b>Reality Vision</b> работают стабильно даже при жестких фильтрах ТСПУ.\n\n"
+        "Нажмите кнопку ниже, чтобы активировать доступ в 1 клик 👇"
+    ),
+    'tspu_used_gift': (
+        "🛡️ <b>ТСПУ усилил блокировки: будьте на связи!</b>\n\n"
+        "Если бесплатные или сторонние VPN перестали открывать нужные сервисы — возвращайтесь в TIIN VPN.\n\n"
+        "🎁 Специально на время сбоев у операторов дарим вам скидку <b>20% на любой тариф</b>.\n\n"
+        "Нажмите кнопку ниже, чтобы выбрать удобный тариф со скидкой 👇"
+    ),
+    'tspu_fresh_gift': (
+        "⚡ <b>Снова не открываются привычные сервисы?</b>\n\n"
+        "ТСПУ проводит очередную волну блокировок мобильных операторов.\n\n"
+        "🎁 Мы дарим вам <b>3 дня бесплатного доступа</b>, чтобы вы проверили наши протоколы нового поколения (<b>xHTTP Armor</b> и <b>Hysteria 2</b>).\n\n"
+        "Нажмите кнопку ниже, чтобы активировать подарок в 1 клик 👇"
+    ),
 }
 
 def get_buttons_for_scenario(scenario: str, tg_id: int = None):
@@ -227,7 +248,7 @@ def get_buttons_for_scenario(scenario: str, tg_id: int = None):
             [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
             [{"text": "💬 Поддержка", "url": "https://t.me/tiinsupport"}]
         ]
-    elif scenario == 'loyalty_gift_10d':
+    elif scenario in ('loyalty_gift_10d', 'tspu_pending_gift', 'tspu_fresh_gift'):
         return [[{"text": "🎁 Активировать 3 дня", "callback_data": "wb_activate_gift"}]]
     elif scenario == 'loyalty_survey':
         return [
@@ -238,7 +259,7 @@ def get_buttons_for_scenario(scenario: str, tg_id: int = None):
             ],
             [{"text": "💬 Поддержка", "url": "https://t.me/tiinsupport"}]
         ]
-    elif scenario == 'loyalty_final_farewell':
+    elif scenario in ('loyalty_final_farewell', 'tspu_used_gift'):
         return [[{"text": "💎 Тарифы со скидкой 20%", "callback_data": "tariffs"}]]
     return []
 
@@ -292,7 +313,7 @@ def classify_funnel(users, keys_by_tg, payments_by_tg, traffic):
                 latest_test_end = max(test_end_dates)
                 days_since_test = (NOW - latest_test_end).days
                 if days_since_test >= 2:
-                    if total_bytes == 0:
+                    if total_bytes <= MIN_ACTIVE_TRAFFIC_BYTES:
                         candidates.append({**info, 'scenario': 'test_0mb_2d', 'priority': 2})
                     else:
                         candidates.append({**info, 'scenario': 'test_ended_2d', 'priority': 2})
@@ -510,11 +531,169 @@ async def send_standard_winback(candidates, send_mode: bool = False):
         print(f"\nИтоги отправки: Успешно: {sent}, Пропущено (cooldown/лимит): {skipped}, Ошибок: {failed}")
 
 # ─────────────────────────────────────────────
+#  TSPU Wave Winback Funnel (Блокировки ТСПУ)
+# ─────────────────────────────────────────────
+
+def get_tspu_wave_targets(cooldown_days: int = 3) -> list:
+    """
+    Выбирает пользователей с истекшей подпиской (1-30 дней назад)
+    и сегментирует их в зависимости от статуса 3-дневного подарка.
+    """
+    rows = execute_query(
+        """SELECT u.tg_id, u.first_name, u.last_name, u.subscription_until, u.web_token
+           FROM users u
+           WHERE u.bot_blocked = 0
+             AND u.tg_id IS NOT NULL AND u.tg_id > 0 AND u.tg_id != %s
+             AND u.subscription_until <= NOW()
+             AND u.subscription_until >= NOW() - INTERVAL 30 DAY
+           ORDER BY u.subscription_until DESC""",
+        (ADMIN_TG_ID,),
+        fetch='all'
+    ) or []
+
+    if not rows:
+        return []
+
+    # Сбор логов winback по каждому пользователю
+    user_ids = [r['tg_id'] for r in rows]
+    format_strings = ','.join(['%s'] * len(user_ids))
+    wb_logs = execute_query(
+        f"""SELECT tg_id, scenario, sent_at
+            FROM winback_log
+            WHERE tg_id IN ({format_strings})
+            ORDER BY sent_at DESC""",
+        tuple(user_ids),
+        fetch='all'
+    ) or []
+
+    wb_by_user = {}
+    for log_item in wb_logs:
+        wb_by_user.setdefault(log_item['tg_id'], []).append(log_item)
+
+    now_dt = datetime.utcnow()
+    targets = []
+
+    for u in rows:
+        tg_id = u['tg_id']
+        sub_until = u.get('subscription_until')
+        days_expired = (now_dt - sub_until).days if sub_until else 0
+
+        user_wbs = wb_by_user.get(tg_id, [])
+        gift_activated = any(x['scenario'] in ('loyalty_gift_activated', 'gift_activated') for x in user_wbs)
+        gift_sent = any(x['scenario'] in ('loyalty_gift_10d', 'loyalty_gift', 'tspu_pending_gift', 'tspu_fresh_gift') for x in user_wbs)
+
+        # Проверка Cooldown (по умолчанию 3 дня во время волн блокировок)
+        if user_wbs:
+            last_sent_at = max(x['sent_at'] for x in user_wbs if x.get('sent_at'))
+            if (now_dt - last_sent_at).total_seconds() < (cooldown_days * 86400):
+                continue
+        else:
+            last_sent_at = None
+
+        if gift_activated:
+            scenario = 'tspu_used_gift'
+            segment_label = 'Использовали подарок (-20% промо)'
+            priority = 2
+        elif gift_sent:
+            scenario = 'tspu_pending_gift'
+            segment_label = 'Ожидает активации (напоминание)'
+            priority = 1
+        else:
+            scenario = 'tspu_fresh_gift'
+            segment_label = 'Свежий (дарим 3 дня)'
+            priority = 1
+
+        targets.append({
+            'tg_id': tg_id,
+            'name': u.get('first_name') or 'Пользователь',
+            'last_name': u.get('last_name') or '',
+            'subscription_until': sub_until,
+            'days_expired': days_expired,
+            'scenario': scenario,
+            'segment_label': segment_label,
+            'priority': priority,
+            'last_sent_at': last_sent_at
+        })
+
+    targets.sort(key=lambda x: (x['priority'], x['days_expired']))
+    return targets
+
+
+async def process_tspu_campaign(send_mode: bool = False, allowed_scenarios: list = None) -> dict:
+    """
+    Запуск рассылки при волне блокировок ТСПУ с учетом когорт подарков.
+    """
+    targets = get_tspu_wave_targets(cooldown_days=3)
+    if allowed_scenarios:
+        targets = [t for t in targets if t['scenario'] in allowed_scenarios]
+
+    log.info(f"🚨 [TSPU WAVE] Отобрано кандидатов на отправку: {len(targets)}")
+
+    counts = {'total': len(targets), 'sent': 0, 'skipped': 0, 'failed': 0, 'by_scenario': {}}
+    for t in targets:
+        sc = t['scenario']
+        counts['by_scenario'][sc] = counts['by_scenario'].get(sc, 0) + 1
+
+    if not send_mode:
+        for t in targets:
+            log.info(f"  [DRY-RUN TSPU] tg:{t['tg_id']} ({t['name']}) -> {t['scenario']} [{t['segment_label']}]")
+        return counts
+
+    for t in targets:
+        tg_id = t['tg_id']
+        scenario = t['scenario']
+        try:
+            if scenario == 'tspu_used_gift':
+                set_winback_discount(tg_id, True)
+
+            buttons = get_buttons_for_scenario(scenario, tg_id)
+            ok = await send_link_safely(
+                tg_id=tg_id,
+                text=MESSAGES[scenario],
+                parse_mode="HTML",
+                buttons=buttons,
+                source="tspu_wave",
+                scenario=scenario
+            )
+            if ok:
+                log_send(tg_id, scenario)
+                counts['sent'] += 1
+                log.info(f"✅ [TSPU] Отправлено tg:{tg_id} [{scenario}]")
+            else:
+                counts['failed'] += 1
+            await asyncio.sleep(0.15)
+        except Exception as e:
+            counts['failed'] += 1
+            log.error(f"❌ [TSPU] Ошибка отправки tg:{tg_id}: {e}")
+
+    log.info(f"🚨 [TSPU WAVE] Итоги рассылки: {counts}")
+    return counts
+
+
+# ─────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────
 
 def main():
     send_mode = '--send' in sys.argv
+    tspu_mode = '--tspu-wave' in sys.argv
+
+    if tspu_mode:
+        log.info("Запуск модуля TSPU Wave Winback...")
+        targets = get_tspu_wave_targets()
+        print(f"\n{'='*65}")
+        print(f"  🚨 TSPU WAVE WINBACK КАНДИДАТЫ ({len(targets)} чел.)")
+        print(f"{'='*65}")
+        for t in targets:
+            print(f"  tg_id={str(t['tg_id']):<12} name={str(t['name']):<15} истек={t['days_expired']}д назад  сценарий={t['scenario']:<18} [{t['segment_label']}]")
+        print(f"{'='*65}\n")
+
+        res = asyncio.run(process_tspu_campaign(send_mode=send_mode))
+        if send_mode:
+            print(f"Отправлено: {res.get('sent', 0)}, Ошибок: {res.get('failed', 0)}")
+        else:
+            print("Режим Dry-Run. Для боевой отправки добавьте флаг --send.")
+        return
 
     log.info("Сбор данных пользователей и сетевого трафика...")
     xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
@@ -540,5 +719,7 @@ def main():
     # 3. Выполнение стандартной воронки
     asyncio.run(send_standard_winback(candidates, send_mode=send_mode))
 
+
 if __name__ == "__main__":
     main()
+

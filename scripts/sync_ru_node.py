@@ -44,86 +44,118 @@ def sync_all_clients(dry_run: bool = False):
     logger.info(f"Main inbounds: {len(main_inbounds)}, RU inbounds: {len(ru_inbounds)}")
 
     # Collect all clients from Main 3x-ui (prioritize settings.clients where 'id' is UUID)
+    import json as json_lib
     main_clients = {}
     for inb in main_inbounds:
         if inb.get("protocol") == "amneziawg" or inb.get("id") == 17:
             continue
         raw_sett = inb.get("settings", "{}")
-        import json as json_lib
         sett = json_lib.loads(raw_sett) if isinstance(raw_sett, str) else raw_sett
         for cl in sett.get("clients", []):
             email = cl.get("email")
             if email:
-                main_clients[email] = cl
-        # Fallback to clientStats if not in settings
-        for cl in inb.get("clientStats", []):
-            email = cl.get("email")
-            if email and email not in main_clients:
-                main_clients[email] = cl
+                if email not in main_clients:
+                    main_clients[email] = dict(cl)
+                else:
+                    if not main_clients[email].get("auth") and cl.get("auth"):
+                        main_clients[email]["auth"] = cl.get("auth")
 
     logger.info(f"Found {len(main_clients)} unique clients in Main 3x-ui")
 
-    # Collect all clients from RU 3x-ui
-    ru_clients = {}
+    # Sync each RU inbound directly for 100% parity
+    updated_total = 0
+    created_total = 0
+    synced_total = 0
+
     for inb in ru_inbounds:
-        for cl in inb.get("clientStats", []) or inb.get("settings", {}).get("clients", []):
-            email = cl.get("email")
-            if email and email not in ru_clients:
-                ru_clients[email] = cl
+        ib_id = inb["id"]
+        protocol = inb.get("protocol", "")
+        raw_sett = inb.get("settings", "{}")
+        sett = json_lib.loads(raw_sett) if isinstance(raw_sett, str) else raw_sett
+        clients = sett.get("clients", [])
+        clients_by_email = {c.get("email"): c for c in clients if c.get("email")}
 
-    logger.info(f"Found {len(ru_clients)} unique clients in RU 3x-ui")
+        inb_updated = False
 
-    created = 0
-    updated = 0
-    synced = 0
+        # 1. Update existing clients on this inbound
+        for c in clients:
+            em = c.get("email")
+            if em in main_clients:
+                mc = main_clients[em]
+                m_exp = mc.get("expiryTime", 0)
+                m_enable = mc.get("enable", True)
+                m_uuid = mc.get("id") or mc.get("uuid")
+                m_auth = mc.get("auth") or (m_uuid.replace("-", "") if m_uuid else None)
+                m_sub_id = mc.get("subId")
 
-    for email, m_cl in main_clients.items():
-        m_exp = m_cl.get("expiryTime", 0)
-        m_enable = m_cl.get("enable", True)
-        m_uuid = m_cl.get("id") or m_cl.get("uuid")
-        m_sub_id = m_cl.get("subId")
-        m_tg_id = m_cl.get("tgId", 0)
-        m_limit_ip = m_cl.get("limitIp", 10)
-
-        ru_cl = ru_clients.get(email)
-
-        if not ru_cl:
-            logger.info(f"➕ [MISSING] Client {email} missing on RU node. Needs creation (expiry={m_exp}, enable={m_enable})")
-            if not dry_run:
-                ok = sync_client_to_ru_node(
-                    email=email,
-                    expiry_ms=m_exp,
-                    enable=m_enable,
-                    uuid_str=m_uuid,
-                    sub_id=m_sub_id,
-                    tg_id=m_tg_id,
-                    limit_ip=m_limit_ip
+                needs_change = (
+                    (m_uuid and c.get("id") != m_uuid) or
+                    (m_auth and (c.get("auth") != m_auth or c.get("password") != m_auth)) or
+                    (c.get("expiryTime") != m_exp) or
+                    (c.get("enable") != m_enable) or
+                    (m_sub_id and c.get("subId") != m_sub_id)
                 )
-                if ok:
-                    created += 1
-        else:
-            ru_exp = ru_cl.get("expiryTime", 0)
-            ru_enable = ru_cl.get("enable", True)
 
-            # Check if sync needed
-            needs_update = (ru_exp != m_exp) or (ru_enable != m_enable)
-            if needs_update:
-                logger.info(f"🔄 [DIFF] Client {email}: Main(exp={m_exp}, en={m_enable}) vs RU(exp={ru_exp}, en={ru_enable})")
+                if needs_change:
+                    logger.info(f"🔄 [DIFF] Inbound {ib_id} Client {em}: syncing UUID/auth/status")
+                    if not dry_run:
+                        if m_uuid: c["id"] = m_uuid
+                        if m_auth:
+                            c["auth"] = m_auth
+                            c["password"] = m_auth
+                        c["expiryTime"] = m_exp
+                        c["enable"] = m_enable
+                        if m_sub_id: c["subId"] = m_sub_id
+                        inb_updated = True
+                    updated_total += 1
+                else:
+                    synced_total += 1
+
+        # 2. Add missing clients from DE
+        for em, mc in main_clients.items():
+            if em not in clients_by_email:
+                m_uuid = mc.get("id") or mc.get("uuid")
+                m_auth = mc.get("auth") or (m_uuid.replace("-", "") if m_uuid else None)
+                logger.info(f"➕ [MISSING] Inbound {ib_id} Client {em} missing. Adding...")
                 if not dry_run:
-                    ok = sync_client_to_ru_node(
-                        email=email,
-                        expiry_ms=m_exp,
-                        enable=m_enable,
-                        tg_id=m_tg_id,
-                        limit_ip=m_limit_ip
-                    )
-                    if ok:
-                        updated += 1
-            else:
-                synced += 1
+                    new_cl = {
+                        "id": m_uuid,
+                        "email": em,
+                        "flow": "xtls-rprx-vision" if protocol == "vless" else "",
+                        "limitIp": mc.get("limitIp", 10),
+                        "totalGB": mc.get("totalGB", 0),
+                        "expiryTime": mc.get("expiryTime", 0),
+                        "enable": mc.get("enable", True),
+                        "tgId": mc.get("tgId", 0),
+                        "subId": mc.get("subId") or "",
+                        "reset": mc.get("reset", 0),
+                        "auth": m_auth,
+                        "password": m_auth,
+                    }
+                    clients.append(new_cl)
+                    inb_updated = True
+                created_total += 1
+
+        if inb_updated and not dry_run:
+            sett["clients"] = clients
+            inb["settings"] = json_lib.dumps(sett)
+            url = f"{ru_xui.host}/panel/api/inbounds/update/{ib_id}"
+            resp = ru_xui._request("POST", url, json=inb)
+            logger.info(f"✅ Inbound {ib_id} applied: {resp.json().get('success')}")
+
+    if (created_total > 0 or updated_total > 0) and not dry_run:
+        ru_xui._request("POST", f"{ru_xui.host}/panel/api/server/restartXrayService")
+        logger.info("🔄 [RU-Node] Relaunched Xray on RU node to apply updated client tables")
+
+    try:
+        from scripts.sync_family_routing import sync_ru_portal_routing
+        if not dry_run:
+            sync_ru_portal_routing()
+    except Exception as e:
+        logger.warning(f"Failed to sync family routing: {e}")
 
     logger.info("=" * 50)
-    logger.info(f"🎉 Sync finished. Results: Synced in harmony: {synced}, Created: {created}, Updated: {updated}")
+    logger.info(f"🎉 Sync finished. Results: Synced in harmony: {synced_total}, Created: {created_total}, Updated: {updated_total}")
 
 
 if __name__ == "__main__":

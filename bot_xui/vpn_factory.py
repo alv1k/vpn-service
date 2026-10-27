@@ -93,15 +93,23 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
 
     existing = xui.get_client_by_email(client_email)
     if existing:
-        logger.info(f"Client for {client_email} already exists, reusing")
-        xui.extend_client_expiry(existing['inbound_id'], existing['client'], expiry_ms - int(time.time() * 1000))
+        logger.info(f"Client for {client_email} already exists, reusing and updating expiry")
+        client_info = existing.get('client', {}) if isinstance(existing.get('client'), dict) else {}
+        raw_expiry = client_info.get('expiryTime', 0)
+        if isinstance(raw_expiry, (int, float)) and raw_expiry > 0:
+            target_expiry = max(int(raw_expiry), expiry_ms)
+        else:
+            target_expiry = expiry_ms
+        xui.set_client_expiry(client_email, target_expiry, enable=True)
+        if target_expiry > 0:
+            expires_at = datetime.fromtimestamp(target_expiry / 1000, tz=timezone.utc)
         sub_url = xui.get_client_subscription_url(tg_id)
         if sub_url:
             sub_id = sub_url.split('/')[-1]
         else:
             raise RuntimeError(f"Клиент {client_email} уже существует, но не удалось получить subId")
-        client_uuid = existing['client'].get('uuid', client_uuid)
-        hysteria_auth = existing['client'].get('auth') or client_uuid
+        client_uuid = client_info.get('uuid', client_uuid)
+        hysteria_auth = client_info.get('auth') or client_uuid
     else:
         result = xui.create_client(
             email=client_email,
@@ -286,8 +294,95 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
 # Handlers — вызываются из button_handler
 # ──────────────────────────────────────────────────────────────────────────────
 
+async def send_awg_config_to_user(target, tg_id: int, query=None) -> bool:
+    """
+    Создаёт/получает конфиг AmneziaWG (Inbound 17) и отправляет .conf файл в Telegram.
+    target может быть update.message или context.bot/chat.
+    """
+    from io import BytesIO
+    from datetime import datetime, timezone, timedelta
+    from bot_xui.tariffs import TARIFFS
+
+    try:
+        # 1. Получаем срок подписки или активируем тест
+        sub_until = get_subscription_until(tg_id)
+        now_utc = datetime.now(timezone.utc)
+        
+        # Если нет активной подписки и тест не активирован — выдаем тестовый период
+        if not sub_until or (sub_until.tzinfo is None and sub_until < datetime.utcnow()) or (sub_until.tzinfo and sub_until < now_utc):
+            if not is_awg_test_activated(tg_id) and not is_vless_test_activated(tg_id):
+                test_hours = TARIFFS.get("test_24h", {}).get("hours", 72)
+                sub_until = now_utc + timedelta(hours=test_hours)
+                set_awg_test_activated(tg_id)
+                set_vless_test_activated(tg_id)
+                from api.db import sync_expiry
+                sync_expiry(tg_id, sub_until)
+
+        expiry_ms = int(sub_until.replace(tzinfo=timezone.utc).timestamp() * 1000) if sub_until and sub_until.tzinfo is None else (int(sub_until.timestamp() * 1000) if sub_until else 0)
+
+        # 2. Получаем или генерируем AWG-конфиг (Inbound 17)
+        client_name = f"awg_{tg_id}"
+        data = await create_awg_config(tg_id, client_name=client_name, expiry_ms=expiry_ms)
+
+        upsert_vpn_key(
+            tg_id=tg_id, payment_id=None,
+            client_id=data["client_id"], client_name=data["client_name"],
+            client_ip=data["client_ip"], client_public_key=data.get("public_key"),
+            vless_link=data["config"], expires_at=sub_until, vpn_type="awg",
+        )
+
+        conf_text = data["config"]
+        config_file = BytesIO(conf_text.encode("utf-8"))
+        config_file.name = f"amneziawg_{tg_id}.conf"
+
+        date_str = sub_until.strftime('%d.%m.%Y') if sub_until else "Активен"
+        caption = (
+            f"🛡 <b>Ваш файл настроек AmneziaVPN (AmneziaWG)</b>\n\n"
+            f"⏱ <b>Действует до:</b> {date_str}\n"
+            f"🌐 IP: <code>{data.get('client_ip', '10.8.1.x')}</code>\n\n"
+            f"📱 <b>Быстрое подключение:</b>\n"
+            f"1. Установите <a href='https://apps.apple.com/app/amneziavpn/id1600523882'>AmneziaVPN (App Store)</a> или <a href='https://play.google.com/store/apps/details?id=org.amnezia.vpn'>Google Play</a>\n"
+            f"2. Сохраните полученный файл <b>{config_file.name}</b>\n"
+            f"3. Откройте приложение ➔ <b>«+ ➔ Добавить файл с настройками»</b>\n"
+            f"4. Нажмите <b>«Подключиться»</b> 🚀\n\n"
+            f"<i>💡 Российские сайты, сервисы и банки работают напрямую на максимальной скорости.</i>"
+        )
+
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
+            [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")],
+        ])
+
+        if hasattr(target, "reply_document"):
+            await target.reply_document(document=config_file, caption=caption, parse_mode="HTML", reply_markup=markup)
+        elif hasattr(target, "send_document"):
+            await target.send_document(chat_id=tg_id, document=config_file, caption=caption, parse_mode="HTML", reply_markup=markup)
+
+        if query:
+            try:
+                await query.answer("✅ Конфиг AmneziaVPN отправлен!")
+            except Exception:
+                pass
+
+        await _log_message(tg_id, "bot_menu", "awg_config_direct", f"sent document: {config_file.name}")
+        return True
+
+    except Exception as e:
+        logger.error(f"send_awg_config_to_user error for tg:{tg_id}: {e}", exc_info=True)
+        err_msg = "❌ Ошибка формирования конфига AmneziaWG. Попробуйте позже или напишите в поддержку."
+        if hasattr(target, "reply_text"):
+            await target.reply_text(err_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]]))
+        elif hasattr(target, "send_message"):
+            await target.send_message(chat_id=tg_id, text=err_msg)
+        return False
+
+
 async def handle_test_awg(query, xui: XUIClient):
     """Создаёт тестовый AWG конфиг и отправляет пользователю."""
+    from io import BytesIO
+    from datetime import datetime, timezone, timedelta
+    from bot_xui.tariffs import TARIFFS
+
     tg_id = query.from_user.id
     if is_awg_test_activated(tg_id):
         from bot_xui.views import show_configs
@@ -354,6 +449,8 @@ async def handle_test_awg(query, xui: XUIClient):
 
 async def handle_get_awg_config(query):
     """Выдаёт AWG конфиг пользователю с активной VLESS подпиской (winback сценарий)."""
+    from io import BytesIO
+    from datetime import datetime, timezone
     tg_id = query.from_user.id
 
     # Проверяем, нет ли уже AWG ключа
@@ -371,7 +468,7 @@ async def handle_get_awg_config(query):
 
     # Проверяем активную подписку
     sub_until = get_subscription_until(tg_id)
-    if not sub_until or sub_until < datetime.utcnow():
+    if not sub_until or (sub_until.tzinfo is None and sub_until < datetime.utcnow()) or (sub_until.tzinfo and sub_until < datetime.now(timezone.utc)):
         await safe_edit_text(query,
             "❌ У вас нет активной подписки.",
             reply_markup=InlineKeyboardMarkup([
@@ -538,7 +635,7 @@ async def handle_test_vless(query, xui: XUIClient):
         if connect_url:
             buttons.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=connect_url)])
         if instr_url:
-            buttons.append([InlineKeyboardButton("📖 Инструкция", url=instr_url)])
+            buttons.append([InlineKeyboardButton("👤 Личный кабинет", url=instr_url)])
         buttons.append([InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")])
 
         await query.message.reply_photo(
@@ -725,7 +822,7 @@ async def activate_test_period(query, xui):
         if connect_url:
             buttons.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=connect_url)])
         if web_token:
-            buttons.append([InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{web_token}")])
+            buttons.append([InlineKeyboardButton("👤 Личный кабинет", url=f"https://344988.snk.wtf/my/{web_token}")])
         buttons.append([InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")])
         buttons.append([InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")])
 
