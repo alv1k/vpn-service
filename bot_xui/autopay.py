@@ -11,6 +11,7 @@ import uuid
 import asyncio
 
 from yookassa import Configuration, Payment
+from bot_xui.yookassa_client import async_payment_create
 
 from config import YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY
 from bot_xui.tariffs import TARIFFS
@@ -295,7 +296,7 @@ async def _process_autopayments_locked(bot):
                         execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
 
             try:
-                payment = Payment.create(
+                payment = await async_payment_create(
                     {
                         "amount": {"value": str(price), "currency": "RUB"},
                         "capture": True,

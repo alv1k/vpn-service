@@ -12,6 +12,7 @@ from telethon import TelegramClient, events
 from telethon.tl.custom.message import Message
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import qa_agent.tl_patch  # Register legacy MTProto constructors before telethon init
 import qa_agent.config as config
 from api.db import get_db
 

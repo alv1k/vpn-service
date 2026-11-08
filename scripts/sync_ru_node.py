@@ -107,6 +107,25 @@ def sync_all_clients(dry_run: bool = False):
                         c["enable"] = m_enable
                         if m_sub_id: c["subId"] = m_sub_id
                         inb_updated = True
+                        try:
+                            ru_xui._request(
+                                "POST",
+                                f"{ru_xui.host}/panel/api/clients/update/{em}",
+                                json={
+                                    "email": em,
+                                    "expiryTime": m_exp,
+                                    "enable": bool(m_enable),
+                                    "totalGB": mc.get("totalGB", 0),
+                                    "limitIp": mc.get("limitIp", 10),
+                                    "reset": mc.get("reset", 0),
+                                    "flow": c.get("flow") or ("xtls-rprx-vision" if protocol == "vless" else ""),
+                                    "auth": m_auth,
+                                    "password": m_auth,
+                                },
+                                headers={"Content-Type": "application/json"}
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to update client traffic table for {em}: {e}")
                     updated_total += 1
                 else:
                     synced_total += 1

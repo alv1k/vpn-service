@@ -12,6 +12,7 @@ load_dotenv("/home/alvik/vpn-service/.env")
 
 from api.db import execute_query
 from bot_xui.messaging import send_link_safely
+from config import PORTAL_BASE_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -23,8 +24,8 @@ REMINDER_TEXT = (
     "— QR-код\n"
     "— инструкцию по настройке\n\n"
     "📎 <b>Открой личный кабинет и подключайся:</b>\n"
-    "https://344988.snk.wtf/my/{web_token}\n\n"
-    "⏱ Тест активен до <b>{until}</b>\n"
+    f"{PORTAL_BASE_URL}/my/{{web_token}}\n\n"
+    "⏱ Тест активен до <b>{{until}}</b>\n"
     "💎 После окончания можно выбрать тариф и продолжить пользоваться."
 )
 
@@ -38,6 +39,7 @@ def get_test_users():
            WHERE (test_vless_activated = 1 OR test_awg_activated = 1)
              AND subscription_until > NOW()
              AND bot_blocked = 0
+             AND (notifications_muted IS NULL OR notifications_muted = 0)
              AND web_token IS NOT NULL
              AND NOT EXISTS (
                SELECT 1 FROM vpn_keys
@@ -94,8 +96,9 @@ async def main():
         text = REMINDER_TEXT.format(web_token=web_token, until=until_str)
 
         buttons = [
-            [{"text": "📖 Открыть кабинет", "url": f"https://344988.snk.wtf/my/{web_token}"}],
+            [{"text": "📖 Открыть кабинет", "url": f"{PORTAL_BASE_URL}/my/{web_token}"}],
             [{"text": "💎 Тарифы", "callback_data": "tariffs"}],
+            [{"text": "🔕 Не напоминать", "callback_data": "wb_mute"}],
         ]
 
         ok = await send_link_safely(

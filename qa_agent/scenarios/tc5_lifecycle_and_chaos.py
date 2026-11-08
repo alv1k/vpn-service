@@ -54,14 +54,19 @@ async def run_tc5_lifecycle_and_chaos(client: AlexClient) -> Tuple[bool, Dict[st
             logger.info("[ITER-5] 🚨 Hot warning delivered.")
 
         # Step 2: Rapid Chaos Concurrency / Debounce Testing
+        sent_last = None
         for _ in range(2):
-            await client.send_command("/start")
+            sent_last = await client.send_command("/start")
             await asyncio.sleep(0.3)
-        await asyncio.sleep(0.5)
 
         # Check that bot didn't crash and responded cleanly
-        latest_chaos = await client.get_latest_message()
-        if latest_chaos and latest_chaos.text:
+        resp = None
+        if sent_last:
+            resp, _ = await client.wait_for_response(min_id=sent_last.id, timeout=10.0)
+        if not resp:
+            resp = await client.get_latest_message()
+
+        if resp and resp.text:
             results["chaos_debounce_ok"] = True
             logger.info("[ITER-5] 🌪️ Chaos concurrency test survived cleanly.")
 

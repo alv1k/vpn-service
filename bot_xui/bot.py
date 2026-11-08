@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 from telegram import Update, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import BadRequest, NetworkError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, PreCheckoutQueryHandler, filters
 
 from config import TELEGRAM_BOT_TOKEN, XUI_HOST, XUI_USERNAME, XUI_PASSWORD, REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS, ADMIN_TG_ID, validate_config
 from bot_xui.test_mode import is_test_mode, toggle_test_mode
@@ -54,10 +54,14 @@ from bot_xui.helpers  import (make_main_keyboard, MAIN_MENU_TEXT, MTPROTO_PROXY_
 from bot_xui.views    import (
     show_main_menu, show_tariffs, show_configs,
     show_single_config, show_renew_tariffs,
+    show_sub_links,
     build_main_menu_text,
     # show_vless_link,
 )
-from bot_xui.payment     import process_payment, show_tariff_info, create_yookassa_refund
+from bot_xui.payment     import (
+    process_payment, show_tariff_info, create_yookassa_refund,
+    send_stars_invoice, process_successful_stars_payment,
+)
 from bot_xui.vpn_factory import handle_test_awg, handle_test_vless, handle_get_awg_config, handle_get_awg_config_v2, grant_referral_vpn, activate_test_period
 from bot_xui.messaging   import send_message_by_tg_id
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -174,7 +178,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🎁 <b>Вы перешли по реферальной ссылке!</b>\n"
                     f"Вам подарено <b>+{REFERRAL_NEWCOMER_DAYS} дней</b> VPN подписки!\n\n"
                     f"💡 <i>Подключите VPN по кнопке ниже — как только вы израсходуете первые 50 МБ трафика, ваш друг тоже получит свои бонусные +{REFERRAL_REWARD_DAYS} дней!</i>\n\n"
-                    f'📲 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
+                    f'📲 <a href="{WEB_BASE_URL}/my/{web_token}">Инструкция по подключению</a>'
                 ),
                 parse_mode="HTML",
                 reply_markup=make_main_keyboard(tg_id)
@@ -257,7 +261,7 @@ async def _refer_text(context, tg_id: int) -> tuple[str, str]:
     subscription_str = subscription.strftime("%d.%m.%Y") if subscription else "не активна"
 
     web_token = get_web_token(tg_id)
-    web_link = f"https://344988.snk.wtf/?ref={web_token}" if web_token else None
+    web_link = f"{WEB_BASE_URL}/?ref={web_token}" if web_token else None
 
     text = (
         f"👥 <b>Пригласите друга</b>\n\n"
@@ -357,8 +361,16 @@ async def post_init(application):
         args=[application.bot],
     )
 
+    from bot_xui.payment_reconciler import reconcile_pending_payments
+    scheduler.add_job(
+        reconcile_pending_payments,
+        trigger="interval",
+        minutes=1,
+        args=[application.bot],
+    )
+
     scheduler.start()
-    logger.info("[NOTIFY] Subscription expiry + autopay + IP cleanup + session cleanup + 15m onboarding + referral check scheduler started")
+    logger.info("[NOTIFY] Subscription expiry + autopay + IP cleanup + session cleanup + 15m onboarding + referral check + payment reconciler scheduler started")
 
 
 async def send_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -455,7 +467,7 @@ async def broadcast_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ok = fail = 0
     for u in users:
-        ref_link = f"https://344988.snk.wtf/?ref={u['web_token']}"
+        ref_link = f"{WEB_BASE_URL}/?ref={u['web_token']}"
         msg = (
             "🚀 <b>VPN теперь доступен через сайт!</b>\n\n"
             "Теперь подключиться можно по email — без Telegram.\n\n"
@@ -549,7 +561,7 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=(
                         f"🎉 Промокод <b>{code.upper()}</b> активирован!\n"
                         f"Вам подарено <b>+{promo_data['value']} дней</b> VPN подписки!\n\n"
-                        f'📲 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
+                        f'📲 <a href="{WEB_BASE_URL}/my/{web_token}">Инструкция по подключению</a>'
                     ),
                     parse_mode="HTML",
                     reply_markup=make_main_keyboard(tg_id)
@@ -619,7 +631,7 @@ async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=(
                         f"🎉 Праздничный промокод <b>{code.upper()}</b> активирован!\n"
                         f"Вам подарено <b>+{promo_data['value']} дней</b> VPN!\n\n"
-                        f'📲 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
+                        f'📲 <a href="{WEB_BASE_URL}/my/{web_token}">Инструкция по подключению</a>'
                     ),
                     parse_mode="HTML",
                     reply_markup=make_main_keyboard(tg_id)
@@ -1039,6 +1051,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Failed to send admin notification for ack_awg_conf_ok: {e}")
         return
 
+    if data == "wb_mute":
+        tg_id = query.from_user.id
+        from api.db import execute_query
+        execute_query("UPDATE users SET notifications_muted = 1 WHERE tg_id = %s", (tg_id,))
+        reply_text = (
+            "🔕 <b>Напоминания отключены</b>\n\n"
+            "Мы больше не будем присылать вам сервисные уведомления.\n"
+            "Если вам снова понадобится VPN — вы всегда можете открыть меню по команде /start ✨"
+        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")]
+        ])
+        await safe_edit_text_logged(query, reply_text, "notifications_muted", reply_markup=markup)
+        return
+
     if data.startswith("wb_rate:"):
         parts = data.split(":")
         rating = parts[1] if len(parts) > 1 else ""
@@ -1159,7 +1186,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from api.db import get_web_token
         token = get_web_token(query.from_user.id)
         if token:
-            url = f"https://344988.snk.wtf/my/{token}"
+            url = f"{WEB_BASE_URL}/my/{token}"
             text = (
                 f"🌐 <b>Личный кабинет</b>\n\n"
                 f"Работает даже без Telegram. Сохраните в закладки:\n\n"
@@ -1205,17 +1232,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client_name = data.removeprefix("show_key_")
         await show_single_config(query, client_name, xui)
 
+    elif data.startswith("sub_links_"):
+        token = data.removeprefix("sub_links_")
+        await show_sub_links(query, token)
+
     elif data == "split_tunneling":
-        happ_routing_url = "https://344988.snk.wtf/happ-routing"
+        happ_routing_url = f"{WEB_BASE_URL}/happ-routing"
         text = (
-            "🔀 <b>Split tunneling для Happ</b>\n\n"
-            "Российские сайты будут открываться напрямую, "
-            "остальной трафик — через VPN.\n\n"
+            "🔀 <b>Умная маршрутизация для Happ</b>\n\n"
+            "Российские банки, Госуслуги и доставка будут открываться напрямую "
+            "на максимальной скорости, а заблокированные сайты и YouTube — через VPN.\n\n"
             "Нажмите кнопку ниже — правила маршрутизации "
-            "добавятся в Happ.\n\n"
+            "добавятся в Happ в 1 клик.\n\n"
             "После импорта откройте в Happ:\n"
             "<b>Настройки</b> → <b>Настройки туннеля</b> → <b>Маршрутизация</b>\n"
-            "и выберите <b>Tiin Split Rules</b>."
+            "и выберите <b>TIIN · Smart RU Bypass</b>."
         )
         await safe_edit_text_logged(
             query, text, "split_tunneling",
@@ -1264,6 +1295,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         promo = context.user_data.pop("promo", None)
         await process_payment(
             query, tariff_id, "vless",
+            is_renew=is_renew,
+            client_name=renew_info.get("client_name"),
+            inbound_id=renew_info.get("inbound_id"),
+            promo=promo,
+        )
+
+    elif data.startswith("confirm_stars_"):
+        parts     = data.removeprefix("confirm_stars_")
+        is_renew  = parts.endswith("_renew")
+        tariff_id = parts.removesuffix("_renew")
+
+        tariff = TARIFFS.get(tariff_id)
+        if not tariff:
+            await safe_edit_text(query, "❌ Тариф не найден")
+            return
+
+        renew_info = context.user_data.get("renew_info", {})
+        promo = context.user_data.pop("promo", None)
+        await send_stars_invoice(
+            query, context, tariff_id, "vless",
             is_renew=is_renew,
             client_name=renew_info.get("client_name"),
             inbound_id=renew_info.get("inbound_id"),
@@ -2035,8 +2086,8 @@ async def check_and_send_15m_test_reminders(bot):
         )
 
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚡ Подключить в 1 клик", url=f"https://344988.snk.wtf/go-connect/{web_token}")],
-            [InlineKeyboardButton("📖 Инструкция и мастер настройки", url=f"https://344988.snk.wtf/my/{web_token}")],
+            [InlineKeyboardButton("⚡ Подключить в 1 клик", url=f"{WEB_BASE_URL}/go-connect/{web_token}")],
+            [InlineKeyboardButton("📖 Инструкция и мастер настройки", url=f"{WEB_BASE_URL}/my/{web_token}")],
             [InlineKeyboardButton("✉️ Написать в поддержку", callback_data="feedback")],
             [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")],
         ])
@@ -2236,6 +2287,17 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled exception:", exc_info=context.error)
 
 
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждает заказ в Telegram Stars перед списанием."""
+    query = update.pre_checkout_query
+    logger.info(f"⭐️ Received PreCheckoutQuery: id={query.id}, user={query.from_user.id}, payload={query.invoice_payload}, amount={query.total_amount}")
+    if not query.invoice_payload or not query.invoice_payload.startswith("stars:"):
+        await query.answer(ok=False, error_message="Неверные данные заказа.")
+        return
+    await query.answer(ok=True)
+    logger.info(f"⭐️ PreCheckoutQuery {query.id} answered OK=True")
+
+
 # Запуск
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -2243,6 +2305,8 @@ def main():
     validate_config()
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, process_successful_stars_payment))
     app.add_handler(CommandHandler("start",     start))
     app.add_handler(CommandHandler("refer",     refer))
     app.add_handler(CommandHandler("send",      send_to_user))

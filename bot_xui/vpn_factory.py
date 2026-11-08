@@ -629,8 +629,8 @@ async def handle_test_vless(query, xui: XUIClient):
         bio = make_qr_bytes(qr_url) if qr_url else None
 
         from config import SERVER_LOCATION
-        instr_url = f"https://344988.snk.wtf/my/{web_token}" if web_token else ""
-        connect_url = f"https://344988.snk.wtf/go-connect/{web_token}" if web_token else ""
+        instr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+        connect_url = f"{WEB_BASE_URL}/go-connect/{web_token}" if web_token else ""
         buttons = []
         if connect_url:
             buttons.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=connect_url)])
@@ -814,15 +814,15 @@ async def activate_test_period(query, xui):
         f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n"
         f"👤 ID: <code>{result['client_email']}</code>\n"
         f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
-        f'📖 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция</a>'
+        f'📖 <a href="{WEB_BASE_URL}/my/{web_token}">Инструкция</a>'
     )
     try:
-        connect_url = f"https://344988.snk.wtf/go-connect/{web_token}" if web_token else ""
+        connect_url = f"{WEB_BASE_URL}/go-connect/{web_token}" if web_token else ""
         buttons = []
         if connect_url:
             buttons.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=connect_url)])
         if web_token:
-            buttons.append([InlineKeyboardButton("👤 Личный кабинет", url=f"https://344988.snk.wtf/my/{web_token}")])
+            buttons.append([InlineKeyboardButton("👤 Личный кабинет", url=f"{WEB_BASE_URL}/my/{web_token}")])
         buttons.append([InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")])
         buttons.append([InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")])
 

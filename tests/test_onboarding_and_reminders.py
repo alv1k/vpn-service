@@ -14,6 +14,7 @@ import sys
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
+from config import PORTAL_BASE_URL
 
 sys.modules.setdefault("yookassa", MagicMock())
 
@@ -51,10 +52,12 @@ class TestOneClickConnecting:
         assert "Быстрый старт в 1 клик" in html
         
         # Check platform deep links with proxy subscription link (from cabinet)
-        expected_sub = f"https://344988.snk.wtf/sub/{token}"
+        import urllib.parse
+        expected_sub = f"{PORTAL_BASE_URL}/sub/{token}"
         assert f"happ://add/{expected_sub}" in html
         assert f"streisand://import/{expected_sub}" in html
-        assert "v2rayng://install-config?url=https%3A%2F%2F344988.snk.wtf%2Fsub%2Ftest-token-123" in html
+        encoded_sub = urllib.parse.quote(expected_sub, safe="")
+        assert f"v2rayng://install-config?url={encoded_sub}" in html
         assert "shadowrocket://add/sub://" in html
 
     @patch("api.sub_proxy.log_user_platform")
@@ -63,7 +66,7 @@ class TestOneClickConnecting:
     def test_tc_1_2_dom_elements_and_clipboard_script(self, mock_get_user, mock_pick_key, mock_log_plat, client):
         """TC-1.2: Verify DOM structure, copy button, and clipboard helper script."""
         token = "test-token-123"
-        expected_sub = f"https://344988.snk.wtf/sub/{token}"
+        expected_sub = f"{PORTAL_BASE_URL}/sub/{token}"
         mock_get_user.return_value = {"id": 999, "tg_id": 999999001, "web_token": token}
         mock_pick_key.return_value = {"subscription_link": "https://raw-3x-ui-link"}
 
@@ -96,14 +99,14 @@ class TestOneClickConnecting:
     def test_tc_1_4_bot_ui_buttons(self):
         """TC-1.4: Verify bot views and factory attach 1-click button with correct URL."""
         token = "test-web-tok"
-        expected_url = f"https://344988.snk.wtf/go-connect/{token}"
-        assert expected_url.startswith("https://344988.snk.wtf/go-connect/")
+        expected_url = f"{PORTAL_BASE_URL}/go-connect/{token}"
+        assert expected_url.startswith(f"{PORTAL_BASE_URL}/go-connect/")
 
     @patch("api.sub_proxy.log_user_platform")
     @patch("api.sub_proxy._pick_vless_key")
     @patch("api.sub_proxy.get_user_by_web_token")
     def test_tc_1_5_cabinet_proxy_link_preferred_over_raw_xui(self, mock_get_user, mock_pick_key, mock_log_plat, client):
-        """TC-1.5: Explicit check that /go-connect uses proxy sub link (https://344988.snk.wtf/sub/{token}) instead of raw 3x-ui link."""
+        """TC-1.5: Explicit check that /go-connect uses proxy sub link instead of raw 3x-ui link."""
         token = "cabinet-user-tok"
         raw_xui_url = "https://344988.snk.wtf:2096/sub/raw-secret-sub-id"
         mock_get_user.return_value = {"id": 101, "tg_id": 999999005, "web_token": token}
@@ -113,7 +116,7 @@ class TestOneClickConnecting:
         assert resp.status_code == 200
         html = resp.text
 
-        cabinet_proxy_sub = f"https://344988.snk.wtf/sub/{token}"
+        cabinet_proxy_sub = f"{PORTAL_BASE_URL}/sub/{token}"
         
         # 1. Raw 3x-ui link must NEVER be exposed in any deep links or copy boxes
         assert raw_xui_url not in html
@@ -166,7 +169,7 @@ class TestFifteenMinuteReminderRoutine:
             call_kwargs = mock_bot.send_message.call_args.kwargs
             assert call_kwargs["chat_id"] == 999999001
             assert "возникли сложности с подключением?" in call_kwargs["text"]
-            assert "https://344988.snk.wtf/go-connect/token-test-1" in str(call_kwargs["reply_markup"])
+            assert f"{PORTAL_BASE_URL}/go-connect/token-test-1" in str(call_kwargs["reply_markup"])
 
             mock_log.assert_called_with(
                 tg_id=999999001,

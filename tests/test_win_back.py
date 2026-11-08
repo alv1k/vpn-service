@@ -310,4 +310,4 @@ class TestButtonsAndMessages:
     def test_get_buttons_without_token(self, mock_token):
         """Test buttons fallback when no web token."""
         b_test0 = get_buttons_for_scenario("test_0mb_2d", tg_id=502)
-        assert any("https://344988.snk.wtf/my/" in btn.get("url", "") for row in b_test0 for btn in row)
+        assert any("/my/" in btn.get("url", "") for row in b_test0 for btn in row)

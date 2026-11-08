@@ -51,7 +51,7 @@ if ss -tlnp | grep -q ':7443'; then
     log "✅ Xray listening on 7443"
     RESULTS+="✅ Xray port 7443: OK\n"
 else
-    try_restart "Xray" "sudo docker restart x-ui" "ss -tlnp | grep -q ':7443'"
+    try_restart "Xray" "sudo systemctl restart x-ui" "ss -tlnp | grep -q ':7443'"
     if [ "$TRY_RESTART_OK" -eq 1 ]; then
         RESULTS+="✅ Xray port 7443: OK [auto-recovered]\n"
         RECOVERED+="Xray "

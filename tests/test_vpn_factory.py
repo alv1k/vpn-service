@@ -551,7 +551,7 @@ class TestActivateTestPeriod:
 
         markup = query.message.reply_photo.call_args[1]["reply_markup"]
         all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
-        assert any("344988.snk.wtf/my/tok123" in u for u in all_urls)
+        assert any("/my/tok123" in u for u in all_urls)
         all_callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
         assert "tariffs" in all_callbacks
 

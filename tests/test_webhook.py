@@ -124,42 +124,15 @@ async def test_activation_after_vpn_creation_awg(
 
     mock_get_sub.return_value = datetime(2026, 4, 18)
 
-    # Mock httpx for AWG API calls
-    # POST responses (login, create client)
-    post_resp = MagicMock()
-    post_resp.status_code = 200
-    # client_name = f"tiin_{tg_id}" = "tiin_12345"
-    expected_name = "tiin_12345"
-    post_resp.json.return_value = {"id": "uuid-1", "name": expected_name}
-    post_resp.raise_for_status = MagicMock()
-
-    # GET /api/wireguard/client — returns list of clients
-    list_resp = MagicMock()
-    list_resp.status_code = 200
-    list_resp.json.return_value = [
-        {"id": "uuid-1", "name": expected_name, "address": "10.0.0.2", "publicKey": "pk1"}
-    ]
-    list_resp.raise_for_status = MagicMock()
-
-    # GET /api/wireguard/client/{id}/configuration — returns config text
-    conf_resp = MagicMock()
-    conf_resp.status_code = 200
-    conf_resp.text = "[Interface]\nPrivateKey=abc"
-    conf_resp.raise_for_status = MagicMock()
-
-    with patch("api.webhook.httpx.AsyncClient") as mock_client_cls:
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post.return_value = post_resp
-        mock_client.delete = AsyncMock()
-        # GETs: 1) dedup check, 2) client list after creation, 3) config
-        dedup_resp = MagicMock()
-        dedup_resp.status_code = 200
-        dedup_resp.json.return_value = []  # no existing client
-        dedup_resp.raise_for_status = MagicMock()
-        mock_client.get = AsyncMock(side_effect=[dedup_resp, list_resp, conf_resp])
-        mock_client_cls.return_value = mock_client
+    with patch("bot_xui.awg_manager.get_or_create_3xui_awg_client") as mock_create_awg:
+        mock_create_awg.return_value = {
+            "client_name": "tiin_12345",
+            "client_id": "uuid-1",
+            "client_ip": "10.8.1.2/32",
+            "config": "[Interface]\nPrivateKey=abc",
+            "private_key": "priv",
+            "public_key": "pk1",
+        }
 
         result = await process_successful_payment(
             "pay-12345678",

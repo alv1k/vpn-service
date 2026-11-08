@@ -22,6 +22,7 @@ load_dotenv("/home/alvik/vpn-service/.env")
 
 from api.db import execute_query
 from bot_xui.messaging import send_link_safely
+from config import PORTAL_BASE_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ def get_candidate_paid_users():
           AND p.created_at <= %s
           AND u.subscription_until > NOW()
           AND u.bot_blocked = 0
+          AND (u.notifications_muted IS NULL OR u.notifications_muted = 0)
           AND u.web_token IS NOT NULL
         ORDER BY p.created_at DESC
     """
@@ -149,8 +151,11 @@ def build_message_and_buttons(name: str, app_name: str | None, web_token: str):
 
     buttons = [
         [
-            {"text": "📖 Открыть инструкцию", "url": f"https://344988.snk.wtf/my/{web_token}"},
+            {"text": "📖 Открыть инструкцию", "url": f"{PORTAL_BASE_URL}/my/{web_token}"},
             {"text": "💬 Написать в поддержку", "url": "https://t.me/tiinsupport"},
+        ],
+        [
+            {"text": "🔕 Не напоминать", "callback_data": "wb_mute"}
         ]
     ]
 

@@ -87,3 +87,4 @@ data/yt_nl_proxy_state
 *.orig
 
 *.bak*
+data/routing_issue_alerts.json

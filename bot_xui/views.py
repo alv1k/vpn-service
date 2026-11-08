@@ -10,7 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot_xui.tariffs import TARIFFS
 from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated, get_permanent_discount, update_vless_link, get_web_token, get_user_by_tg_id, get_payment_by_id, get_referral_count, get_user_by_web_token
-from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, safe_edit_text_logged, reply_text_logged, reply_photo_logged, reply_document_logged, _log_message, make_qr_bytes, WEB_BASE_URL
+from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, safe_edit_text_logged, reply_text_logged, reply_photo_logged, reply_document_logged, _log_message, make_qr_bytes, WEB_BASE_URL, SUB_URL_BASE, get_sub_url_base_for_user
 
 from bot_xui.test_mode import is_test_mode
 from config import ADMIN_TG_ID, REFERRAL_REWARD_DAYS, BOT_USERNAME
@@ -95,7 +95,7 @@ def build_main_menu_text(tg_id: int) -> str:
 
     token = get_web_token(tg_id)
     if token:
-        text += f'🚀 <b>Быстрый старт:</b> <a href="https://344988.snk.wtf/my/{token}">Инструкция по настройке</a>\n\n'
+        text += f'🚀 <b>Быстрый старт:</b> <a href="{WEB_BASE_URL}/my/{token}">Инструкция по настройке</a>\n\n'
 
     bonus_header = f"Дарим <b>+{REFERRAL_REWARD_DAYS} дней</b> за каждого приглашенного друга:" if ref_days == 0 else f"👥 Бонус за друзей: <b>+{ref_days} дн.</b> (+{REFERRAL_REWARD_DAYS} дн. за нового друга):"
 
@@ -519,11 +519,13 @@ async def show_single_config(query, client_name: str, xui):
     hysteria_link = key.get("hysteria_link") or ""
 
     from config import SERVER_LOCATION
-    my_url = f"https://344988.snk.wtf/my/{web_token}" if web_token else ""
-    sub_proxy_url = f"https://344988.snk.wtf/sub/{web_token}" if web_token else ""
-    sub_link_text = f"📎 <b>Личный кабинет с инструкциями:</b>\n<code>{my_url}</code>"
-    if sub_proxy_url:
-        sub_link_text += f"\n\n📎 <b>Ссылка на подписку:</b>\n<code>{sub_proxy_url}</code>"
+    my_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+    user_sub_base = get_sub_url_base_for_user(tg_id)
+    sub_proxy_url = f"{user_sub_base}/sub/{web_token}" if web_token else ""
+    sub_link_text = (
+        "✨ <b>Умная маршрутизация TIIN активна</b>\n"
+        "<i>Российские сервисы (Сбер, Госуслуги, Ozon) работают напрямую, YouTube и заблокированные сайты — через скоростной туннель.</i>"
+    )
 
     caption = (
         f"{sub_info}\n\n"
@@ -538,24 +540,11 @@ async def show_single_config(query, client_name: str, xui):
         f"🚀 <b>Hysteria 2</b>\n"
         f"   <i>Скоростной, обход жёстких блокировок</i>\n\n"
         f"{sub_link_text}\n\n"
-        f"💡 <i>Отсканируйте QR-код или откройте личный кабинет</i>"
+        f"💡 <i>Отсканируйте QR-код или нажмите кнопку ниже для настройки в 1 клик:</i>"
     )
 
     if web_token:
-        caption += f'\n\n📖 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
-
-    extra_links = ""
-    if vless_link:
-        extra_links += f"\n\n🟢 <b>VLESS TCP standalone:</b>\n<code>{vless_link}</code>"
-    if xhttp_link:
-        extra_links += f"\n\n🟠 <b>VLESS XHTTP standalone:</b>\n<code>{xhttp_link}</code>"
-    if hysteria_link:
-        extra_links += f"\n\n🚀 <b>Hysteria 2 standalone:</b>\n<code>{hysteria_link}</code>"
-
-    if len(caption) + len(extra_links) <= 950:
-        caption += extra_links
-    else:
-        logger.info(f"show_single_config: standalone links dropped, caption={len(caption)}, extra={len(extra_links)}, total={len(caption)+len(extra_links)}")
+        caption += f'\n\n📖 <a href="{WEB_BASE_URL}/my/{web_token}">Инструкция и мастер подключения</a>'
 
     logger.info(f"show_single_config: sending photo caption, length={len(caption)}")
 
@@ -565,8 +554,9 @@ async def show_single_config(query, client_name: str, xui):
 
     keyboard = []
     if web_token:
-        keyboard.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=f"https://344988.snk.wtf/go-connect/{web_token}")])
-        keyboard.append([InlineKeyboardButton("👤 Личный кабинет и инструкции", url=f"https://344988.snk.wtf/my/{web_token}")])
+        keyboard.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=f"{WEB_BASE_URL}/go-connect/{web_token}")])
+        keyboard.append([InlineKeyboardButton("🔗 Ссылки подписки (2 способа)", callback_data=f"sub_links_{web_token}")])
+        keyboard.append([InlineKeyboardButton("👤 Личный кабинет и инструкции", url=f"{WEB_BASE_URL}/my/{web_token}")])
     keyboard.append([InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")])
     if is_test_tariff:
         keyboard.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])
@@ -581,6 +571,29 @@ async def show_single_config(query, client_name: str, xui):
         caption=caption,
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+
+
+async def show_sub_links(query, token: str):
+    """Показывает 2 способа импорта подписки (DE 344988.snk.wtf и RU Selectel)."""
+    de_url = f"https://344988.snk.wtf/sub/{token}"
+    ru_url = f"https://ru-server.tiinservice.online/sub/{token}"
+    text = (
+        "🔗 <b>Ссылки для импорта подписки (2 способа)</b>\n\n"
+        "Если в вашем приложении (Happ, Hiddify, v2rayNG, Karing, Shadowrocket) подписка не обновляется или выдает ошибку сети, используйте второй способ:\n\n"
+        "1️⃣ <b>Способ 1: Основной (Германия)</b>\n"
+        f"<code>{de_url}</code>\n"
+        "<i>(Прямой европейский канал к серверу Hetzner)</i>\n\n"
+        "2️⃣ <b>Способ 2: Резервный шлюз РФ (Selectel СПб)</b>\n"
+        f"<code>{ru_url}</code>\n"
+        "<i>(Обходит фильтрацию и блокировки МТС, МегаФон, Билайн, Ростелеком)</i>\n\n"
+        "💡 <i>Нажмите на любую ссылку выше, чтобы скопировать её в буфер обмена, затем в приложении нажмите «+» ➔ «Добавить из буфера обмена».</i>"
+    )
+    keyboard = [
+        [InlineKeyboardButton("⚡ 1-клик: Основной", url=f"https://344988.snk.wtf/go-connect/{token}")],
+        [InlineKeyboardButton("⚡ 1-клик: Резервный РФ", url=f"https://ru-server.tiinservice.online/go-connect/{token}")],
+        [InlineKeyboardButton("🔙 К списку", callback_data="my_configs")],
+    ]
+    await safe_edit_text_logged(query, text, "sub_links", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 # async def show_vless_link(query, client_name: str):

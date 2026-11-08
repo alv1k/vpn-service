@@ -89,6 +89,16 @@ def main(dry_run=False):
             xui_clients_updated = xc.rowcount
             print(f"✅ Обновлено клиентов в 3x-ui `clients`: {xui_clients_updated}")
             
+            # Обновляем таблицу `client_traffics` в 3x-ui
+            xc.execute("""
+                UPDATE client_traffics 
+                SET expiry_time = expiry_time + ?,
+                    enable = 1
+                WHERE expiry_time > ?
+            """, (five_days_ms, now_ms))
+            xui_traffics_updated = xc.rowcount
+            print(f"✅ Обновлено записей в 3x-ui `client_traffics`: {xui_traffics_updated}")
+            
             # Обновляем JSON settings внутри каждого inbound
             inbounds = xc.execute("SELECT id, settings FROM inbounds").fetchall()
             for inb_id, settings_json in inbounds:

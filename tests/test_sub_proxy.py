@@ -268,7 +268,7 @@ class TestExpiredSubscription:
         body_decoded = base64.b64decode(response.body).decode()
         assert "vless://dummy@expired:443" in body_decoded
         assert "❌ Подписка истекла" in body_decoded
-        assert "344988.snk.wtf/my/expired-token" in body_decoded
+        assert "/my/expired-token" in body_decoded
         
         # Check headers
         assert "subscription-userinfo" in response.headers
@@ -355,4 +355,92 @@ class TestSingboxBuilder:
         assert auto_outbound["url"] == "https://www.gstatic.com/generate_204"
         assert "🇩🇪 Server 1" in auto_outbound["outbounds"]
         assert "🇷🇺 Server 2" in auto_outbound["outbounds"]
+
+
+class TestSubscriptionDeduplication:
+
+    def setup_method(self):
+        from api import sub_proxy
+        sub_proxy._CACHE.clear()
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock)
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
+    async def test_xhttp_inbounds_have_distinct_remarks_and_no_duplicates(self, mock_user, mock_pick, mock_fetch):
+        from api.sub_proxy import proxy_subscription
+        future = datetime.utcnow() + timedelta(days=20)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+            "client_id": "test-client-uuid",
+        }
+        # Both port 47447 and port 48745 with x_padding_bytes + duplicate entry
+        lines = [
+            "vless://uuid@host:47447?type=xhttp&security=reality&x_padding_bytes=100-1000#VLESS-XHTTP-Stream",
+            "vless://uuid@host:48745?type=xhttp&security=reality&x_padding_bytes=100-1000#VLESS-XHTTP-Armor",
+            "vless://uuid@host:48745?type=xhttp&security=reality&x_padding_bytes=100-1000#VLESS-XHTTP-Armor-DUP",
+        ]
+        mock_fetch.return_value = base64.b64encode("\n".join(lines).encode())
+
+        resp = await proxy_subscription("tok")
+        decoded = base64.b64decode(resp.body).decode()
+        entries = [l for l in decoded.splitlines() if l.strip()]
+
+        assert any("xHTTP • Stream (МегаФон)" in l for l in entries)
+        assert any("xHTTP • Armor (МТС / Билайн)" in l for l in entries)
+        # Verify no duplicate remarks
+        remarks = [l.split("#")[-1] for l in entries if "#" in l]
+        assert len(remarks) == len(set(remarks))
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    @patch("api.sub_proxy._pick_vless_key")
+    async def test_head_request_returns_200_empty_body(self, mock_pick, mock_user):
+        from api.sub_proxy import proxy_subscription
+        mock_user.return_value = {"id": 1, "tg_id": 12345}
+        future = datetime.utcnow() + timedelta(days=20)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+            "client_id": "test-uuid",
+        }
+        mock_req = MagicMock()
+        mock_req.method = "HEAD"
+        mock_req.headers = {"user-agent": "Happ"}
+
+        resp = await proxy_subscription("tok", request=mock_req)
+        assert resp.status_code == 200
+        assert resp.body == b""
+        assert "subscription-userinfo" in resp.headers
+        assert "routing" in resp.headers
+
+    def test_routing_header_not_duplicated_under_4k(self):
+        from api.sub_proxy import _build_headers, _happ_routing_deeplink
+        routing = _happ_routing_deeplink()
+        headers = _build_headers(datetime.utcnow() + timedelta(days=10), routing_link=routing)
+        assert "routing" in headers
+        assert "Routing" not in headers
+        total_len = sum(len(k) + len(str(v)) + 4 for k, v in headers.items())
+        assert total_len < 3000
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.log_user_platform")
+    async def test_go_connect_has_both_methods(self, mock_plat, mock_pick, mock_user):
+        from api.sub_proxy import go_connect_smart_redirect
+        mock_user.return_value = {"id": 1, "tg_id": 12345, "web_token": "token123"}
+        mock_pick.return_value = {"subscription_link": "https://xui.example/sub/abc"}
+        mock_req = MagicMock()
+        mock_req.headers = {"user-agent": "iPhone"}
+
+        resp = await go_connect_smart_redirect("token123", request=mock_req)
+        html = resp.body.decode("utf-8") if hasattr(resp, "body") else str(resp)
+        assert "https://344988.snk.wtf/sub/token123" in html
+        assert "https://ru-server.tiinservice.online/sub/token123" in html
+        assert "Способ 1: Основной" in html
+        assert "Способ 2: Резервный РФ" in html
+
+
 

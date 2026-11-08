@@ -257,11 +257,11 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
 </nav>
 
 <section class="l-hero">
-    <div class="l-hero-badge">VPN-сервис нового поколения</div>
-    <h1 class="l-hero-title">Свободный интернет<br><span class="l-hero-accent">без границ</span></h1>
-    <p class="l-hero-desc">Быстрый и стабильный доступ к любым сайтам и сервисам. Современные протоколы, которые невозможно заблокировать.</p>
+    <div class="l-hero-badge">Облачная сетевая платформа</div>
+    <h1 class="l-hero-title">Высокоскоростная сеть<br><span class="l-hero-accent">для ваших сервисов</span></h1>
+    <p class="l-hero-desc">Быстрые и стабильные сетевые шлюзы передачи данных. Безопасная инфраструктура и сквозное шифрование каналов связи.</p>
     <div class="l-hero-actions">
-        <a href="#trial" class="pay-btn l-hero-btn" style="max-width:220px" onclick="scrollTo('#trial')">Подключить VPN</a>
+        <a href="#trial" class="pay-btn l-hero-btn" style="max-width:220px" onclick="scrollTo('#trial')">Подключить узел</a>
     </div>
     <div class="l-hero-actions" style="margin-top: 1rem">
         <a href="https://t.me/tiin_service_bot?start=web" class="tg-btn l-hero-btn" style="max-width:220px">
@@ -288,7 +288,7 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
     <h2 class="l-section-title">Почему TIIN?</h2>
     <div class="l-features">
         <div class="l-feat"><div class="l-feat-icon">&#9889;</div><h3>Высокая скорость</h3><p>Серверы в Европе с каналами от 1 Гбит/с. Видео, игры, звонки — всё летает.</p></div>
-        <div class="l-feat"><div class="l-feat-icon">&#128737;</div><h3>Невидимый трафик</h3><p>Протоколы VLESS Reality и AmneziaWG маскируют VPN-трафик. Блокировки не работают.</p></div>
+        <div class="l-feat"><div class="l-feat-icon">&#128737;</div><h3>Защищённый канал</h3><p>Шифрование TLS 1.3 и современные сетевые протоколы гарантируют конфиденциальность и целостность передачи данных.</p></div>
         <div class="l-feat"><div class="l-feat-icon">&#128274;</div><h3>Без логов</h3><p>Мы не храним историю ваших действий. Никакой слежки, никаких записей.</p></div>
         <div class="l-feat"><div class="l-feat-icon">&#128241;</div><h3>Все устройства</h3><p>iPhone, Android, Windows, macOS, Linux. До 10 устройств на одном аккаунте.</p></div>
         <div class="l-feat"><div class="l-feat-icon">&#128640;</div><h3>2 минуты на настройку</h3><p>Оплатите — получите ссылку с готовым конфигом. Один клик — и вы подключены.</p></div>
@@ -309,8 +309,8 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
     <div class="l-proxy-banner">
         <svg viewBox="0 0 24 24" width="32" height="32" fill="#7c3aed"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg>
         <div class="l-proxy-text">
-            <h3>Telegram не открывается?</h3>
-            <p>Подключите бесплатный прокси для Telegram — работает без VPN, в один клик.</p>
+            <h3>Telegram-прокси шлюз</h3>
+            <p>Выделенный MTProto-шлюз для быстрого обмена сообщениями и медиа в один клик.</p>
         </div>
         <div style="display:flex;flex-direction:column;gap:.5rem;align-items:center">
             <a href="tg://proxy?server=tiinservice.online&port=8443&secret=7tZhp-UUviXSuUagLCZgx8UzNDQ5ODguc25rLnd0Zg" class="l-proxy-btn" id="proxyBtn">Подключить прокси</a>
@@ -322,10 +322,10 @@ border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;max-width
 <section class="l-section" id="trial">
     <div class="l-trial">
         <div class="l-trial-badge">Бесплатно</div>
-        <h3>Попробуйте VPN — 3 дня без оплаты</h3>
-        <p>Убедитесь в скорости и качестве. Без привязки карты, без автопродления.</p>
+        <h3>Тестовый доступ — 3 дня без оплаты</h3>
+        <p>Убедитесь в скорости и надежности каналов. Без привязки карты, без скрытых платежей.</p>
         <div class="l-trial-features">
-            <span class="l-trial-feat">VLESS Reality</span>
+            <span class="l-trial-feat">Выделенный шлюз</span>
             <span class="l-trial-feat">1 устройство</span>
             <span class="l-trial-feat">72 часа</span>
         </div>
@@ -517,7 +517,7 @@ function getRef() { return localStorage.getItem('tiin_ref') || null; }
 var faqData = [
     { q: 'Как начать пользоваться?', a: 'Выберите тариф, оплатите, и вы получите ссылку на личный кабинет с инструкциями по подключению. Настройка занимает 2 минуты.' },
     { q: 'Какие устройства поддерживаются?', a: 'iPhone, Android, Windows, macOS, Linux. На каждом тарифе до 10 устройств одновременно.' },
-    { q: 'Это безопасно?', a: 'Да. Мы используем современные протоколы шифрования (VLESS Reality, AmneziaWG). Трафик невозможно прочитать или заблокировать.' },
+    { q: 'Это безопасно?', a: 'Да. Мы используем сквозное шифрование каналов связи (TLS 1.3, QUIC). Передаваемые данные надежно защищены от перехвата и модификации.' },
     { q: 'Есть ли бесплатный пробный период?', a: 'Да! Вы можете активировать бесплатный тест на 3 дня — без привязки карты и автопродления. Просто введите email в форме выше.' },
     { q: 'Что если не заработает?', a: 'Напишите нам в Telegram-бот — поможем настроить. Если совсем не подойдёт, вернём деньги.' },
     { q: 'Вы храните логи?', a: 'Нет. Мы не ведём журналов активности и не отслеживаем, какие сайты вы посещаете.' }

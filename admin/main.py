@@ -54,11 +54,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TIIN Admin Panel", lifespan=lifespan)
 
-from awg_api.router import router as awg_router
+# from awg_api.router import router as awg_router
 
-# Mount main admin router & AWG router
+# Mount main admin router
 app.include_router(admin_router)
-app.include_router(awg_router)
+# app.include_router(awg_router)
 
 # Mount UI root and favicon
 _admin_page = get_admin_page_route()
@@ -157,3 +157,9 @@ async def webpage_active_users():
 async def webpage_visitor_journey(token: str):
     from admin.db import webpage_visitor_journey
     return _clean(webpage_visitor_journey(token))
+
+
+@app.get("/api/admin/sub-import-stats")
+async def sub_import_stats(days: int = Query(30)):
+    from admin.db import get_sub_import_stats
+    return _clean(get_sub_import_stats(days=days))

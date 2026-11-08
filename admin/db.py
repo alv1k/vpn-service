@@ -964,6 +964,108 @@ def webpage_visitor_journey(web_token: str, hours: int = 24) -> list[dict]:
     return rows
 
 
+def get_sub_import_stats(days: int = 30) -> dict:
+    """Return aggregated totals and per-user breakdown of subscription method clicks and imports."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+
+    # 1. Summary totals & today counts
+    cur.execute("""
+        SELECT 
+            COUNT(CASE WHEN event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'de') THEN 1 END) AS de_clicks_total,
+            COUNT(CASE WHEN event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_clicks_total,
+            COUNT(CASE WHEN event_type = 'sub_import_fetch' AND (element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'de') THEN 1 END) AS de_fetches_total,
+            COUNT(CASE WHEN event_type = 'sub_import_fetch' AND (element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_fetches_total,
+            COUNT(CASE WHEN created_at >= CURDATE() AND event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'de') THEN 1 END) AS de_clicks_today,
+            COUNT(CASE WHEN created_at >= CURDATE() AND event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_clicks_today,
+            COUNT(CASE WHEN created_at >= CURDATE() AND event_type = 'sub_import_fetch' AND (element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'de') THEN 1 END) AS de_fetches_today,
+            COUNT(CASE WHEN created_at >= CURDATE() AND event_type = 'sub_import_fetch' AND (element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_fetches_today
+        FROM webpage_events
+        WHERE event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect', 'sub_import_fetch')
+          AND (web_token NOT IN ('tok', 'active-token', 'expired-token', 'expired-token-browser') OR web_token IS NULL)
+          AND created_at >= NOW() - INTERVAL %s DAY
+    """, (days,))
+    summary = cur.fetchone() or {}
+
+    # 2. Per-user grouped counts
+    cur.execute("""
+        SELECT
+            w.tg_id,
+            w.web_token,
+            COUNT(CASE WHEN w.event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (w.element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) = 'de') THEN 1 END) AS de_clicks,
+            COUNT(CASE WHEN w.event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (w.element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_clicks,
+            COUNT(CASE WHEN w.event_type = 'sub_import_fetch' AND (w.element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) = 'de') THEN 1 END) AS de_fetches,
+            COUNT(CASE WHEN w.event_type = 'sub_import_fetch' AND (w.element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_fetches,
+            MAX(w.created_at) AS last_activity,
+            SUBSTRING_INDEX(GROUP_CONCAT(
+                CASE 
+                    WHEN w.element_id IN ('de', 'ru') THEN w.element_id
+                    WHEN JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) IN ('de', 'ru') THEN JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method'))
+                    ELSE NULL
+                END
+                ORDER BY w.created_at DESC
+            ), ',', 1) AS last_choice
+        FROM webpage_events w
+        WHERE w.event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect', 'sub_import_fetch')
+          AND (w.web_token NOT IN ('tok', 'active-token', 'expired-token', 'expired-token-browser') OR w.web_token IS NULL)
+          AND w.created_at >= NOW() - INTERVAL %s DAY
+        GROUP BY w.tg_id, w.web_token
+        ORDER BY last_activity DESC
+        LIMIT 100
+    """, (days,))
+    rows = cur.fetchall() or []
+
+    # 3. Batch enrich with user names
+    tg_ids = [r["tg_id"] for r in rows if r.get("tg_id")]
+    tokens = [r["web_token"] for r in rows if r.get("web_token")]
+
+    users_by_tg = {}
+    users_by_token = {}
+
+    if tg_ids or tokens:
+        conds = []
+        params = []
+        if tg_ids:
+            ph = ",".join(["%s"] * len(tg_ids))
+            conds.append(f"tg_id IN ({ph})")
+            params.extend(tg_ids)
+        if tokens:
+            ph = ",".join(["%s"] * len(tokens))
+            conds.append(f"web_token IN ({ph})")
+            params.extend(tokens)
+
+        cur.execute(f"""
+            SELECT tg_id, web_token,
+                   COALESCE(NULLIF(first_name,''), NULLIF(old_first_name,''), 'Пользователь') AS first_name,
+                   last_name
+            FROM users
+            WHERE {" OR ".join(conds)}
+        """, tuple(params))
+        for u in cur.fetchall():
+            if u.get("tg_id"):
+                users_by_tg[u["tg_id"]] = u
+            if u.get("web_token"):
+                users_by_token[u["web_token"]] = u
+
+    cur.close()
+    conn.close()
+
+    for r in rows:
+        u = users_by_tg.get(r.get("tg_id")) or users_by_token.get(r.get("web_token")) or {}
+        r["first_name"] = u.get("first_name") or "Пользователь"
+        r["last_name"] = u.get("last_name") or ""
+        if r.get("last_activity") and hasattr(r["last_activity"], "isoformat"):
+            r["last_activity"] = r["last_activity"].isoformat()
+        else:
+            r["last_activity"] = str(r.get("last_activity") or "")
+
+    return {
+        "summary": summary,
+        "users": rows,
+        "days": days
+    }
+
+
 def get_user_delete_preview(tg_id: int) -> dict:
     """Collect all user data that would be deleted for a given tg_id."""
     conn = _get_conn()

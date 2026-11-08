@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from api.db import execute_query, create_winback_promo, get_referral_count, set_winback_discount, sync_expiry
 from bot_xui.utils import XUIClient
 from bot_xui.messaging import send_link_safely
-from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, ADMIN_TG_ID
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, ADMIN_TG_ID, PORTAL_BASE_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("winback")
@@ -67,7 +67,7 @@ def get_all_users():
     return execute_query(
         "SELECT tg_id, first_name, subscription_until, test_vless_activated, "
         "test_awg_activated, created_at "
-        "FROM users WHERE bot_blocked = 0",
+        "FROM users WHERE bot_blocked = 0 AND (notifications_muted IS NULL OR notifications_muted = 0)",
         fetch='all',
     ) or []
 
@@ -232,26 +232,31 @@ MESSAGES = {
 def get_buttons_for_scenario(scenario: str, tg_id: int = None):
     from api.db import get_web_token
     token = get_web_token(tg_id) if tg_id else None
-    instr_url = f"https://344988.snk.wtf/my/{token}" if token else "https://344988.snk.wtf/my/"
+    instr_url = f"{PORTAL_BASE_URL}/my/{token}" if token else f"{PORTAL_BASE_URL}/my/"
 
+    buttons = []
     if scenario in ('expired_2d', 'test_ended_2d'):
-        return [[{"text": "💎 Тарифы со скидкой 15%", "callback_data": "tariffs"}]]
+        buttons = [[{"text": "💎 Тарифы со скидкой 15%", "callback_data": "tariffs"}]]
     elif scenario == 'test_0mb_2d':
-        return [
+        buttons = [
             [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
             [{"text": "📋 Инструкция", "url": instr_url}],
+            [{"text": "💬 Поддержка", "url": "https://t.me/tiinsupport"}],
         ]
     elif scenario == 'never_activated_3d':
-        return [[{"text": "🎁 Активировать тест", "callback_data": "test_period"}]]
+        buttons = [
+            [{"text": "🎁 Активировать тест", "callback_data": "test_period"}],
+            [{"text": "💬 Поддержка", "url": "https://t.me/tiinsupport"}],
+        ]
     elif scenario == 'protocol_inactive_7d':
-        return [
+        buttons = [
             [{"text": "📱 Мои конфиги", "callback_data": "my_configs"}],
             [{"text": "💬 Поддержка", "url": "https://t.me/tiinsupport"}]
         ]
     elif scenario in ('loyalty_gift_10d', 'tspu_pending_gift', 'tspu_fresh_gift'):
-        return [[{"text": "🎁 Активировать 3 дня", "callback_data": "wb_activate_gift"}]]
+        buttons = [[{"text": "🎁 Активировать 3 дня", "callback_data": "wb_activate_gift"}]]
     elif scenario == 'loyalty_survey':
-        return [
+        buttons = [
             [
                 {"text": "👍 Отлично", "callback_data": "wb_rate:good"},
                 {"text": "😐 Нормально", "callback_data": "wb_rate:normal"},
@@ -260,8 +265,12 @@ def get_buttons_for_scenario(scenario: str, tg_id: int = None):
             [{"text": "💬 Поддержка", "url": "https://t.me/tiinsupport"}]
         ]
     elif scenario in ('loyalty_final_farewell', 'tspu_used_gift'):
-        return [[{"text": "💎 Тарифы со скидкой 20%", "callback_data": "tariffs"}]]
-    return []
+        buttons = [[{"text": "💎 Тарифы со скидкой 20%", "callback_data": "tariffs"}]]
+
+    if buttons and scenario != 'loyalty_final_farewell':
+        buttons.append([{"text": "🔕 Не напоминать", "callback_data": "wb_mute"}])
+
+    return buttons
 
 # ─────────────────────────────────────────────
 #  Классификатор воронки (Smart Funnel)
@@ -543,6 +552,7 @@ def get_tspu_wave_targets(cooldown_days: int = 3) -> list:
         """SELECT u.tg_id, u.first_name, u.last_name, u.subscription_until, u.web_token
            FROM users u
            WHERE u.bot_blocked = 0
+             AND (u.notifications_muted IS NULL OR u.notifications_muted = 0)
              AND u.tg_id IS NOT NULL AND u.tg_id > 0 AND u.tg_id != %s
              AND u.subscription_until <= NOW()
              AND u.subscription_until >= NOW() - INTERVAL 30 DAY

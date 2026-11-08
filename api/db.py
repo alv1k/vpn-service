@@ -682,6 +682,57 @@ def is_payment_processed(payment_id: str) -> bool:
     return row['status'] == 'paid' if row else False
 
 
+def get_pending_payments_for_reconciliation(
+    grace_seconds: int = 45,
+    max_age_minutes: int = 60,
+    limit: int = 15,
+) -> list[dict]:
+    """
+    Select payments that are strictly in 'pending' status,
+    have aged at least `grace_seconds` (giving webhooks time to arrive naturally),
+    and are not older than `max_age_minutes`.
+
+    Guarantees:
+    - If a webhook arrived naturally and marked payment 'paid' or 'canceled',
+      it will NOT match status='pending' and will NEVER be selected or polled.
+    """
+    query = """
+        SELECT id, payment_id, tg_id, web_user_id, tariff, amount, status, is_test, is_autopayment, created_at
+        FROM payments
+        WHERE status = 'pending'
+          AND created_at <= NOW() - INTERVAL %s SECOND
+          AND created_at >= NOW() - INTERVAL %s MINUTE
+        ORDER BY id ASC
+        LIMIT %s
+    """
+    return execute_query(query, (grace_seconds, max_age_minutes, limit), fetch='all') or []
+
+
+def expire_stale_pending_payments(max_age_minutes: int = 60) -> int:
+    """
+    Mark pending payments older than max_age_minutes as 'canceled' in DB
+    so they are never queried or polled again.
+    """
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE payments
+            SET status = 'canceled'
+            WHERE status = 'pending'
+              AND created_at < NOW() - INTERVAL %s MINUTE
+            """,
+            (max_age_minutes,)
+        )
+        db.commit()
+        return cursor.rowcount
+    finally:
+        cursor.close()
+        db.close()
+
+
+
 def get_last_paid_payment(tg_id: int) -> dict | None:
     """Возвращает последний оплаченный платёж пользователя"""
     return execute_query(
@@ -893,19 +944,19 @@ def sync_expiry(tg_id: int, expires_at_utc: datetime):
         uuid_val = vk.get('client_id') if vk else (existing['client'].get('id') if existing else None)
         sync_client_to_ru_node(email=email, expiry_ms=exp_ms, enable=True, tg_id=tg_id, uuid_str=uuid_val)
 
-        # Re-enable in AWG if exists
-        from awg_api import db as awg_db
-        from awg_api import awg_manager
-        awg_vk = execute_query(
-            "SELECT client_id, client_name FROM vpn_keys WHERE tg_id = %s AND vpn_type = 'awg' LIMIT 1",
-            (tg_id,), fetch='one'
-        )
-        if awg_vk and awg_vk.get("client_id"):
-            awg_db.update_client_enabled(awg_vk["client_id"], True)
-            awg_manager.write_server_conf()
-            if awg_manager.is_interface_up():
-                awg_manager.reload_interface()
-            logger.info(f"🟢 Re-enabled AWG for tg_id={tg_id}")
+        # Re-enable in AWG if exists (legacy systemd awg_api disabled)
+        # from awg_api import db as awg_db
+        # from awg_api import awg_manager
+        # awg_vk = execute_query(
+        #     "SELECT client_id, client_name FROM vpn_keys WHERE tg_id = %s AND vpn_type = 'awg' LIMIT 1",
+        #     (tg_id,), fetch='one'
+        # )
+        # if awg_vk and awg_vk.get("client_id"):
+        #     awg_db.update_client_enabled(awg_vk["client_id"], True)
+        #     awg_manager.write_server_conf()
+        #     if awg_manager.is_interface_up():
+        #         awg_manager.reload_interface()
+        #     logger.info(f"🟢 Re-enabled AWG for tg_id={tg_id}")
     except Exception as e:
         logger.debug(f"sync_expiry: node sync skipped or failed: {e}")
 
@@ -975,17 +1026,17 @@ def sync_expiry_by_user_id(user_id: int, expires_at_utc: datetime):
                 uuid_str=vk.get('client_id')
             )
 
-        from awg_api import db as awg_db
-        from awg_api import awg_manager
-        awg_vk = execute_query(
-            "SELECT client_id FROM vpn_keys WHERE user_id = %s AND vpn_type = 'awg' LIMIT 1",
-            (user_id,), fetch='one'
-        )
-        if awg_vk and awg_vk.get("client_id"):
-            awg_db.update_client_enabled(awg_vk["client_id"], True)
-            awg_manager.write_server_conf()
-            if awg_manager.is_interface_up():
-                awg_manager.reload_interface()
+        # from awg_api import db as awg_db
+        # from awg_api import awg_manager
+        # awg_vk = execute_query(
+        #     "SELECT client_id FROM vpn_keys WHERE user_id = %s AND vpn_type = 'awg' LIMIT 1",
+        #     (user_id,), fetch='one'
+        # )
+        # if awg_vk and awg_vk.get("client_id"):
+        #     awg_db.update_client_enabled(awg_vk["client_id"], True)
+        #     awg_manager.write_server_conf()
+        #     if awg_manager.is_interface_up():
+        #         awg_manager.reload_interface()
     except Exception as e:
         logger.debug(f"sync_expiry_by_user_id: node sync skipped or failed: {e}")
 

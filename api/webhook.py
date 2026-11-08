@@ -19,7 +19,7 @@ from config import (
     AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD,
     SERVER_LOCATION, VLESS_INBOUND_ID,
     HYSTERIA_PORT, HYSTERIA_SNI, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID,
-    ACTIVE_INBOUND_IDS, ADMIN_TG_ID,
+    ACTIVE_INBOUND_IDS, ADMIN_TG_ID, PORTAL_BASE_URL,
 )
 from api.subscriptions import activate_subscription
 from api.db import (
@@ -222,39 +222,38 @@ def verify_yookassa_ip(request: Request):
     #     raise HTTPException(status_code=403, detail="Forbidden IP")
 
 
-async def amnezia_login(client: httpx.AsyncClient):
-    r = await client.post(
-        f"{AMNEZIA_WG_API_URL}/api/session",
-        json={"password": AMNEZIA_WG_API_PASSWORD},
-        timeout=10
-    )
-    r.raise_for_status()
-
-async def amnezia_create_client(client: httpx.AsyncClient, name: str):
-    r = await client.post(
-        f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
-        json={"name": name},
-        timeout=10
-    )
-    r.raise_for_status()
-
-async def amnezia_get_client_id(client: httpx.AsyncClient, name: str) -> str:
-    r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client", timeout=10)
-    r.raise_for_status()
-
-    for c in r.json():
-        if c.get("name") == name:
-            return c["id"]
-
-    raise RuntimeError("Client not found after creation")
-
-async def amnezia_get_config(client: httpx.AsyncClient, client_id: str) -> str:
-    r = await client.get(
-        f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration",
-        timeout=10
-    )
-    r.raise_for_status()
-    return r.text
+# --- Legacy systemd AmneziaWG HTTP methods (disabled) ---
+# async def amnezia_login(client: httpx.AsyncClient):
+#     r = await client.post(
+#         f"{AMNEZIA_WG_API_URL}/api/session",
+#         json={"password": AMNEZIA_WG_API_PASSWORD},
+#         timeout=10
+#     )
+#     r.raise_for_status()
+# 
+# async def amnezia_create_client(client: httpx.AsyncClient, name: str):
+#     r = await client.post(
+#         f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
+#         json={"name": name},
+#         timeout=10
+#     )
+#     r.raise_for_status()
+# 
+# async def amnezia_get_client_id(client: httpx.AsyncClient, name: str) -> str:
+#     r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client", timeout=10)
+#     r.raise_for_status()
+#     for c in r.json():
+#         if c.get("name") == name:
+#             return c["id"]
+#     raise RuntimeError("Client not found after creation")
+# 
+# async def amnezia_get_config(client: httpx.AsyncClient, client_id: str) -> str:
+#     r = await client.get(
+#         f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration",
+#         timeout=10
+#     )
+#     r.raise_for_status()
+#     return r.text
 
 def deactivate_xui_client(client_name: str) -> bool:
     """Деактивирует клиента в 3x-ui по email (client_name) на основном сервере и на RU-ноде."""
@@ -311,28 +310,28 @@ async def process_refund(payment_id: str) -> bool:
             logger.error(f"Failed to deactivate XUI client: {client_name}")
             return False
 
-        # 2. Деактивируем AWG, если есть
-        try:
-            from awg_api import db as awg_db
-            from awg_api import awg_manager
-            awg_keys = execute_query(
-                "SELECT client_id, client_name FROM vpn_keys WHERE (tg_id = %s OR payment_id = %s) AND vpn_type = 'awg'",
-                (tg_id, payment_id),
-                fetch="all",
-            ) or []
-            awg_changed = False
-            for k in awg_keys:
-                c_id = k.get("client_id")
-                if c_id:
-                    awg_db.update_client_enabled(c_id, False)
-                    logger.info(f"🔴 AWG disabled on refund: {k.get('client_name')} ({c_id})")
-                    awg_changed = True
-            if awg_changed:
-                awg_manager.write_server_conf()
-                if awg_manager.is_interface_up():
-                    awg_manager.reload_interface()
-        except Exception as e:
-            logger.error(f"Failed to deactivate AWG on refund: {e}")
+        # 2. Деактивируем AWG (legacy systemd awg_api disabled)
+        # try:
+        #     from awg_api import db as awg_db
+        #     from awg_api import awg_manager
+        #     awg_keys = execute_query(
+        #         "SELECT client_id, client_name FROM vpn_keys WHERE (tg_id = %s OR payment_id = %s) AND vpn_type = 'awg'",
+        #         (tg_id, payment_id),
+        #         fetch="all",
+        #     ) or []
+        #     awg_changed = False
+        #     for k in awg_keys:
+        #         c_id = k.get("client_id")
+        #         if c_id:
+        #             awg_db.update_client_enabled(c_id, False)
+        #             logger.info(f"🔴 AWG disabled on refund: {k.get('client_name')} ({c_id})")
+        #             awg_changed = True
+        #     if awg_changed:
+        #         awg_manager.write_server_conf()
+        #         if awg_manager.is_interface_up():
+        #             awg_manager.reload_interface()
+        # except Exception as e:
+        #     logger.error(f"Failed to deactivate AWG on refund: {e}")
 
         # 3. Деактивируем в БД
         deactivate_key_by_payment(payment_id)
@@ -419,7 +418,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             hysteria_inbound_id = xui.get_hysteria_inbound_id()
             
             # Время истечения — 23:59:59 Tokyo последнего дня
-            duration_days = TARIFFS[tariff_key].get('days', 30)
+            duration_days = TARIFFS.get(tariff_key, {}).get('days', 30) if isinstance(TARIFFS.get(tariff_key), dict) else 30
             tz_tokyo = timezone(timedelta(hours=9))
             raw_end = datetime.now(timezone.utc) + timedelta(days=duration_days)
             end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
@@ -521,7 +520,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 _u = get_user_by_id(web_user_id)
                 _wt = _u.get('web_token') if _u else None
 
-            user_sub_url = f"https://344988.snk.wtf/sub/{_wt}" if _wt else sub_url
+            user_sub_url = f"{PORTAL_BASE_URL}/sub/{_wt}" if _wt else sub_url
 
             # Создаем QR код из прокси-URL
             qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -534,61 +533,25 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             bio.seek(0)            
             
         else:
-            # ========== AmneziaWG ==========
-            logger.info("🔵 Creating AmneziaWG config")
-            
-            async with httpx.AsyncClient(timeout=15) as client:
-                # 5.1 Login
-                r = await client.post(
-                    f"{AMNEZIA_WG_API_URL}/api/session",
-                    json={"password": AMNEZIA_WG_API_PASSWORD},
-                )
-                r.raise_for_status()
+            # ========== AmneziaWG (3x-ui Inbound 17) ==========
+            logger.info("🔵 Creating AmneziaWG config via 3x-ui Inbound 17")
+            from bot_xui.awg_manager import get_or_create_3xui_awg_client
 
-                # 5.2 Delete existing client with same name (dedup on retry)
-                r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
-                r.raise_for_status()
-                for c in r.json():
-                    if c.get("name") == client_name:
-                        old_id = c.get("id")
-                        logger.info(f"Deleting old AWG client {old_id} ({client_name})")
-                        await client.delete(
-                            f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{old_id}",
-                        )
-                        break
+            duration_days = TARIFFS.get(tariff_key, {}).get('days', 30) if isinstance(TARIFFS.get(tariff_key), dict) else 30
+            tz_tokyo = timezone(timedelta(hours=9))
+            raw_end = datetime.now(timezone.utc) + timedelta(days=duration_days)
+            end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
+            expiry_time = int(end_tokyo.timestamp() * 1000)
 
-                # 5.3 Create client
-                r = await client.post(
-                    f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
-                    json={"name": client_name},
-                )
-                r.raise_for_status()
-
-                # 5.4 Получение client_id
-                r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
-                r.raise_for_status()
-
-                for c in r.json():
-                    if c.get("name") == client_name:
-                        client_id = c.get("id")
-                        client_ip = c.get("address")
-                        client_public_key = c.get("publicKey")
-                        break
-
-                if not client_id:
-                    raise RuntimeError("Client ID not found after creation")
-
-                logger.info(f"✅ VPN client created: client_id={client_id}, ip={client_ip}")
-
-                # 5.4 Получение конфигурации
-                r = await client.get(
-                    f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration"
-                )
-                r.raise_for_status()
-
-                client_config = r.text
-                if not client_config:
-                    raise RuntimeError("Empty client configuration")
+            awg_res = get_or_create_3xui_awg_client(
+                tg_id=tg_id,
+                expiry_ms=expiry_time,
+                client_name=client_name
+            )
+            client_id = awg_res["client_id"]
+            client_ip = awg_res["client_ip"]
+            client_public_key = awg_res.get("public_key")
+            client_config = awg_res["config"]
 
 
         # ===== 6. Активация подписки (после успешного создания VPN) =====
@@ -704,7 +667,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 from api.notifications import send_payment_success_email
                 _web_u = get_user_by_id(web_user_id)
                 if _web_u and _web_u.get('email'):
-                    portal_url = f"https://344988.snk.wtf/my/{_web_u.get('web_token', '')}"
+                    portal_url = f"{PORTAL_BASE_URL}/my/{_web_u.get('web_token', '')}"
                     send_payment_success_email(
                         to=_web_u['email'],
                         tariff_name=tariff_name,
@@ -718,7 +681,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             # Build portal URL for wizard link
             from api.db import get_web_token
             _wt = get_web_token(tg_id)
-            portal_url = f"https://344988.snk.wtf/my/{_wt}" if _wt else None
+            portal_url = f"{PORTAL_BASE_URL}/my/{_wt}" if _wt else None
 
             if vpn_type == "vless":
                 # Отправляем VLESS как QR + краткая информация
@@ -732,18 +695,19 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     source="webhook", scenario="payment_success_qr",
                 )
 
-                # Ссылка на подписку + кнопки
+                # Приветственное сообщение без голых ссылок
                 message = (
-                    f"❗ <b>Скопируйте вашу ссылку:</b>\n\n"
-                    f"➡️➡️➡️ <code>{user_sub_url or sub_url}</code> ⬅️\n\n"
-                    f"📱 И вставьте в приложение ⬇️\n\n"
-                    f"💡 <i>Если после добавления не открываются российские сайты (Сбер, Госуслуги), переключите в приложении режим маршрутизации на «Правила / Bypass RU».</i>"
+                    f"🎉 <b>Подписка успешно активирована!</b>\n\n"
+                    f"🚀 <b>Быстрое подключение:</b>\n"
+                    f"Нажмите кнопку ниже, чтобы открыть <b>Мастер подключения</b>. Он автоматически определит ваше устройство "
+                    f"(iOS, Android, Windows, Mac) и настроит VPN в 1 клик с уже включённой умной маршрутизацией.\n\n"
+                    f"🛡 <i>Российские банки, Госуслуги и доставка работают напрямую, YouTube и заблокированные сайты — через защищённый скоростной туннель.</i>"
                 )
                 buttons = []
                 if portal_url:
-                    buttons.append([{"text": "🪄 Гид по подключению", "url": portal_url}])
-                buttons.append([{"text": "📲 Happ: настроить маршрутизацию", "url": "https://344988.snk.wtf/happ-routing"}])
-                buttons.append([{"text": "🚀 Shadowrocket: открыть подписку", "url": f"https://344988.snk.wtf/go-shadowrocket/{_wt}"}])
+                    buttons.append([{"text": "🪄 Личный кабинет и мастер настройки", "url": portal_url}])
+                    buttons.append([{"text": "⚡ Подключить в 1 клик", "url": f"{PORTAL_BASE_URL}/go-connect/{_wt}"}])
+                buttons.append([{"text": "📲 Happ: маршрутизация", "url": f"{PORTAL_BASE_URL}/happ-routing"}])
                 buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
                 await send_telegram_notification(tg_id, message, buttons,
                     source="webhook", scenario="payment_success_vless")
@@ -1145,8 +1109,18 @@ async def yookassa_webhook(request: Request):
     elif web_email:
         user_repr = f"email:{web_email}"
 
+    is_test_account = False
+    if tg_id and str(tg_id) in ("12345", "123456", "999999999"):
+        is_test_account = True
+    if web_email and any(dom in str(web_email).lower() for dom in ("@example.com", "@test.com", "@example.org")):
+        is_test_account = True
+    if metadata and (metadata.get("test_mode") in ("true", True, "1", 1) or metadata.get("is_test") in ("true", True, "1", 1)):
+        is_test_account = True
+
+    log_tag = "[TEST_YOOKASSA_WEBHOOK]" if is_test_account else "[YOOKASSA_WEBHOOK]"
+
     logger.info(
-        f"[YOOKASSA_WEBHOOK] event={event} | status={status_raw} | amount={amount} {currency} | "
+        f"{log_tag} event={event} | status={status_raw} | amount={amount} {currency} | "
         f"tariff={tariff_name} ({tariff}) | user={user_repr} | type={payment_type} | "
         f"reason={reason} | reason_ru={reason_ru} | party={party} | payment_id={payment_id}"
     )

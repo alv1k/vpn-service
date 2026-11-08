@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from yookassa import Configuration, Payment
+from bot_xui.yookassa_client import async_payment_create
 
 from config import (
     YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY,
@@ -20,7 +21,7 @@ from config import (
     VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
     VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
     HYSTERIA_INBOUND_ID, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID,
-    XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
+    XUI_HOST, XUI_USERNAME, XUI_PASSWORD, PORTAL_BASE_URL,
 )
 from bot_xui.tariffs import TARIFFS
 from api.db import execute_query, get_user_by_web_token, get_keys_by_tg_id, get_db
@@ -252,7 +253,7 @@ async def create_order(req: OrderRequest):
         logger.info(f"[TEST] Web order auto-confirmed: {fake_id} for {req.email}, tariff={req.tariff_id}")
 
         return OrderResponse(
-            payment_url=f"https://344988.snk.wtf/my/{user['web_token']}",
+            payment_url=f"{PORTAL_BASE_URL}/my/{user['web_token']}",
             payment_id=fake_id,
             web_token=user["web_token"],
         )
@@ -261,12 +262,12 @@ async def create_order(req: OrderRequest):
     Configuration.account_id = YOO_KASSA_SHOP_ID
     Configuration.secret_key = YOO_KASSA_SECRET_KEY
 
-    payment = Payment.create(
+    payment = await async_payment_create(
         {
             "amount": {"value": str(price), "currency": "RUB"},
             "confirmation": {
                 "type": "redirect",
-                "return_url": f"https://344988.snk.wtf/my/{user['web_token']}",
+                "return_url": f"{PORTAL_BASE_URL}/my/{user['web_token']}",
             },
             "capture": True,
             "save_payment_method": True,
@@ -469,7 +470,7 @@ async def test_extend(req: TestExtendRequest):
 
     # Send email notification
     from api.notifications import send_test_extended_email
-    portal_url = f"https://344988.snk.wtf/my/{user.get('web_token', '')}"
+    portal_url = f"{PORTAL_BASE_URL}/my/{user.get('web_token', '')}"
     send_test_extended_email(to=email, portal_url=portal_url, new_until=new_until)
 
     return TestActivateResponse(
@@ -574,7 +575,7 @@ async def _do_activate_test(user_id: int, email: str) -> dict:
     update_user_subscription_by_id(user_id, sub_until)
 
     from api.notifications import send_test_success_email
-    portal_url = f"https://344988.snk.wtf/my/{get_user_by_id(user_id).get('web_token', '')}"
+    portal_url = f"{PORTAL_BASE_URL}/my/{get_user_by_id(user_id).get('web_token', '')}"
     send_test_success_email(to=email, portal_url=portal_url)
 
     logger.info(f"Test activated: user_id={user_id}, email={email}, sub_url={sub_url}")
@@ -765,7 +766,7 @@ async def activate_trial_by_email(req: TestActivateByEmailRequest):
 # ─────────────────────────────────────────────
 
 ALLOWED_EVENTS = {"visit", "click_proxy", "click_connect", "click_test_sub", "click_tg_bot"}
-ALLOWED_ORIGINS = {"https://alekscko.beget.tech", "https://344988.snk.wtf", "https://tiinservice.online", "https://www.tiinservice.online"}
+ALLOWED_ORIGINS = {"https://alekscko.beget.tech", "https://344988.snk.wtf", "https://tiinservice.online", "https://www.tiinservice.online", "https://ru-server.tiinservice.online"}
 
 
 class SiteEvent(BaseModel):

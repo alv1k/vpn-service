@@ -119,8 +119,18 @@ def convert_to_local(dt: datetime, offset_hours: int = 9) -> str:
     return (dt + timedelta(hours=offset_hours)).strftime("%d.%m.%Y")
 
 
-PUBLIC_BASE_URL = "https://344988.snk.wtf"
-WEB_BASE_URL = "https://344988.snk.wtf"
+from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID
+
+PUBLIC_BASE_URL = PORTAL_BASE_URL
+WEB_BASE_URL = PORTAL_BASE_URL
+DE_SUB_BASE_URL = "https://344988.snk.wtf"
+RU_SUB_BASE_URL = "https://ru-server.tiinservice.online"
+SUB_URL_BASE = DE_SUB_BASE_URL
+
+
+def get_sub_url_base_for_user(tg_id: int | None = None) -> str:
+    """Базовый URL подписки (основной DE Hetzner, резервный RU Selectel)."""
+    return DE_SUB_BASE_URL
 
 
 def make_qr_bytes(data: str, box_size: int = 10, border: int = 5) -> BytesIO:

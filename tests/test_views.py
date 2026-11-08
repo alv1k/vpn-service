@@ -354,7 +354,7 @@ class TestShowSingleConfigVless:
         mock_reply_photo.assert_called_once()
         caption = mock_reply_photo.call_args[1]["caption"]
         assert "Инструкция" in caption
-        assert "344988.snk.wtf/my/tok123" in caption
+        assert "/my/tok123" in caption
 
     @pytest.mark.asyncio
     @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
@@ -389,7 +389,7 @@ class TestShowSingleConfigVless:
 
         markup = mock_reply_photo.call_args[1]["reply_markup"]
         all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
-        assert any("344988.snk.wtf/my/tok123" in u for u in all_urls)
+        assert any("/my/tok123" in u for u in all_urls)
 
     @pytest.mark.asyncio
     @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
@@ -423,11 +423,11 @@ class TestShowSingleConfigVless:
         await show_single_config(query, "tiin_100", MagicMock())
 
         caption = mock_reply_photo.call_args[1]["caption"]
-        assert "344988.snk.wtf/my/" not in caption
+        assert "/my/" not in caption
         # No instruction button without token
         markup = mock_reply_photo.call_args[1]["reply_markup"]
         all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
-        assert not any("344988.snk.wtf/my/" in u for u in all_urls)
+        assert not any("/my/" in u for u in all_urls)
 
 
 # ═════════════════════════════════════════════

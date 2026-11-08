@@ -36,31 +36,34 @@ INBOUND_POOLS = {
     "1": {
         "name": "Inbound #1 (Reality TCP Vision)",
         "port": 7443,
-        "default": "tile.openstreetmap.org",
+        "default": "www.uni-frankfurt.de",
         "candidates": [
-            {"sni": "tile.openstreetmap.org", "desc": "OpenStreetMap Tiles"},
-            {"sni": "ftp.fau.de", "desc": "FAU University Mirror"},
             {"sni": "www.uni-frankfurt.de", "desc": "Frankfurt University"},
-            {"sni": "swscan.apple.com", "desc": "Apple CDN"},
+            {"sni": "distfiles.gentoo.org", "desc": "Gentoo Software Mirror"},
+            {"sni": "ftp.fau.de", "desc": "FAU University Mirror"},
+            {"sni": "tile.openstreetmap.org", "desc": "OpenStreetMap Tiles"},
         ]
     },
     "2": {
         "name": "Inbound #2 (xHTTP Stream)",
         "port": 47447,
-        "default": "www.speedtest.net",
+        "default": "www.samsung.com",
         "candidates": [
-            {"sni": "www.speedtest.net", "desc": "Ookla Speedtest CDN"},
-            {"sni": "www.uni-heidelberg.de", "desc": "Heidelberg University"},
+            {"sni": "www.samsung.com", "desc": "Samsung Global Portal"},
+            {"sni": "www.asus.com", "desc": "ASUS Global Portal"},
+            {"sni": "www.lenovo.com", "desc": "Lenovo Global Portal"},
             {"sni": "www.microsoft.com", "desc": "Microsoft CDN"},
         ]
     },
     "10": {
         "name": "Inbound #10 (Reality Standard)",
         "port": 53151,
-        "default": "www.amazon.com",
+        "default": "www.bahn.de",
         "candidates": [
-            {"sni": "www.amazon.com", "desc": "Amazon Retail CDN"},
-            {"sni": "aws.amazon.com", "desc": "Amazon AWS Portal"},
+            {"sni": "www.bahn.de", "desc": "Deutsche Bahn Portal"},
+            {"sni": "download.opensuse.org", "desc": "openSUSE Germany Mirror"},
+            {"sni": "www.bmw.de", "desc": "BMW Germany Portal"},
+            {"sni": "www.otto.de", "desc": "Otto Marketplace"},
         ]
     },
     "14": {
@@ -180,9 +183,9 @@ def load_state() -> dict:
         except Exception:
             pass
     return {
-        "active_sni_1": "tile.openstreetmap.org",
-        "active_sni_2": "www.speedtest.net",
-        "active_sni_10": "www.amazon.com",
+        "active_sni_1": "www.uni-frankfurt.de",
+        "active_sni_2": "www.samsung.com",
+        "active_sni_10": "www.bahn.de",
         "active_sni_14": "www.speedtest.net",
         "active_sni_15": "swscan.apple.com",
     }

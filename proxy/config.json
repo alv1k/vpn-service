@@ -1,0 +1,58 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": 10808,
+      "listen": "127.0.0.1",
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      },
+      "tag": "socks-in"
+    },
+    {
+      "port": 10809,
+      "listen": "127.0.0.1",
+      "protocol": "http",
+      "settings": {},
+      "tag": "http-in"
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "10.50.0.2",
+            "port": 8443,
+            "users": [
+              {
+                "id": "c136c87c-68d1-4c32-a80c-fef54a8606cf",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "mux": {
+        "enabled": true,
+        "concurrency": 8
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "ru-server.tiinservice.online"
+        },
+        "wsSettings": {
+          "path": "/api/v1/ws"
+        }
+      },
+      "tag": "ru-out"
+    }
+  ]
+}

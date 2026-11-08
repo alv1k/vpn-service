@@ -401,6 +401,42 @@
       <h3 class="mb" style="color:var(--muted)">SITE ANALYTICS</h3>
       <div class="cards" id="dash-site-stats"></div>
 
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:24px 0 10px;flex-wrap:wrap;gap:8px">
+        <div>
+          <h3 style="color:var(--muted);margin:0;display:flex;align-items:center;gap:8px">
+            <span>📡</span> СТАТИСТИКА СПОСОБОВ ПОДПИСКИ (DE vs RU)
+          </h3>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">
+            Сравнение кликов и фактических импортов конфигурации через Германию и Selectel СПб
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn btn-sm" onclick="loadSubImportStats(7)" style="padding:4px 8px;font-size:11px;background:var(--card)">7д</button>
+          <button class="btn btn-sm" onclick="loadSubImportStats(30)" style="padding:4px 8px;font-size:11px;background:var(--accent)">30д</button>
+        </div>
+      </div>
+
+      <div class="cards mb" id="dash-sub-stats-cards"></div>
+
+      <div class="table-wrap mb" style="max-height:360px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+        <table>
+          <thead>
+            <tr>
+              <th>Пользователь</th>
+              <th style="text-align:center">Клики 🇩🇪 DE (snk.wtf)</th>
+              <th style="text-align:center">Клики 🇷🇺 RU (Selectel)</th>
+              <th style="text-align:center">Импорты 🇩🇪 DE</th>
+              <th style="text-align:center">Импорты 🇷🇺 RU</th>
+              <th style="text-align:center">Выбор</th>
+              <th style="text-align:right">Последняя активность</th>
+            </tr>
+          </thead>
+          <tbody id="dash-sub-stats-table">
+            <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:14px">Загрузка статистики импорта...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
       <h3 class="mb" style="color:var(--muted)">WEB PORTAL EVENTS</h3>
       <div class="cards" id="dash-web-events"></div>
 
@@ -2800,6 +2836,81 @@
             </div>`;
         }
       } catch(e) { console.warn('site-stats:', e); }
+
+      // Subscription import stats (DE vs RU)
+      window.loadSubImportStats = async function(days = 30) {
+        try {
+          const res = await api('/api/admin/sub-import-stats?days=' + days);
+          const s = (res && res.summary) || {};
+          const users = (res && res.users) || [];
+
+          const cardsEl = document.getElementById('dash-sub-stats-cards');
+          if (cardsEl) {
+            cardsEl.innerHTML = `
+              <div class="card">
+                <h3>🇩🇪 Клики DE (snk.wtf)</h3>
+                <div class="val" style="color:#a78bfa">${s.de_clicks_total || 0}</div>
+                <div class="sub">сегодня: ${s.de_clicks_today || 0}</div>
+              </div>
+              <div class="card">
+                <h3>🇷🇺 Клики RU (Selectel)</h3>
+                <div class="val" style="color:#38bdf8">${s.ru_clicks_total || 0}</div>
+                <div class="sub">сегодня: ${s.ru_clicks_today || 0}</div>
+              </div>
+              <div class="card">
+                <h3>📥 Импорты DE (Hetzner)</h3>
+                <div class="val" style="color:#4ade80">${s.de_fetches_total || 0}</div>
+                <div class="sub">сегодня: ${s.de_fetches_today || 0}</div>
+              </div>
+              <div class="card">
+                <h3>📥 Импорты RU (Selectel)</h3>
+                <div class="val" style="color:#34d399">${s.ru_fetches_total || 0}</div>
+                <div class="sub">сегодня: ${s.ru_fetches_today || 0}</div>
+              </div>`;
+          }
+
+          const tbody = document.getElementById('dash-sub-stats-table');
+          if (tbody) {
+            if (!users.length) {
+              tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:14px">Пока нет кликов и импортов за выбранный период</td></tr>';
+              return;
+            }
+            tbody.innerHTML = users.map(u => {
+              let choiceBadge = '<span style="color:var(--muted)">—</span>';
+              if (u.last_choice === 'ru') {
+                choiceBadge = '<span class="badge" style="background:#0284c7;color:#fff">🇷🇺 RU Selectel</span>';
+              } else if (u.last_choice === 'de') {
+                choiceBadge = '<span class="badge" style="background:#6366f1;color:#fff">🇩🇪 DE snk.wtf</span>';
+              } else if (u.de_clicks > 0 && u.ru_clicks > 0) {
+                choiceBadge = '<span class="badge" style="background:#8b5cf6;color:#fff">⚖️ Оба</span>';
+              }
+
+              const userName = (u.first_name || '') + (u.last_name ? ' ' + u.last_name : '');
+              const userCell = u.web_token
+                ? portalLink(u.web_token, userName) + (u.tg_id ? ` <span class="mono" style="font-size:11px;color:var(--muted);cursor:pointer" onclick="jumpToUser(${u.tg_id})">(${u.tg_id})</span>` : '')
+                : (u.tg_id ? `<span class="mono" style="cursor:pointer" onclick="jumpToUser(${u.tg_id})">${userName} (${u.tg_id})</span>` : userName);
+
+              const lastActFmt = u.last_activity ? fmtDate(u.last_activity) : '—';
+
+              return `<tr>
+                <td>${userCell}</td>
+                <td style="text-align:center" class="mono">${u.de_clicks > 0 ? '<b style="color:#a78bfa">' + u.de_clicks + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
+                <td style="text-align:center" class="mono">${u.ru_clicks > 0 ? '<b style="color:#38bdf8">' + u.ru_clicks + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
+                <td style="text-align:center" class="mono">${u.de_fetches > 0 ? '<b style="color:#4ade80">' + u.de_fetches + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
+                <td style="text-align:center" class="mono">${u.ru_fetches > 0 ? '<b style="color:#34d399">' + u.ru_fetches + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
+                <td style="text-align:center">${choiceBadge}</td>
+                <td style="text-align:right;color:var(--muted);font-size:12px">${lastActFmt}</td>
+              </tr>`;
+            }).join('');
+          }
+        } catch(e) {
+          console.warn('sub-import-stats error:', e);
+        }
+      };
+
+      try {
+        await window.loadSubImportStats(30);
+      } catch(e) { console.warn('loadSubImportStats error:', e); }
 
       // Active users (personal page visits in last 24h)
       function hesc(s) {

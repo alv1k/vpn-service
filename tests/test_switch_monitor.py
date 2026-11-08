@@ -5,6 +5,7 @@ from pathlib import Path
 from scripts.inbound_switch_monitor import (
     resolve_isp,
     parse_inbound_from_tag,
+    is_connectivity_check,
     SwitchTracker,
     process_log_line,
 )
@@ -119,4 +120,107 @@ def test_threat_sentinel_blocked_alert(tmp_path, monkeypatch):
     assert len(alerts) == 1
     assert "Threat Sentinel" in alerts[0]
     assert "user_attacker@test" in alerts[0]
+
+
+def test_threat_sentinel_ignores_private_lan(tmp_path, monkeypatch):
+    """Test that blocked requests to RFC 1918 private subnets are ignored by Threat Sentinel."""
+    from scripts.inbound_switch_monitor import is_private_target
+
+    assert is_private_target("tcp:192.168.1.105:5001") is True
+    assert is_private_target("tcp:10.0.0.1:80") is True
+    assert is_private_target("tcp:172.16.5.4:443") is True
+    assert is_private_target("127.0.0.1:8080") is True
+    assert is_private_target("tcp:ooni.org:443") is False
+    assert is_private_target("tcp:8.8.8.8:53") is False
+
+    state_file = tmp_path / "test_threat_lan.json"
+    tracker = SwitchTracker(state_file=state_file)
+
+    alerts = []
+    monkeypatch.setattr(tracker, "send_telegram_alert", lambda msg: alerts.append(msg))
+
+    # Send 25 blocked events targeting a local home IP (e.g. Synology NAS on 192.168.1.105:5001)
+    for i in range(25):
+        tracker.process_blocked_event("2026/11/03 07:16:00", "185.26.100.34", "tcp:192.168.1.105:5001", "vless_6335998601")
+
+    # Should not trigger any alerts and should not count
+    assert len(alerts) == 0
+    assert len(tracker.blocked_attempts.get("vless_6335998601", [])) == 0
+
+
+def test_threat_sentinel_ignores_quic_udp_443(tmp_path, monkeypatch):
+    """Test that blocked QUIC requests (udp:*:443) are ignored by Threat Sentinel (legitimate TCP-fallback behavior)."""
+    state_file = tmp_path / "test_threat_quic.json"
+    tracker = SwitchTracker(state_file=state_file)
+
+    alerts = []
+    monkeypatch.setattr(tracker, "send_telegram_alert", lambda msg: alerts.append(msg))
+
+    # Send 25 blocked QUIC events from an active user (e.g. Meta / Apple apps)
+    for i in range(25):
+        tracker.process_blocked_event("2026/11/08 08:20:00", "193.29.33.45", "udp:157.240.0.63:443", "tiin_50613379")
+
+    # Should not trigger any alerts and should not count
+    assert len(alerts) == 0
+    assert len(tracker.blocked_attempts.get("tiin_50613379", [])) == 0
+
+
+def test_is_connectivity_check():
+    assert is_connectivity_check("tcp:www.gstatic.com:443") is True
+    assert is_connectivity_check("tcp:connectivitycheck.android.com:443") is True
+    assert is_connectivity_check("tcp:cp.cloudflare.com:80") is True
+    assert is_connectivity_check("tcp:clients3.google.com:443") is True
+    assert is_connectivity_check("tcp:google.com:443") is False
+    assert is_connectivity_check("tcp:yandex.ru:443") is False
+
+
+def test_ping_burst_does_not_trigger_dpi_alert(tmp_path, monkeypatch):
+    """Verifies that rapid ping checks to connectivity endpoints do not trigger false DPI Sentinel alerts."""
+    state_file = tmp_path / "test_ping_filter.json"
+    tracker = SwitchTracker(state_file=state_file)
+
+    alerts = []
+    monkeypatch.setattr(tracker, "send_telegram_alert", lambda msg: alerts.append(msg))
+
+    # User 1 and User 2 test ping to www.gstatic.com across Reality and xHTTP
+    # Line 1: user1 on Reality Standard
+    line1 = "2026/11/05 08:31:28.100 from 91.79.243.14:1234 accepted tcp:www.gstatic.com:443 [in-53151-tcp >> direct] email: tiin_web_32"
+    # Line 2: user1 pings xHTTP Stream (0s gap, connectivity endpoint)
+    line2 = "2026/11/05 08:31:28.150 from 91.79.243.14:1235 accepted tcp:www.gstatic.com:443 [in-47447-tcp >> direct] email: tiin_web_32"
+    # Line 3: user2 on Reality Standard
+    line3 = "2026/11/05 08:31:39.100 from 91.79.243.14:2234 accepted tcp:www.gstatic.com:443 [in-53151-tcp >> direct] email: tiin_364224373"
+    # Line 4: user2 pings xHTTP Stream (0s gap, connectivity endpoint)
+    line4 = "2026/11/05 08:31:39.150 from 91.79.243.14:2235 accepted tcp:www.gstatic.com:443 [in-47447-tcp >> direct] email: tiin_364224373"
+
+    for l in (line1, line2, line3, line4):
+        process_log_line(l, tracker)
+
+    # Both ping switches should NOT register fallback anomaly events or send alert
+    assert len(alerts) == 0
+    assert len(tracker.recent_fallback_events) == 0
+
+
+def test_mass_wave_requires_multiple_ips(tmp_path, monkeypatch):
+    """Verifies that multiple user accounts on the same single IP are treated as a single client, not a mass wave."""
+    import time
+    state_file = tmp_path / "test_mass_wave_ips.json"
+    tracker = SwitchTracker(state_file=state_file)
+
+    alerts = []
+    monkeypatch.setattr(tracker, "send_telegram_alert", lambda msg: alerts.append(msg))
+
+    now = time.time()
+    # 2 users fallback on the SAME IP (e.g. 91.79.243.14 on Beeline) with real browsing target
+    tracker.check_anomaly_alert("Beeline", "Reality Standard (53151)", "xHTTP Stream (47447)", "user1", now, client_ip="91.79.243.14", dt=60.0, target="tcp:instagram.com:443")
+    tracker.check_anomaly_alert("Beeline", "Reality Standard (53151)", "xHTTP Stream (47447)", "user2", now + 10, client_ip="91.79.243.14", dt=60.0, target="tcp:instagram.com:443")
+
+    # Only 1 unique IP -> should NOT trigger mass wave alert (needs >= 5 events for single IP)
+    assert len(alerts) == 0
+
+    # But if a second user from a DIFFERENT IP falls back -> mass wave triggered!
+    tracker.check_anomaly_alert("Beeline", "Reality Standard (53151)", "xHTTP Stream (47447)", "user3", now + 20, client_ip="91.78.10.20", dt=60.0, target="tcp:instagram.com:443")
+    assert len(alerts) == 1
+    assert "DPI Sentinel Alert • Beeline" in alerts[0]
+
+
 

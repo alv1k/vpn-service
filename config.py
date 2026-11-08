@@ -15,6 +15,7 @@ YOO_KASSA_SECRET_KEY = os.getenv("YOO_KASSA_SECRET_KEY")
 # YooKassa: тестовые креды (для админского тест-режима)
 YOO_KASSA_TEST_SHOP_ID = os.getenv("YOO_KASSA_TEST_SHOP_ID")
 YOO_KASSA_TEST_SECRET_KEY = os.getenv("YOO_KASSA_TEST_SECRET_KEY")
+YOO_KASSA_PROXY = os.getenv("YOO_KASSA_PROXY", "http://127.0.0.1:10809")
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
@@ -46,6 +47,10 @@ XUI_USERNAME = os.getenv("XUI_USERNAME")
 XUI_PASSWORD = os.getenv("XUI_PASSWORD")
 XUI_TOTP_SECRET = os.getenv("XUI_TOTP_SECRET", "")
 XUI_SUB_PATH = os.getenv("XUI_SUB_PATH")
+
+# Portal / Web base URL for client cabinet and subscriptions (accessible without VPN in RU)
+PORTAL_BASE_URL = os.getenv("PORTAL_BASE_URL", "https://ru-server.tiinservice.online")
+SUB_BASE_URL = os.getenv("SUB_BASE_URL", "https://sub.tiinservice.online")
 
 # VLESS настройки
 VLESS_DOMAIN = os.getenv("VLESS_DOMAIN")

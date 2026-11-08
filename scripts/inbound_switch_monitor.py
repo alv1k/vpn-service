@@ -22,10 +22,11 @@ import urllib.parse
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 try:
-    from config import ADMIN_TG_ID, TELEGRAM_BOT_TOKEN
+    from config import ADMIN_TG_ID, TELEGRAM_BOT_TOKEN, PORTAL_BASE_URL
 except Exception as e:
     ADMIN_TG_ID = None
     TELEGRAM_BOT_TOKEN = None
+    PORTAL_BASE_URL = "https://ru-server.tiinservice.online"
     env_path = BASE_DIR / ".env"
     if env_path.exists():
         with open(env_path, "r", encoding="utf-8") as f:
@@ -36,12 +37,24 @@ except Exception as e:
                     ADMIN_TG_ID = int(val) if val.isdigit() else None
                 elif line.startswith("TELEGRAM_BOT_TOKEN=") and not TELEGRAM_BOT_TOKEN:
                     TELEGRAM_BOT_TOKEN = line.split("=", 1)[1].strip().strip('"').strip("'")
+                elif line.startswith("PORTAL_BASE_URL="):
+                    PORTAL_BASE_URL = line.split("=", 1)[1].strip().strip('"').strip("'")
 
 DATA_DIR = BASE_DIR / "data"
 LOG_DIR = BASE_DIR / "logs"
 STATE_FILE = DATA_DIR / "inbound_switches.json"
+ROUTING_ALERTS_STATE_FILE = DATA_DIR / "routing_issue_alerts.json"
 EVENTS_LOG_FILE = LOG_DIR / "inbound_switches.log"
 ACCESS_LOG_PATH = Path("/var/log/x-ui/access.log")
+
+# Домены РФ с жестким геоблоком
+GEOBLOCKED_RU_DOMAINS = (
+    "sberbank.ru", "online.sberbank.ru", "sber.ru",
+    "gosuslugi.ru", "esia.gosuslugi.ru", "gu-st.ru", "pos.gosuslugi.ru",
+    "nalog.ru", "nalog.gov.ru", "cbr.ru", "nspk.ru", "sbp.nspk.ru", "mir-pay.ru",
+    "vtb.ru", "online.vtb.ru", "tbank.ru", "t-bank.ru", "tinkoff.ru", "alfabank.ru",
+    "e-yakutia.ru", "sakha.gov.ru", "crpt.ru", "честныйзнак.рф", "emias.info"
+)
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -186,6 +199,56 @@ def resolve_user_display(email: str) -> str:
     return display
 
 
+def is_private_target(target: str) -> bool:
+    """Проверяет, является ли цель обращением к приватным/локальным адресам (RFC 1918, CGNAT, loopback, link-local)."""
+    if not target:
+        return False
+    clean = target
+    for prefix in ("tcp:", "udp:"):
+        if clean.startswith(prefix):
+            clean = clean[len(prefix):]
+            break
+    # IPv6 вида [::1]:port или [fe80::...]:port
+    if clean.startswith("[") and "]" in clean:
+        host = clean[1:clean.index("]")]
+    elif ":" in clean:
+        host = clean.split(":", 1)[0]
+    else:
+        host = clean
+
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+    except ValueError:
+        return False
+
+
+CONNECTIVITY_CHECK_DOMAINS = (
+    "gstatic.com",
+    "connectivitycheck.gstatic.com",
+    "connectivitycheck.android.com",
+    "clients3.google.com",
+    "cp.cloudflare.com",
+    "cloudflare-dns.com",
+    "msftconnecttest.com",
+    "detectportal.firefox.com",
+    "captive.apple.com",
+)
+
+
+def is_connectivity_check(target: str) -> bool:
+    """Определяет служебные запросы проверки пинга/доступности (connectivity check)."""
+    if not target:
+        return False
+    clean = target.lower()
+    for prefix in ("tcp:", "udp:"):
+        if clean.startswith(prefix):
+            clean = clean[len(prefix):]
+            break
+    host = clean.split(":", 1)[0]
+    return any(host == d or host.endswith("." + d) for d in CONNECTIVITY_CHECK_DOMAINS)
+
+
 class SwitchTracker:
     def __init__(self, state_file=STATE_FILE):
         self.state_file = Path(state_file)
@@ -199,6 +262,7 @@ class SwitchTracker:
         self.recent_fallback_events = []
         self.alert_cooldowns = {}
         self.blocked_attempts = defaultdict(list)
+        self.routing_issue_hits = defaultdict(list)
         self.load_state()
 
     def send_telegram_alert(self, text: str):
@@ -221,8 +285,154 @@ class SwitchTracker:
         except Exception as e:
             logger.warning(f"Failed to send Telegram switch alert: {e}")
 
-    def check_anomaly_alert(self, isp: str, prev_inbound: str, new_inbound: str, email: str, now_ts: float, client_ip: str = ""):
+    def _resolve_user_routing_identity(self, email: str) -> tuple[int | None, str | None]:
+        """Разрешает идентификатор клиента Xray в (tg_id, web_token)."""
+        tg_id = None
+        web_token = None
+        if email.startswith("tiin_web_"):
+            try:
+                uid = int(email.split("tiin_web_")[1])
+                from api.db import get_user_by_id
+                u = get_user_by_id(uid)
+                if u:
+                    tg_id = u.get("tg_id")
+                    web_token = u.get("web_token")
+            except Exception:
+                pass
+        elif email.startswith("tiin_") or email.startswith("vless_"):
+            raw_id = email.split("_", 1)[1]
+            if raw_id.isdigit():
+                tg_id = int(raw_id)
+                try:
+                    from api.db import get_web_token
+                    web_token = get_web_token(tg_id)
+                except Exception:
+                    pass
+        return tg_id, web_token
+
+    def _get_routing_alert_cooldown(self, tg_id: int) -> float:
+        try:
+            if ROUTING_ALERTS_STATE_FILE.exists():
+                with open(ROUTING_ALERTS_STATE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    val = data.get(str(tg_id))
+                    if val:
+                        return datetime.fromisoformat(val).timestamp()
+        except Exception:
+            pass
+        return 0.0
+
+    def _set_routing_alert_cooldown(self, tg_id: int, now_ts: float):
+        try:
+            data = {}
+            if ROUTING_ALERTS_STATE_FILE.exists():
+                with open(ROUTING_ALERTS_STATE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            data[str(tg_id)] = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
+            with open(ROUTING_ALERTS_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Ошибка сохранения кулдауна маршрутизации: {e}")
+
+    def _send_routing_issue_notification(self, tg_id: int, web_token: str | None, domain: str):
+        """Отправляет персональную подсказку пользователю при попытке открыть сайт РФ через туннель."""
+        if not TELEGRAM_BOT_TOKEN:
+            return
+        text = (
+            f"💡 <b>Заметили, что вы открываете российские сервисы ({domain}) через сервер VPN</b>\n\n"
+            f"Из-за европейского IP-адреса сайты банков, Госуслуг и доставки могут работать с задержкой или блокировать вход.\n\n"
+            f"Включите <b>Умную маршрутизацию TIIN</b> в 1 клик — и все сервисы РФ будут открываться напрямую на полной скорости, "
+            f"а YouTube и заблокированные сайты — через защищённый туннель!"
+        )
+        buttons = [
+            [{"text": "📲 Включить правила в Happ (1 клик)", "url": f"{PORTAL_BASE_URL}/happ-routing"}],
+        ]
+        if web_token:
+            buttons.append([{"text": "🪄 Мастер подключения и инструкции", "url": f"{PORTAL_BASE_URL}/my/{web_token}"}])
+
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": tg_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+                "reply_markup": json.dumps({"inline_keyboard": buttons}),
+            }
+            data = urllib.parse.urlencode(payload).encode("utf-8")
+            req = urllib.request.Request(url, data=data, headers={"User-Agent": "TiinRoutingMonitor/1.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                logger.info(f"✅ Уведомление о маршрутизации успешно отправлено пользователю {tg_id} ({domain})")
+                try:
+                    from api.db import log_message_sent
+                    log_message_sent(
+                        tg_id=tg_id,
+                        source="routing_monitor",
+                        scenario="routing_issue_alert",
+                        message_text=text,
+                        status="sent",
+                    )
+                except Exception as le:
+                    logger.warning(f"Не удалось записать в message_log: {le}")
+        except Exception as e:
+            logger.warning(f"Не удалось отправить уведомление о маршрутизации пользователю {tg_id}: {e}")
+            try:
+                from api.db import log_message_sent
+                log_message_sent(
+                    tg_id=tg_id,
+                    source="routing_monitor",
+                    scenario="routing_issue_alert",
+                    message_text=text,
+                    status="failed",
+                    error_text=str(e)[:255],
+                )
+            except Exception:
+                pass
+
+    def check_routing_issue(self, target: str, email: str):
+        """Детектирует попытки пользователей открывать сервисы РФ с жестким геоблоком через зарубежный прокси."""
+        if not email or email in ("bwd2scof", "test_awg_user_01", "unknown"):
+            return
+
+        matched_domain = None
+        for dom in GEOBLOCKED_RU_DOMAINS:
+            if dom in target:
+                matched_domain = dom
+                break
+        if not matched_domain:
+            return
+
+        now = time.time()
+        # Храним события за последний час
+        cutoff = now - 3600
+        hits = [h for h in self.routing_issue_hits[email] if h[0] > cutoff]
+        hits.append((now, matched_domain))
+        self.routing_issue_hits[email] = hits
+
+        # Порог срабатывания: минимум 2 обращения за час
+        if len(hits) < 2:
+            return
+
+        # Разрешаем email в tg_id и web_token
+        tg_id, web_token = self._resolve_user_routing_identity(email)
+        if not tg_id:
+            return
+
+        # Проверяем кулдаун (7 дней = 604800 сек)
+        last_alert_ts = self._get_routing_alert_cooldown(tg_id)
+        if (now - last_alert_ts) < (7 * 86400):
+            return
+
+        # Отправляем уведомление и ставим на кулдаун
+        self._send_routing_issue_notification(tg_id, web_token, matched_domain)
+        self._set_routing_alert_cooldown(tg_id, now)
+
+    def check_anomaly_alert(self, isp: str, prev_inbound: str, new_inbound: str, email: str, now_ts: float, client_ip: str = "", dt: float = 999.0, target: str = ""):
         """Проверяет всплеск вынужденных переключений с Hysteria/Reality на xHTTP/Armor."""
+        # Игнорируем пакетные замеры пинга (смена протокола за < 2 сек или обращение к ping-доменам)
+        if dt < 2.0 or is_connectivity_check(target):
+            return
+
         cutoff = now_ts - 900
         self.recent_fallback_events = [ev for ev in self.recent_fallback_events if ev["ts"] > cutoff]
 
@@ -243,29 +453,29 @@ class SwitchTracker:
         unique_users = {ev["email"] for ev in matching}
         unique_ips = {ev["ip"] for ev in matching if ev.get("ip")}
 
-        # Фильтрация шума от мультидевайсных аккаунтов:
-        # Волна блокировки оператора: минимум 2 РАЗНЫХ пользователя упали на xHTTP
-        # Одиночный пользователь: минимум 5 подтвержденных переключений со строго ОДНОГО IP
-        is_mass_wave = len(unique_users) >= 2
-        is_single_user_persistent = len(unique_users) == 1 and len(matching) >= 5 and len(unique_ips) == 1
+        # Фильтрация шума от мультидевайсных аккаунтов и локальных тестов:
+        # 1. Волна блокировки оператора: минимум 2 РАЗНЫХ пользователя на РАЗНЫХ внешних IP
+        is_mass_wave = len(unique_users) >= 2 and len(unique_ips) >= 2
+        # 2. Локальная проблема / один IP: минимум 5 подтвержденных переключений со строго одного IP
+        is_single_ip_persistent = len(matching) >= 5 and len(unique_ips) == 1
 
-        if is_mass_wave or is_single_user_persistent:
+        if is_mass_wave or is_single_ip_persistent:
             cooldown_key = f"{isp}_{prev_inbound}"
             last_alert = self.alert_cooldowns.get(cooldown_key, 0)
             if now_ts - last_alert > 1800:
                 self.alert_cooldowns[cooldown_key] = now_ts
                 users_list = [resolve_user_display(u) for u in sorted(unique_users)]
-                if len(users_list) == 1:
-                    user_label = "▫️ <b>Пользователь (одно устройство):</b>"
+                if len(unique_ips) == 1:
+                    user_label = "▫️ <b>Пользователь (одно устройство / IP):</b>"
                     ip_info = f" [IP: <code>{list(unique_ips)[0]}</code>]" if unique_ips else ""
-                    users_str = f"{users_list[0]}{ip_info}"
+                    users_str = f"{', '.join(users_list)}{ip_info}"
                     footer = f"<i>ℹ️ Локальная нестабильность/блокировка у одного клиента на операторе {isp}. Трафик подхвачен xHTTP.</i>"
                 else:
                     user_label = f"▫️ <b>Пользователи ({len(users_list)}):</b>"
                     users_str = ", ".join(users_list[:5])
                     if len(users_list) > 5:
                         users_str += f" (+еще {len(users_list) - 5})"
-                    footer = f"<i>🚨 <b>Внимание:</b> Подтверждена волна блокировки UDP/Reality оператором {isp} (затронуто {len(unique_users)} клиентов). Трафик подхвачен xHTTP.</i>"
+                    footer = f"<i>🚨 <b>Внимание:</b> Подтверждена волна блокировки UDP/Reality оператором {isp} (затронуто {len(unique_users)} клиентов на {len(unique_ips)} IP). Трафик подхвачен xHTTP.</i>"
 
                 alert_text = (
                     f"🚨 <b>DPI Sentinel Alert • {isp}</b>\n\n"
@@ -322,6 +532,15 @@ class SwitchTracker:
         if not email or email in ("api", "none", "bwd2scof", "test_awg_user_01", "test_awg_user") or client_ip in ("127.0.0.1", "::1"):
             return
 
+        # Игнорируем домашние и приватные LAN-адреса (192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12),
+        # возникающие, когда у клиента в VPN-приложении не включен «Обход локальной сети» (Bypass LAN).
+        if is_private_target(target):
+            return
+
+        # Игнорируем легитимный QUIC/HTTP-3 (udp:*:443), намеренно сбрасываемый Xray в blocked для мгновенного TCP-фоллбэка
+        if target.startswith("udp:") and target.endswith(":443"):
+            return
+
         now = time.time()
         self.blocked_attempts[email] = [t for t in self.blocked_attempts[email] if now - t < 60]
         self.blocked_attempts[email].append(now)
@@ -344,7 +563,7 @@ class SwitchTracker:
                 self.send_telegram_alert(msg)
                 logger.warning(f"THREAT ALERT: {email} triggered {count} blocked events (last target: {target})")
 
-    def process_event(self, timestamp_str: str, client_ip: str, inbound_raw: str, email: str):
+    def process_event(self, timestamp_str: str, client_ip: str, inbound_raw: str, email: str, target: str = ""):
         # Ignore API, local healthchecks and system/bridge accounts
         if not email or email in ("api", "none", "bwd2scof", "test_awg_user_01", "test_awg_user") or client_ip in ("127.0.0.1", "::1"):
             return
@@ -375,7 +594,7 @@ class SwitchTracker:
                     f"Gap: {int(dt)}s | IP: {client_ip}"
                 )
                 logger.info(log_msg)
-                self.check_anomaly_alert(isp, prev_inbound, inbound, email, now_ts, client_ip)
+                self.check_anomaly_alert(isp, prev_inbound, inbound, email, now_ts, client_ip, dt=dt, target=target)
         elif prev_user:
             # Новый IP для пользователя. Проверяем роуминг, если предыдущий IP неактивен > 30s
             prev_isp = prev_user.get("isp")
@@ -472,14 +691,20 @@ def process_log_line(line: str, tracker: SwitchTracker):
         m_email = re.search(r'email:\s*([^\s]+)', line)
         email = m_email.group(1) if m_email else ""
 
+        # Extract Target (domain / destination IP)
+        m_target = re.search(r'accepted\s+([^\s]+)\s+\[', line)
+        target = m_target.group(1) if m_target else ""
+
         # Threat Sentinel: проверка на сброс в blackhole (OONI, РКН honeypot, сканирование)
         if "-> blocked" in line or ">> blocked" in line:
-            m_target = re.search(r'accepted\s+([^\s]+)\s+\[', line)
-            target = m_target.group(1) if m_target else "unknown"
-            tracker.process_blocked_event(ts_str, ip, target, email)
+            tracker.process_blocked_event(ts_str, ip, target or "unknown", email)
             return
 
-        tracker.process_event(ts_str, ip, inbound_raw, email)
+        # Проверка маршрутизации: выявление клиентов без Split-Tunneling при обращении к сервисам РФ
+        if target and email:
+            tracker.check_routing_issue(target, email)
+
+        tracker.process_event(ts_str, ip, inbound_raw, email, target)
     except Exception:
         pass
 

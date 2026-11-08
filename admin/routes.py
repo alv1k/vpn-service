@@ -26,10 +26,11 @@ from admin.auth import (
     SESSION_MAX_AGE, _require_admin_session, _ws_authenticate,
 )
 
-try:
-    from awg_api import db as awg_db
-except Exception:
-    awg_db = None
+# try:
+#     from awg_api import db as awg_db
+# except Exception:
+#     awg_db = None
+awg_db = None
 
 logger = logging.getLogger("admin")
 
@@ -476,40 +477,41 @@ def _get_online_users() -> tuple[list[dict], set]:
         logger.warning(f"Traffic fetch error: {e}")
 
     # AWG: check last handshake from awg show dump
-    try:
-        awg_clients = awg_db.list_clients()
-        pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
-        result = subprocess.run(
-            ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.strip().split("\n")[1:]:
-            parts = line.split("\t")
-            if len(parts) < 7:
-                continue
-            pub_key = parts[0]
-            last_handshake = int(parts[4]) if parts[4] != "0" else 0
-            if last_handshake > 0 and (time.time() - last_handshake) < 300:
-                name = pub_to_name.get(pub_key, pub_key[:12])
-                rx = int(parts[5]) if parts[5].isdigit() else 0
-                tx = int(parts[6]) if parts[6].isdigit() else 0
-                speed, last = _calc_speed_with_last(name, "awg", rx + tx)
-                # Parse endpoint IP from parts[3] (format "ip:port")
-                awg_ip = 1
-                if len(parts) > 3 and parts[3] and parts[3] != "(none)":
-                    ep = parts[3].rsplit(":", 1)[0]
-                    if ep and re.match(r'^\d+\.\d+\.\d+\.\d+$', ep):
-                        awg_ip = ep
-                raw_entries.append({
-                    "name": name,
-                    "ip_count": 1,
-                    "awg_ip": awg_ip,
-                    "type": "awg",
-                    "last_seen": datetime.fromtimestamp(last_handshake, tz=YAKUTSK_TZ).strftime("%H:%M:%S"),
-                    "speed_mbps": _speed_mbps(speed),
-                    "last_speed_mbps": _speed_mbps(last),
-                })
-    except Exception as e:
-        logger.warning(f"AWG online parse error: {e}")
+    if awg_db:
+        try:
+            awg_clients = awg_db.list_clients()
+            pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
+            result = subprocess.run(
+                ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().split("\n")[1:]:
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                pub_key = parts[0]
+                last_handshake = int(parts[4]) if parts[4] != "0" else 0
+                if last_handshake > 0 and (time.time() - last_handshake) < 300:
+                    name = pub_to_name.get(pub_key, pub_key[:12])
+                    rx = int(parts[5]) if parts[5].isdigit() else 0
+                    tx = int(parts[6]) if parts[6].isdigit() else 0
+                    speed, last = _calc_speed_with_last(name, "awg", rx + tx)
+                    # Parse endpoint IP from parts[3] (format "ip:port")
+                    awg_ip = 1
+                    if len(parts) > 3 and parts[3] and parts[3] != "(none)":
+                        ep = parts[3].rsplit(":", 1)[0]
+                        if ep and re.match(r'^\d+\.\d+\.\d+\.\d+$', ep):
+                            awg_ip = ep
+                    raw_entries.append({
+                        "name": name,
+                        "ip_count": 1,
+                        "awg_ip": awg_ip,
+                        "type": "awg",
+                        "last_seen": datetime.fromtimestamp(last_handshake, tz=YAKUTSK_TZ).strftime("%H:%M:%S"),
+                        "speed_mbps": _speed_mbps(speed),
+                        "last_speed_mbps": _speed_mbps(last),
+                    })
+        except Exception as e:
+            logger.warning(f"AWG online parse error: {e}")
 
     # Resolve all client names to user info
     all_names = [e["name"] for e in raw_entries]
@@ -885,38 +887,39 @@ async def offline_users():
         logger.warning(f"Offline RU Node error: {e}")
 
     # ── AWG: last handshake for all peers ──
-    try:
-        awg_clients = awg_db.list_clients()
-        pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
-        enabled_names = {c["name"] for c in awg_clients if c.get("enabled", True)}
-        result = subprocess.run(
-            ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.strip().split("\n")[1:]:
-            parts = line.split("\t")
-            if len(parts) < 7:
-                continue
-            pub_key = parts[0]
-            name = pub_to_name.get(pub_key)
-            if not name or ("awg", name) in online_identities or name in online_names or name not in enabled_names:
-                continue
-            last_hs = int(parts[4]) if parts[4] != "0" else 0
-            last_str = ""
-            last_ts = 0
-            if last_hs > 0:
-                last_str = datetime.fromtimestamp(
-                    last_hs, tz=YAKUTSK_TZ
-                ).strftime("%Y-%m-%d %H:%M")
-                last_ts = last_hs * 1000
+    if awg_db:
+        try:
+            awg_clients = awg_db.list_clients()
+            pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
+            enabled_names = {c["name"] for c in awg_clients if c.get("enabled", True)}
+            result = subprocess.run(
+                ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().split("\n")[1:]:
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                pub_key = parts[0]
+                name = pub_to_name.get(pub_key)
+                if not name or ("awg", name) in online_identities or name in online_names or name not in enabled_names:
+                    continue
+                last_hs = int(parts[4]) if parts[4] != "0" else 0
+                last_str = ""
+                last_ts = 0
+                if last_hs > 0:
+                    last_str = datetime.fromtimestamp(
+                        last_hs, tz=YAKUTSK_TZ
+                    ).strftime("%Y-%m-%d %H:%M")
+                    last_ts = last_hs * 1000
 
-            raw_entries.append({
-                "name": name,
-                "type": "awg",
-                "last_seen": last_str,
-                "last_seen_ts": last_ts,
-            })
-    except Exception as e:
-        logger.warning(f"Offline AWG error: {e}")
+                raw_entries.append({
+                    "name": name,
+                    "type": "awg",
+                    "last_seen": last_str,
+                    "last_seen_ts": last_ts,
+                })
+        except Exception as e:
+            logger.warning(f"Offline AWG error: {e}")
 
     # Resolve all client names to user info
     all_names = [e["name"] for e in raw_entries]
@@ -1472,15 +1475,16 @@ async def delete_server_cost(item_id: int):
 
 @router.get("/dashboard")
 async def dashboard():
-    # AWG stats
-    awg_clients = awg_db.list_clients()
-    awg_enabled = sum(1 for c in awg_clients if c["enabled"])
+    # AWG stats (legacy awg_api disabled)
+    awg_clients = awg_db.list_clients() if awg_db else []
+    awg_enabled = sum(1 for c in awg_clients if c.get("enabled"))
     awg_up = False
-    try:
-        r = subprocess.run(["awg", "show", "awg0"], capture_output=True, text=True)
-        awg_up = r.returncode == 0
-    except Exception:
-        pass
+    if awg_db:
+        try:
+            r = subprocess.run(["awg", "show", "awg0"], capture_output=True, text=True)
+            awg_up = r.returncode == 0
+        except Exception:
+            pass
 
     # XUI stats
     xui_data = {"inbounds": 0, "clients": 0, "up": 0, "down": 0, "running": False}
@@ -1609,6 +1613,8 @@ async def dashboard():
 
 @router.get("/awg/server")
 async def awg_server():
+    if not awg_db:
+        return {"status": "inbound_17", "info": "AmneziaWG managed via 3x-ui Inbound 17"}
     srv = awg_db.get_server_config()
     if not srv:
         return {"error": "No server config"}
@@ -1918,23 +1924,24 @@ async def users_today():
 
     # Get AWG traffic from awg show dump
     awg_traffic: dict[str, dict] = {}  # name -> {rx, tx}
-    try:
-        awg_clients = awg_db.list_clients()
-        pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
-        result = subprocess.run(
-            ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.strip().split("\n")[1:]:
-            parts = line.split("\t")
-            if len(parts) < 7:
-                continue
-            name = pub_to_name.get(parts[0], "")
-            if name:
-                rx = int(parts[5]) if parts[5].isdigit() else 0
-                tx = int(parts[6]) if parts[6].isdigit() else 0
-                awg_traffic[name] = {"rx": rx, "tx": tx}
-    except Exception as e:
-        logger.warning(f"AWG traffic fetch for new users: {e}")
+    if awg_db:
+        try:
+            awg_clients = awg_db.list_clients()
+            pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
+            result = subprocess.run(
+                ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().split("\n")[1:]:
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                name = pub_to_name.get(parts[0], "")
+                if name:
+                    rx = int(parts[5]) if parts[5].isdigit() else 0
+                    tx = int(parts[6]) if parts[6].isdigit() else 0
+                    awg_traffic[name] = {"rx": rx, "tx": tx}
+        except Exception as e:
+            logger.warning(f"AWG traffic fetch for new users: {e}")
 
     # Get online users for speed — build name->speed map from all protocol names
     online, _ = _get_online_users()
@@ -2310,16 +2317,16 @@ async def user_delete(tg_id: int, request: Request):
     except Exception as e:
         logger.warning(f"XUI SQLite deletion error: {e}")
 
-    # 3. Delete from AWG (if legacy awg_api is configured)
-    try:
-        from awg_api import awg_manager, db as awg_db
-        if awg_db.delete_client_by_name(client_name):
-            del_result["awg_clients"] = 1
-            awg_manager.write_server_conf()
-            if awg_manager.is_interface_up():
-                awg_manager.reload_interface()
-    except Exception as e:
-        logger.debug(f"AWG legacy deletion skipped or failed for {client_name}: {e}")
+    # 3. Delete from AWG (legacy awg_api disabled)
+    # try:
+    #     from awg_api import awg_manager, db as awg_db
+    #     if awg_db.delete_client_by_name(client_name):
+    #         del_result["awg_clients"] = 1
+    #         awg_manager.write_server_conf()
+    #         if awg_manager.is_interface_up():
+    #             awg_manager.reload_interface()
+    # except Exception as e:
+    #     logger.debug(f"AWG legacy deletion skipped or failed for {client_name}: {e}")
 
     # 4. Create x-ui backup before DB deletion
     backup_path = None
@@ -2713,6 +2720,7 @@ def get_admin_page_route():
 async def refund_payment(payment_id: str):
     """Refund a succeeded payment via YooKassa SDK and deactivate user's VPN config."""
     from yookassa import Configuration, Refund
+    from bot_xui.yookassa_client import async_refund_create
     import uuid
     from api.db import get_payment_by_id, update_payment_status, log_message_sent, get_user_email
     from api.webhook import process_refund, send_telegram_notification
@@ -2746,7 +2754,7 @@ async def refund_payment(payment_id: str):
     idempotency_key = str(uuid.uuid4())
 
     try:
-        refund_res = Refund.create({
+        refund_res = await async_refund_create({
             "amount": {
                 "value": amount_val,
                 "currency": "RUB"
@@ -2819,6 +2827,7 @@ async def create_test_payment(request: Request):
     """Create a YooKassa test payment so admin can verify the full flow:
     payment → webhook → VLESS sub link registration."""
     from yookassa import Configuration, Payment as YooPayment
+    from bot_xui.yookassa_client import async_payment_create
     from config import (
         YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
         YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY, ADMIN_TG_ID,
@@ -2842,7 +2851,7 @@ async def create_test_payment(request: Request):
     Configuration.secret_key = YOO_KASSA_TEST_SECRET_KEY
 
     try:
-        payment = YooPayment.create(
+        payment = await async_payment_create(
             {
                 "amount": {"value": str(tariff["price"]), "currency": "RUB"},
                 "confirmation": {
