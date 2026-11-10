@@ -1,0 +1,36 @@
+name: Deploy VPN Service to VPS
+
+on:
+  push:
+    branches: [ develop, main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy & Restart Services on VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            BRANCH="${{ github.ref_name }}"
+            cd /home/alvik/vpn-service
+            git fetch origin "$BRANCH"
+            git reset --hard origin/"$BRANCH"
+
+            # Restart core VPN services
+            ./restart.sh all
+
+            # Verify services are active
+            for svc in api bot admin-panel; do
+              sudo systemctl is-active --quiet "$svc" && echo "$svc is active and running"
+            done
