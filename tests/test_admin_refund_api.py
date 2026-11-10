@@ -66,5 +66,32 @@ class TestAdminRefundEndpoint(unittest.TestCase):
         mock_update_status.assert_called_once_with("p_paid", "refunded")
         mock_process_refund.assert_called_once_with("p_paid")
 
+    @patch("config.TELEGRAM_BOT_TOKEN", "123456:TEST_TOKEN")
+    @patch("api.db.get_payment_by_id")
+    @patch("httpx.AsyncClient.post")
+    @patch("api.db.update_payment_status")
+    @patch("api.webhook.process_refund")
+    @patch("api.webhook.send_telegram_notification")
+    def test_refund_stars_success(self, mock_notify, mock_process_refund, mock_update_status, mock_http_post, mock_get_payment):
+        mock_get_payment.return_value = {"payment_id": "stars_charge123", "status": "paid", "amount": 120, "tg_id": 911120750}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"ok": True, "result": True}
+        async def async_post(*args, **kwargs):
+            return mock_resp
+        mock_http_post.side_effect = async_post
+        mock_process_refund.return_value = True
+
+        response = client.post("/api/admin/payments/stars_charge123/refund")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertTrue(data.get("is_stars"))
+        self.assertTrue(data.get("vpn_deactivated"))
+
+        mock_update_status.assert_called_once_with("stars_charge123", "refunded")
+        mock_process_refund.assert_called_once_with("stars_charge123")
+
 if __name__ == "__main__":
     unittest.main()

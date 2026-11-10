@@ -1108,9 +1108,21 @@ async def finance():
     conn = admin_db._get_conn()
     cur = conn.cursor(dictionary=True)
 
-    # Total revenue
-    cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM payments WHERE status='paid' AND is_test=0")
-    total_revenue = float(cur.fetchone()["total"])
+    # Total revenue (separated RUB and Stars)
+    cur.execute("""
+        SELECT
+            COALESCE(SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END), 0) as total_rub,
+            COALESCE(SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END), 0) as total_stars,
+            SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN 1 ELSE 0 END) as count_rub,
+            SUM(CASE WHEN payment_id LIKE 'stars_%' THEN 1 ELSE 0 END) as count_stars
+        FROM payments WHERE status='paid' AND is_test=0
+    """)
+    totals = cur.fetchone() or {}
+    total_revenue_rub = float(totals.get("total_rub") or 0.0)
+    total_revenue_stars = float(totals.get("total_stars") or 0.0)
+    total_payments_rub = int(totals.get("count_rub") or 0)
+    total_payments_stars = int(totals.get("count_stars") or 0)
+    total_revenue = total_revenue_rub
 
     # First payment date (service start)
     cur.execute("SELECT MIN(created_at) as d FROM payments WHERE status='paid' AND is_test=0")
@@ -1121,7 +1133,12 @@ async def finance():
     fmt = "%Y-%m"
     cur.execute(
         "SELECT DATE_FORMAT(created_at, %s) as month,"
-        " COUNT(*) as payments, SUM(amount) as revenue"
+        " COUNT(*) as payments,"
+        " SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END) as revenue_rub,"
+        " SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END) as revenue_stars,"
+        " SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN 1 ELSE 0 END) as payments_rub,"
+        " SUM(CASE WHEN payment_id LIKE 'stars_%' THEN 1 ELSE 0 END) as payments_stars,"
+        " SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END) as revenue"
         " FROM payments WHERE status='paid' AND is_test=0"
         " GROUP BY DATE_FORMAT(created_at, %s) ORDER BY month",
         (fmt, fmt),
@@ -1242,6 +1259,10 @@ async def finance():
 
     return {
         "total_revenue": total_revenue,
+        "total_revenue_rub": total_revenue_rub,
+        "total_revenue_stars": total_revenue_stars,
+        "total_payments_rub": total_payments_rub,
+        "total_payments_stars": total_payments_stars,
         "server_monthly_cost": round(current_server_cost, 2),
         "months_running": months_running,
         "days_running": days_running,
@@ -1255,7 +1276,11 @@ async def finance():
         "monthly": [{
             "month": m["month"],
             "payments": m["payments"],
-            "revenue": float(m["revenue"]),
+            "payments_rub": int(m.get("payments_rub") or 0),
+            "payments_stars": int(m.get("payments_stars") or 0),
+            "revenue": float(m["revenue_rub"] if m.get("revenue_rub") is not None else m["revenue"]),
+            "revenue_rub": float(m.get("revenue_rub") or 0),
+            "revenue_stars": float(m.get("revenue_stars") or 0),
             "server_cost": round(get_monthly_cost(m["month"]), 2),
             "cost_meta": costs_details_map.get(m["month"]),
         } for m in monthly],
@@ -1599,6 +1624,10 @@ async def dashboard():
             "total": pay_stats["total"],
             "paid": pay_stats["paid"],
             "revenue": float(pay_stats["revenue"] or 0),
+            "revenue_rub": float(pay_stats.get("revenue_rub") or 0),
+            "revenue_stars": float(pay_stats.get("revenue_stars") or 0),
+            "paid_rub": int(pay_stats.get("paid_rub") or 0),
+            "paid_stars": int(pay_stats.get("paid_stars") or 0),
         },
         "recent_payments": _clean(recent),
         "protocol_breakdown": protocol_stats,
@@ -2529,19 +2558,34 @@ async def conversion_funnel():
     )['n']
 
     revenue_total = execute_query(
-        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE status = 'paid' AND is_test = 0",
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE status = 'paid' AND is_test = 0 AND payment_id NOT LIKE 'stars_%'",
+        fetch='one',
+    )['n']
+
+    revenue_stars = execute_query(
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE status = 'paid' AND is_test = 0 AND payment_id LIKE 'stars_%'",
         fetch='one',
     )['n']
 
     revenue_30d = execute_query(
         "SELECT COALESCE(SUM(amount), 0) AS n FROM payments "
-        "WHERE status = 'paid' AND is_test = 0 AND created_at >= NOW() - INTERVAL 30 DAY",
+        "WHERE status = 'paid' AND is_test = 0 AND payment_id NOT LIKE 'stars_%' AND created_at >= NOW() - INTERVAL 30 DAY",
+        fetch='one',
+    )['n']
+
+    revenue_30d_stars = execute_query(
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments "
+        "WHERE status = 'paid' AND is_test = 0 AND payment_id LIKE 'stars_%' AND created_at >= NOW() - INTERVAL 30 DAY",
         fetch='one',
     )['n']
 
     # Tariff popularity
     tariff_stats = execute_query(
-        "SELECT tariff, COUNT(*) AS cnt, SUM(amount) AS revenue "
+        "SELECT tariff, "
+        "COUNT(*) AS cnt, "
+        "SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END) AS revenue_rub, "
+        "SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END) AS revenue_stars, "
+        "SUM(amount) AS revenue "
         "FROM payments WHERE status = 'paid' AND is_test = 0 "
         "GROUP BY tariff ORDER BY cnt DESC",
         fetch='all',
@@ -2572,7 +2616,11 @@ async def conversion_funnel():
         },
         "revenue": {
             "total": float(revenue_total),
+            "total_rub": float(revenue_total),
+            "total_stars": float(revenue_stars),
             "last_30d": float(revenue_30d),
+            "last_30d_rub": float(revenue_30d),
+            "last_30d_stars": float(revenue_30d_stars),
             "arpu": round(float(revenue_total) / paid_users, 1) if paid_users else 0,
         },
         "tariff_stats": tariff_stats,
@@ -2714,20 +2762,14 @@ def get_admin_page_route():
     return admin_page
 
 
-# ── Refund Payment (YooKassa SDK + Deactivate VPN) ───────────────────────────
+# ── Refund Payment (YooKassa SDK / Telegram Stars + Deactivate VPN) ──────────
 
 @router.post("/payments/{payment_id}/refund")
 async def refund_payment(payment_id: str):
-    """Refund a succeeded payment via YooKassa SDK and deactivate user's VPN config."""
-    from yookassa import Configuration, Refund
-    from bot_xui.yookassa_client import async_refund_create
+    """Refund a succeeded payment via YooKassa SDK or Telegram Stars and deactivate user's VPN config."""
     import uuid
     from api.db import get_payment_by_id, update_payment_status, log_message_sent, get_user_email
     from api.webhook import process_refund, send_telegram_notification
-    from config import (
-        YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY,
-        YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
-    )
 
     payment = get_payment_by_id(payment_id)
     if not payment:
@@ -2739,34 +2781,67 @@ async def refund_payment(payment_id: str):
     if payment.get("status") != "paid":
         return JSONResponse({"error": f"Cannot refund payment with status '{payment.get('status')}'"}, status_code=400)
 
-    is_test_payment = bool(payment.get("is_test"))
-    shop_id = YOO_KASSA_TEST_SHOP_ID if is_test_payment else YOO_KASSA_SHOP_ID
-    secret_key = YOO_KASSA_TEST_SECRET_KEY if is_test_payment else YOO_KASSA_SECRET_KEY
-
-    if not shop_id or not secret_key:
-        mode_str = "test" if is_test_payment else "production"
-        return JSONResponse({"error": f"YooKassa {mode_str} credentials not configured"}, status_code=500)
-
-    Configuration.account_id = shop_id
-    Configuration.secret_key = secret_key
-
+    is_stars = payment_id.startswith("stars_")
     amount_val = str(payment.get("amount", "0"))
-    idempotency_key = str(uuid.uuid4())
+    tg_id = payment.get("tg_id")
 
-    try:
-        refund_res = await async_refund_create({
-            "amount": {
-                "value": amount_val,
-                "currency": "RUB"
-            },
-            "payment_id": payment_id
-        }, idempotency_key)
-    except Exception as e:
-        logger.error(f"YooKassa refund failed for payment {payment_id}: {e}")
-        return JSONResponse({"error": f"YooKassa API refund failed: {str(e)}"}, status_code=500)
+    if is_stars:
+        charge_id = payment_id.removeprefix("stars_")
+        from config import TELEGRAM_BOT_TOKEN
+        import httpx
+        if not TELEGRAM_BOT_TOKEN:
+            return JSONResponse({"error": "TELEGRAM_BOT_TOKEN not configured for Stars refund"}, status_code=500)
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/refundStarPayment"
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                resp = await http_client.post(url, json={
+                    "user_id": int(tg_id),
+                    "telegram_payment_charge_id": charge_id
+                })
+                resp_data = resp.json()
+                if not resp_data.get("ok"):
+                    raise RuntimeError(resp_data.get("description") or f"Telegram API error {resp.status_code}")
+                refund_res = resp_data.get("result", True)
+            logger.info(f"Telegram Stars refund succeeded for {payment_id}: {refund_res}")
+            refund_status = "succeeded" if refund_res else "unknown"
+        except Exception as e:
+            logger.error(f"Telegram Stars refund failed for {payment_id}: {e}", exc_info=True)
+            return JSONResponse({"error": f"Telegram Stars refund failed: {str(e)}"}, status_code=500)
+    else:
+        from yookassa import Configuration, Refund
+        from bot_xui.yookassa_client import async_refund_create
+        from config import (
+            YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY,
+            YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
+        )
 
-    refund_status = getattr(refund_res, "status", None) or refund_res.get("status") if isinstance(refund_res, dict) else "unknown"
-    logger.info(f"YooKassa refund created for {payment_id}: id={getattr(refund_res, 'id', 'N/A')}, status={refund_status}")
+        is_test_payment = bool(payment.get("is_test"))
+        shop_id = YOO_KASSA_TEST_SHOP_ID if is_test_payment else YOO_KASSA_SHOP_ID
+        secret_key = YOO_KASSA_TEST_SECRET_KEY if is_test_payment else YOO_KASSA_SECRET_KEY
+
+        if not shop_id or not secret_key:
+            mode_str = "test" if is_test_payment else "production"
+            return JSONResponse({"error": f"YooKassa {mode_str} credentials not configured"}, status_code=500)
+
+        Configuration.account_id = shop_id
+        Configuration.secret_key = secret_key
+
+        idempotency_key = str(uuid.uuid4())
+
+        try:
+            refund_res = await async_refund_create({
+                "amount": {
+                    "value": amount_val,
+                    "currency": "RUB"
+                },
+                "payment_id": payment_id
+            }, idempotency_key)
+        except Exception as e:
+            logger.error(f"YooKassa refund failed for payment {payment_id}: {e}")
+            return JSONResponse({"error": f"YooKassa API refund failed: {str(e)}"}, status_code=500)
+
+        refund_status = getattr(refund_res, "status", None) or refund_res.get("status") if isinstance(refund_res, dict) else "unknown"
+        logger.info(f"YooKassa refund created for {payment_id}: id={getattr(refund_res, 'id', 'N/A')}, status={refund_status}")
 
     # 1. Update payment status in DB
     update_payment_status(payment_id, "refunded")
@@ -2775,14 +2850,22 @@ async def refund_payment(payment_id: str):
     vpn_deactivated = await process_refund(payment_id)
 
     # 3. Notify user via Telegram
-    tg_id = payment.get("tg_id")
+    currency_label = "⭐️" if is_stars else "RUB"
     if tg_id:
-        msg_text = (
-            f"💸 Возврат платежа выполнен\n\n"
-            f"💳 ID платежа: {payment_id}\n"
-            f"💰 Сумма возврата: {amount_val} RUB\n\n"
-            f"Ваш VPN конфиг был деактивирован."
-        )
+        if is_stars:
+            msg_text = (
+                f"⭐️ <b>Возврат средств Telegram Stars выполнен</b>\n\n"
+                f"💳 ID платежа: <code>{payment_id}</code>\n"
+                f"💰 Возвращено: <b>{amount_val} ⭐️</b>\n\n"
+                f"Звёзды зачислены обратно на ваш баланс Telegram. Ваш VPN конфиг был деактивирован."
+            )
+        else:
+            msg_text = (
+                f"💸 Возврат платежа выполнен\n\n"
+                f"💳 ID платежа: {payment_id}\n"
+                f"💰 Сумма возврата: {amount_val} RUB\n\n"
+                f"Ваш VPN конфиг был деактивирован."
+            )
         try:
             await send_telegram_notification(tg_id, msg_text, source="admin_refund", scenario="payment_refunded")
         except Exception as e:
@@ -2799,10 +2882,10 @@ async def refund_payment(payment_id: str):
     # 4. Notify admin to verify configs
     client_name = get_user_email(tg_id, payment_id=payment_id) if tg_id else None
     admin_alert = (
-        f"💸 <b>Возврат средств (Панель)</b>\n\n"
+        f"{'⭐️' if is_stars else '💸'} <b>Возврат средств ({'Telegram Stars' if is_stars else 'ЮKassa'} - Панель)</b>\n\n"
         f"Пользователь: <code>{tg_id or 'Unknown'}</code>" + (f" ({client_name})" if client_name else "") + f"\n"
         f"Платёж: <code>{payment_id}</code>\n"
-        f"Сумма: {amount_val} RUB\n"
+        f"Сумма: {amount_val} {currency_label}\n"
         f"Статус деактивации: {'✅ Успешно' if vpn_deactivated else '⚠️ Ошибка деактивации'}\n\n"
         f"⚠️ <i>Проверьте конфиги пользователя (3x-ui / AWG).</i>"
     )
@@ -2813,10 +2896,11 @@ async def refund_payment(payment_id: str):
 
     return JSONResponse({
         "status": "success",
-        "message": f"Refund of {amount_val} RUB processed successfully",
+        "message": f"Refund of {amount_val} {currency_label} processed successfully",
         "payment_id": payment_id,
         "refund_status": refund_status,
-        "vpn_deactivated": vpn_deactivated
+        "vpn_deactivated": vpn_deactivated,
+        "is_stars": is_stars,
     })
 
 

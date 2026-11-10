@@ -335,7 +335,7 @@ async def _process_autopayments_locked(bot):
                         except Exception:
                             pass
                 elif getattr(payment, 'status', None) == "canceled":
-                    from api.webhook import handle_failed_payment
+                    from api.payment_failure import handle_failed_payment
                     cd = getattr(payment, "cancellation_details", None)
                     reason = getattr(cd, "reason", "") if cd else ""
                     party = getattr(cd, "party", "") if cd else ""

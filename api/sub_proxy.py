@@ -406,6 +406,222 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
     }
 
 
+def _vless_to_clash_proxy(vless_link: str, remark: str) -> dict | None:
+    """Конвертирует vless:// или hysteria2:// URI в proxy объект Clash Meta (Mihomo)."""
+    try:
+        if '#' in vless_link:
+            vless_link = vless_link.split('#')[0]
+        parsed = urllib.parse.urlparse(vless_link)
+        tag = remark or "Proxy"
+
+        if parsed.scheme in ("hysteria2", "hy2"):
+            user_host_port = parsed.netloc
+            auth, host_port = user_host_port.split('@', 1) if '@' in user_host_port else ('', user_host_port)
+            server, port_str = host_port.rsplit(':', 1) if ':' in host_port else (host_port, '443')
+            params = dict(urllib.parse.parse_qsl(parsed.query))
+            sni = params.get('sni', server)
+            insecure = params.get('insecure', '0') == '1'
+            return {
+                "name": tag,
+                "type": "hysteria2",
+                "server": server,
+                "port": int(port_str),
+                "password": auth,
+                "sni": sni,
+                "skip-cert-verify": insecure,
+                "alpn": ["h3"]
+            }
+
+        if parsed.scheme != "vless":
+            return None
+        user_host_port = parsed.netloc
+        if '@' not in user_host_port:
+            return None
+        uuid, host_port = user_host_port.split('@', 1)
+        if ':' in host_port:
+            server, port_str = host_port.rsplit(':', 1)
+            port = int(port_str)
+        else:
+            server = host_port
+            port = 443
+
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+        sec = params.get('security', 'none')
+        transport_type = params.get('type', 'tcp')
+
+        proxy = {
+            "name": tag,
+            "type": "vless",
+            "server": server,
+            "port": port,
+            "uuid": uuid,
+            "udp": True,
+        }
+
+        if sec == "reality":
+            proxy["tls"] = True
+            proxy["servername"] = params.get("sni", "")
+            proxy["flow"] = params.get("flow", "xtls-rprx-vision")
+            proxy["client-fingerprint"] = params.get("fp", "chrome")
+            proxy["reality-opts"] = {
+                "public-key": params.get("pbk", ""),
+                "short-id": params.get("sid", "")
+            }
+        elif sec == "tls":
+            proxy["tls"] = True
+            proxy["servername"] = params.get("sni", "")
+            if params.get("fp"):
+                proxy["client-fingerprint"] = params.get("fp")
+
+        if transport_type == "ws":
+            proxy["network"] = "ws"
+            proxy["ws-opts"] = {
+                "path": params.get("path", "/"),
+            }
+            if params.get("host"):
+                proxy["ws-opts"]["headers"] = {"Host": params.get("host")}
+        elif transport_type in ("xhttp", "httpupgrade"):
+            proxy["network"] = "xhttp"
+            proxy["xhttp-opts"] = {
+                "mode": "auto",
+                "path": params.get("path", "/"),
+                "host": params.get("host", server)
+            }
+        else:
+            proxy["network"] = "tcp"
+
+        return proxy
+    except Exception as ex:
+        logger.warning(f"Failed to parse link for clash: {ex}")
+        return None
+
+
+def _build_clash_config(vless_lines: list[tuple[str, str]]) -> str:
+    """Генерирует готовый профиль конфигурации Clash Meta (Mihomo) в формате YAML."""
+    import yaml
+    proxies = []
+    proxy_names = []
+
+    for link, remark in vless_lines:
+        p = _vless_to_clash_proxy(link, remark)
+        if p:
+            proxies.append(p)
+            proxy_names.append(p["name"])
+
+    if not proxies:
+        return ""
+
+    auto_group = "⚡ Автовыбор узла"
+    manual_group = "🎯 Выбор сервера вручную"
+    yt_group = "🔴 YouTube & Видео (Безлимит DE)"
+
+    eu_names = [n for n in proxy_names if not any(x in n for x in ('🇷🇺', 'Шлюз', 'RU', 'ru-server', 'Selectel', 'Доступ в РФ'))]
+    yt_preferred = [n for n in eu_names if any(k in n for k in ('Turbo', 'Hysteria', 'Vision'))] or eu_names or proxy_names
+
+    proxy_groups = [
+        {
+            "name": manual_group,
+            "type": "select",
+            "proxies": [auto_group, yt_group] + list(proxy_names)
+        },
+        {
+            "name": auto_group,
+            "type": "url-test",
+            "url": "https://www.gstatic.com/generate_204",
+            "interval": 120,
+            "tolerance": 50,
+            "proxies": list(proxy_names)
+        },
+        {
+            "name": yt_group,
+            "type": "url-test",
+            "url": "https://www.gstatic.com/generate_204",
+            "interval": 180,
+            "tolerance": 50,
+            "proxies": list(yt_preferred)
+        }
+    ]
+
+    rules = [
+        "DOMAIN-SUFFIX,snk.wtf,DIRECT",
+        "DOMAIN-SUFFIX,tiinservice.online,DIRECT",
+        "DOMAIN-SUFFIX,gosuslugi.ru,DIRECT",
+        "DOMAIN-SUFFIX,esia.gosuslugi.ru,DIRECT",
+        "DOMAIN-SUFFIX,gu-st.ru,DIRECT",
+        "DOMAIN-SUFFIX,pos.gosuslugi.ru,DIRECT",
+        "DOMAIN-SUFFIX,nalog.ru,DIRECT",
+        "DOMAIN-SUFFIX,cbr.ru,DIRECT",
+        "DOMAIN-SUFFIX,nspk.ru,DIRECT",
+        "DOMAIN-SUFFIX,mir-pay.ru,DIRECT",
+        "DOMAIN-SUFFIX,sbp.nspk.ru,DIRECT",
+        "DOMAIN-SUFFIX,sberbank.ru,DIRECT",
+        "DOMAIN-SUFFIX,sber.ru,DIRECT",
+        "DOMAIN-SUFFIX,sberbank.com,DIRECT",
+        "DOMAIN-SUFFIX,tbank.ru,DIRECT",
+        "DOMAIN-SUFFIX,t-bank.ru,DIRECT",
+        "DOMAIN-SUFFIX,tinkoff.ru,DIRECT",
+        "DOMAIN-SUFFIX,vtb.ru,DIRECT",
+        "DOMAIN-SUFFIX,alfabank.ru,DIRECT",
+        "DOMAIN-SUFFIX,gazprombank.ru,DIRECT",
+        "DOMAIN-SUFFIX,sovcombank.ru,DIRECT",
+        "DOMAIN-SUFFIX,ozon.ru,DIRECT",
+        "DOMAIN-SUFFIX,wildberries.ru,DIRECT",
+        "DOMAIN-SUFFIX,avito.ru,DIRECT",
+        "DOMAIN-SUFFIX,megamarket.ru,DIRECT",
+        "DOMAIN-SUFFIX,yandex.ru,DIRECT",
+        "DOMAIN-SUFFIX,ya.ru,DIRECT",
+        "DOMAIN-SUFFIX,yandex.net,DIRECT",
+        "DOMAIN-SUFFIX,vk.com,DIRECT",
+        "DOMAIN-SUFFIX,vk.ru,DIRECT",
+        "DOMAIN-SUFFIX,mail.ru,DIRECT",
+        "DOMAIN-SUFFIX,dzen.ru,DIRECT",
+        "DOMAIN-SUFFIX,kinopoisk.ru,DIRECT",
+        "DOMAIN-SUFFIX,2gis.ru,DIRECT",
+        "DOMAIN-SUFFIX,2gis.com,DIRECT",
+        "DOMAIN-SUFFIX,2ip.ru,DIRECT",
+        "DOMAIN-SUFFIX,ru,DIRECT",
+        "DOMAIN-SUFFIX,su,DIRECT",
+        "DOMAIN-SUFFIX,xn--p1ai,DIRECT",
+        f"DOMAIN-KEYWORD,googlevideo,{yt_group}",
+        f"DOMAIN-SUFFIX,youtube.com,{yt_group}",
+        f"DOMAIN-SUFFIX,ytimg.com,{yt_group}",
+        f"DOMAIN-SUFFIX,youtu.be,{yt_group}",
+        f"DOMAIN-SUFFIX,instagram.com,{manual_group}",
+        f"DOMAIN-SUFFIX,cdninstagram.com,{manual_group}",
+        f"DOMAIN-SUFFIX,facebook.com,{manual_group}",
+        f"DOMAIN-SUFFIX,fbcdn.net,{manual_group}",
+        f"DOMAIN-SUFFIX,twitter.com,{manual_group}",
+        f"DOMAIN-SUFFIX,x.com,{manual_group}",
+        "GEOIP,RU,DIRECT",
+        f"MATCH,{manual_group}"
+    ]
+
+    clash_cfg = {
+        "port": 7890,
+        "socks-port": 7891,
+        "allow-lan": False,
+        "mode": "rule",
+        "log-level": "info",
+        "unified-delay": True,
+        "dns": {
+            "enable": True,
+            "listen": "0.0.0.0:1053",
+            "ipv6": False,
+            "enhanced-mode": "fake-ip",
+            "fake-ip-range": "198.18.0.1/16",
+            "nameserver": [
+                "77.88.8.8",
+                "8.8.8.8"
+            ]
+        },
+        "proxies": proxies,
+        "proxy-groups": proxy_groups,
+        "rules": rules
+    }
+
+    return yaml.dump(clash_cfg, sort_keys=False, allow_unicode=True)
+
+
 def _build_shadowrocket_conf() -> str:
     """Генерирует готовый профиль конфигурации маршрутизации для Shadowrocket."""
     return """# TIIN VPN — Smart Routing Rules for Shadowrocket
@@ -475,7 +691,7 @@ async def shadowrocket_rules():
     )
 
 
-def _build_headers(expires_at: datetime | None, is_json: bool = False, routing_link: str | None = None) -> dict[str, str]:
+def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash: bool = False, routing_link: str | None = None) -> dict[str, str]:
     expire_ts = int(expires_at.timestamp()) if expires_at else 0
     now_dt = datetime.utcnow()
     
@@ -498,7 +714,12 @@ def _build_headers(expires_at: datetime | None, is_json: bool = False, routing_l
         title = f"🐿 TIIN  {status_tag}"
 
     title_b64 = base64.b64encode(title.encode("utf-8")).decode("ascii")
-    content_type = "application/json; charset=utf-8" if is_json else "text/plain; charset=utf-8"
+    if is_clash:
+        content_type = "text/yaml; charset=utf-8"
+    elif is_json:
+        content_type = "application/json; charset=utf-8"
+    else:
+        content_type = "text/plain; charset=utf-8"
     headers = {
         "subscription-userinfo": f"upload=0; download=0; total=0; expire={expire_ts}",
         "profile-update-interval": str(SUB_UPDATE_INTERVAL_HOURS),
@@ -1315,8 +1536,11 @@ async def proxy_subscription(token: str, request: Request = None):
     accept = request.headers.get("accept", "") if request else ""
     is_browser = "text/html" in accept
 
-    # Detect if client requests sing-box format (Clash receives Base64 for native parsing)
+    # Detect if client requests sing-box or Clash Meta format
     wants_singbox = any(k in ua.lower() for k in ["sing-box", "hiddify", "karing"])
+    q_params = getattr(request, "query_params", None)
+    fmt = q_params.get("format") if q_params else None
+    wants_clash = any(k in ua.lower() for k in ["clash", "flclash", "mihomo", "stash"]) or (fmt == "clash")
 
     # If expired and VPN client → return expired message
     if is_expired and not is_browser:
@@ -1329,16 +1553,15 @@ async def proxy_subscription(token: str, request: Request = None):
             _CACHE[token] = (time.time(), raw_body, headers)
         return Response(content=raw_body, headers=headers)
 
-    is_admin = bool(user and user.get("tg_id") == ADMIN_TG_ID)
-    routing_link = _happ_routing_deeplink() if (is_admin or "happ" in ua.lower()) else None
-    headers = _build_headers(expires_at, is_json=wants_singbox, routing_link=routing_link)
+    routing_link = _happ_routing_deeplink()
+    headers = _build_headers(expires_at, is_json=wants_singbox, is_clash=wants_clash, routing_link=routing_link)
 
     # Fast 200 OK response for client connectivity/HEAD checks
     if getattr(request, "method", "GET") == "HEAD":
         return Response(content=b"", headers=headers)
 
     now = time.time()
-    cache_key = f"{token}_{'json' if wants_singbox else 'b64'}"
+    cache_key = f"{token}_{'clash' if wants_clash else ('json' if wants_singbox else 'b64')}"
     async with _CACHE_LOCK:
         cached = _CACHE.get(cache_key)
         if cached:
@@ -1537,11 +1760,14 @@ async def proxy_subscription(token: str, request: Request = None):
             new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
             vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
 
-        if wants_singbox:
+        if wants_clash:
+            clash_cfg = _build_clash_config(vless_entries)
+            raw_body = clash_cfg.encode('utf-8')
+        elif wants_singbox:
             singbox_cfg = _build_singbox_config(vless_entries)
             raw_body = json.dumps(singbox_cfg, ensure_ascii=False, indent=2).encode('utf-8')
         else:
-            if routing_link and ("happ" in ua.lower() or is_admin):
+            if routing_link:
                 new_lines.append(routing_link)
             decoded_sub = "\n".join(new_lines)
             raw_body = base64.b64encode(decoded_sub.encode('utf-8'))

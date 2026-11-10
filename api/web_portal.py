@@ -229,8 +229,8 @@ TIIN_ROUTING_CONFIG = {
     "DomesticDNSType": "DoU",
     "DomesticDNSDomain": "",
     "DomesticDNSIP": "77.88.8.8",
-    "Geoipurl": "",
-    "Geositeurl": "",
+    "Geoipurl": "https://344988.snk.wtf/ruleset/geoip.dat",
+    "Geositeurl": "https://344988.snk.wtf/ruleset/geosite.dat",
     "LastUpdated": "",
     "DnsHosts": {},
     "DirectSites": [
@@ -757,6 +757,7 @@ const APPS = {{
         {{ name: 'Hiddify', desc: '🔷 Популярный, много функций', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
         {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://github.com/KaringX/karing/releases', scheme: 'karing://install-config?url=' }},
         {{ name: 'v2rayNG', desc: '🔶 Проверенный временем', icon: '🔶', store: 'https://play.google.com/store/apps/details?id=com.v2ray.ang', scheme: 'v2rayng://import/' }},
+        {{ name: 'FlClashX', desc: '⚔️ Быстрый Clash Meta / Mihomo', icon: '⚔️', store: 'https://github.com/pluralplay/FlClashX/releases', scheme: 'clash://install-config?url=' }},
     ],
     ios: [
         {{ name: 'INCY', desc: '🔮 Бесплатно в App Store (Рекомендуется)', icon: '🔮', store: 'https://apps.apple.com/app/incy/id6737525381', scheme: 'incy://import/' }},
@@ -768,6 +769,7 @@ const APPS = {{
     ],
     windows: [
         {{ name: 'Happ', desc: '⚡ Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
+        {{ name: 'FlClashX', desc: '⚔️ Мощный клиент Clash Meta', icon: '⚔️', store: 'https://github.com/pluralplay/FlClashX/releases', scheme: 'clash://install-config?url=' }},
         {{ name: 'INCY', desc: '🔮 Удобный и стильный', icon: '🔮', store: 'https://github.com/INCY-DEV/incy-platforms/releases', scheme: 'incy://import/' }},
         {{ name: 'Hiddify', desc: '🔷 Для Windows и macOS', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
         {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://github.com/KaringX/karing/releases', scheme: 'karing://install-config?url=' }},
@@ -775,6 +777,7 @@ const APPS = {{
     macos: [
         {{ name: 'INCY', desc: '🔮 Бесплатно в App Store', icon: '🔮', store: 'https://apps.apple.com/app/incy/id6737525381', scheme: 'incy://import/' }},
         {{ name: 'Happ', desc: '⚡ Скачать с сайта', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
+        {{ name: 'FlClashX', desc: '⚔️ Для macOS (Mihomo)', icon: '⚔️', store: 'https://github.com/pluralplay/FlClashX/releases', scheme: 'clash://install-config?url=' }},
         {{ name: 'Hiddify', desc: '🔷 Бесплатно в App Store', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
         {{ name: 'Karing', desc: '🔵 Бесплатно в App Store', icon: '🔵', store: 'https://apps.apple.com/app/karing/id6472431552', scheme: 'karing://install-config?url=' }},
         {{ name: 'Shadowrocket', desc: '🚀 Популярный, App Store (249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},

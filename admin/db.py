@@ -139,7 +139,9 @@ def get_user_payments(tg_id: int) -> list[dict]:
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT payment_id, tg_id, tariff, amount, status, vpn_issued, is_test, created_at
+        SELECT payment_id, tg_id, tariff, amount, status, vpn_issued, is_test, created_at,
+               CASE WHEN payment_id LIKE 'stars_%' THEN 'XTR' ELSE 'RUB' END AS currency,
+               CASE WHEN payment_id LIKE 'stars_%' THEN 'stars' ELSE 'yookassa' END AS provider
         FROM payments WHERE tg_id = %s ORDER BY created_at DESC
     """, (tg_id,))
     rows = cur.fetchall()
@@ -153,6 +155,8 @@ def recent_payments(limit: int = 20) -> list[dict]:
     cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT p.payment_id, p.tg_id, p.tariff, p.amount, p.status, p.is_test, p.created_at,
+               CASE WHEN p.payment_id LIKE 'stars_%' THEN 'XTR' ELSE 'RUB' END AS currency,
+               CASE WHEN p.payment_id LIKE 'stars_%' THEN 'stars' ELSE 'yookassa' END AS provider,
                COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name, u.last_name
         FROM payments p
         LEFT JOIN users u ON p.tg_id = u.tg_id
@@ -299,13 +303,24 @@ def payment_stats() -> dict:
         SELECT
             COUNT(*) as total,
             SUM(CASE WHEN status='paid' AND is_test=0 THEN 1 ELSE 0 END) as paid,
-            SUM(CASE WHEN status='paid' AND is_test=0 THEN amount ELSE 0 END) as revenue
+            SUM(CASE WHEN status='paid' AND is_test=0 AND payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END) as revenue_rub,
+            SUM(CASE WHEN status='paid' AND is_test=0 AND payment_id LIKE 'stars_%' THEN amount ELSE 0 END) as revenue_stars,
+            SUM(CASE WHEN status='paid' AND is_test=0 AND payment_id NOT LIKE 'stars_%' THEN 1 ELSE 0 END) as paid_rub,
+            SUM(CASE WHEN status='paid' AND is_test=0 AND payment_id LIKE 'stars_%' THEN 1 ELSE 0 END) as paid_stars,
+            SUM(CASE WHEN status='paid' AND is_test=0 THEN amount ELSE 0 END) as raw_total_amount
         FROM payments
     """)
     row = cur.fetchone()
     cur.close()
     conn.close()
-    return row or {"total": 0, "paid": 0, "revenue": 0}
+    if not row:
+        return {"total": 0, "paid": 0, "revenue": 0.0, "revenue_rub": 0.0, "revenue_stars": 0.0, "paid_rub": 0, "paid_stars": 0}
+    row["revenue"] = float(row.get("revenue_rub") or 0.0)
+    row["revenue_rub"] = float(row.get("revenue_rub") or 0.0)
+    row["revenue_stars"] = float(row.get("revenue_stars") or 0.0)
+    row["paid_rub"] = int(row.get("paid_rub") or 0)
+    row["paid_stars"] = int(row.get("paid_stars") or 0)
+    return row
 
 
 def get_financial_projections() -> dict:
@@ -337,7 +352,7 @@ def get_financial_projections() -> dict:
 
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
-    now = datetime.now()
+    now = datetime.utcnow()
 
     if now.month == 12:
         next_month_first = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -389,11 +404,12 @@ def get_financial_projections() -> dict:
             expected_price = float(u["last_paid_amount"] or tariff_prices.get(t_key, 199.0))
 
         t_name = tariff_names.get(t_key, t_key)
+        sub_until_msk = sub_until + timedelta(hours=3)
 
         upcoming_list.append({
             "tg_id": tg_id,
             "first_name": u["first_name"] or f"TG:{tg_id}",
-            "subscription_until": sub_until.strftime("%Y-%m-%d %H:%M"),
+            "subscription_until": sub_until_msk.strftime("%Y-%m-%d %H:%M") + " (МСК)",
             "days_left": days_left,
             "user_type": user_type,
             "user_type_label": user_type_label,
@@ -433,34 +449,45 @@ def get_financial_projections() -> dict:
 
     # Current month revenue (MTD)
     cur.execute("""
-        SELECT COUNT(*) as cnt, COALESCE(SUM(amount), 0) as rev
+        SELECT COUNT(*) as cnt,
+               COALESCE(SUM(amount), 0) as rev,
+               COALESCE(SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END), 0) as rev_rub,
+               COALESCE(SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END), 0) as rev_stars,
+               SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN 1 ELSE 0 END) as cnt_rub,
+               SUM(CASE WHEN payment_id LIKE 'stars_%' THEN 1 ELSE 0 END) as cnt_stars
         FROM payments
         WHERE status='paid' AND is_test=0 AND DATE_FORMAT(created_at, '%Y-%m') = DATE_FORMAT(NOW(), '%Y-%m')
     """)
     cur_m = cur.fetchone()
-    mtd_rev = float(cur_m["rev"])
+    mtd_rev = float(cur_m["rev_rub"])
     mtd_cnt = int(cur_m["cnt"])
+    mtd_stars = float(cur_m["rev_stars"])
+    mtd_stars_cnt = int(cur_m["cnt_stars"] or 0)
 
     # Previous month revenue
     cur.execute("""
-        SELECT COUNT(*) as cnt, COALESCE(SUM(amount), 0) as rev
+        SELECT COUNT(*) as cnt,
+               COALESCE(SUM(amount), 0) as rev,
+               COALESCE(SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END), 0) as rev_rub,
+               COALESCE(SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END), 0) as rev_stars
         FROM payments
         WHERE status='paid' AND is_test=0 AND DATE_FORMAT(created_at, '%Y-%m') = DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 MONTH), '%Y-%m')
     """)
     prev_m = cur.fetchone()
-    prev_rev = float(prev_m["rev"])
+    prev_rev = float(prev_m["rev_rub"])
     prev_cnt = int(prev_m["cnt"])
+    prev_stars = float(prev_m["rev_stars"])
 
     # Current server cost
     cur.execute("SELECT cost_rub FROM server_costs_monthly WHERE month = DATE_FORMAT(NOW(), '%Y-%m')")
     c_row = cur.fetchone()
     cur_server_cost = float(c_row["cost_rub"]) if (c_row and c_row["cost_rub"] is not None) else float(os.getenv("SERVER_MONTHLY_COST", "1350.0"))
 
-    # Average Order Value (last 60 days)
+    # Average Order Value (last 60 days) - ruble payments only to avoid skewing AOV
     cur.execute("""
         SELECT AVG(amount) as aov
         FROM payments
-        WHERE status='paid' AND is_test=0 AND created_at >= NOW() - INTERVAL 60 DAY
+        WHERE status='paid' AND is_test=0 AND payment_id NOT LIKE 'stars_%' AND created_at >= NOW() - INTERVAL 60 DAY
     """)
     aov_row = cur.fetchone()
     aov = float(aov_row["aov"] or 385.0)
@@ -508,7 +535,9 @@ def get_financial_projections() -> dict:
         "mtd": {
             "month": now.strftime("%Y-%m"),
             "revenue": round(mtd_rev, 2),
+            "revenue_stars": round(mtd_stars, 2),
             "payments_count": mtd_cnt,
+            "payments_count_stars": mtd_stars_cnt,
             "profit": round(mtd_rev - cur_server_cost, 2),
         },
         "forecast": {
@@ -635,6 +664,8 @@ def failed_pending_payments(limit: int = 30) -> list[dict]:
     cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT p.payment_id, p.tg_id, p.tariff, p.amount, p.status, p.created_at,
+               CASE WHEN p.payment_id LIKE 'stars_%' THEN 'XTR' ELSE 'RUB' END AS currency,
+               CASE WHEN p.payment_id LIKE 'stars_%' THEN 'stars' ELSE 'yookassa' END AS provider,
                COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name
         FROM payments p
         LEFT JOIN users u ON p.tg_id = u.tg_id
@@ -1350,7 +1381,7 @@ def subscription_status_summary() -> dict:
     except Exception as e:
         logger.warning(f"Failed to read x-ui.db for expiry: {e}")
 
-    now = datetime.now()
+    now = datetime.utcnow()
     expiring_soon = []
     recently_expired = []
 
