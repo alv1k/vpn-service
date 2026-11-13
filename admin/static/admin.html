@@ -232,7 +232,28 @@
     .sub-table { margin-top: 8px; font-size: 12px; }
     .sub-table td { padding: 4px 8px; border: none; border-bottom: 1px solid #222; }
 
-    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; }
+    .table-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      border-radius: 8px;
+      scrollbar-width: thin;
+      scrollbar-color: #2f2f35 var(--card);
+    }
+    .table-wrap::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .table-wrap::-webkit-scrollbar-track {
+      background: var(--card);
+      border-radius: 4px;
+    }
+    .table-wrap::-webkit-scrollbar-thumb {
+      background: #2f2f35;
+      border-radius: 4px;
+    }
+    .table-wrap::-webkit-scrollbar-thumb:hover {
+      background: var(--accent);
+    }
     .table-wrap table { min-width: 500px; }
 
     /* Protocol badge: full name on desktop, single letter on mobile */
@@ -398,44 +419,44 @@
       <div class="cards" id="dash-cards"></div>
       <div class="cards" id="dash-extra-cards" style="display:none"></div>
 
+      <!-- SITE ANALYTICS (disabled)
       <h3 class="mb" style="color:var(--muted)">SITE ANALYTICS</h3>
       <div class="cards" id="dash-site-stats"></div>
+      -->
 
-      <div style="display:flex;justify-content:space-between;align-items:center;margin:24px 0 10px;flex-wrap:wrap;gap:8px">
-        <div>
-          <h3 style="color:var(--muted);margin:0;display:flex;align-items:center;gap:8px">
-            <span>📡</span> СТАТИСТИКА СПОСОБОВ ПОДПИСКИ (DE vs RU)
-          </h3>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px">
-            Сравнение кликов и фактических импортов конфигурации через Германию и Selectel СПб
-          </div>
+      <details class="mb" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
+        <summary style="cursor:pointer;color:var(--muted);font-weight:600;font-size:13px;user-select:none;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <span style="display:flex;align-items:center;gap:6px">
+            <span>📡 СПОСОБЫ ПОДПИСКИ (DE vs RU)</span>
+            <span id="dash-sub-stats-summary" style="font-size:12px;font-weight:normal;color:var(--muted)"></span>
+          </span>
+          <span style="display:flex;gap:6px;align-items:center" onclick="event.stopPropagation()">
+            <button class="btn btn-sm" id="btn-sub-stats-7" onclick="loadSubImportStats(7)" style="padding:2px 8px;font-size:11px;background:var(--card)">7д</button>
+            <button class="btn btn-sm active" id="btn-sub-stats-30" onclick="loadSubImportStats(30)" style="padding:2px 8px;font-size:11px;background:var(--accent)">30д</button>
+          </span>
+        </summary>
+
+        <div class="cards mb" id="dash-sub-stats-cards" style="margin-top:10px;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:8px"></div>
+
+        <div class="table-wrap" style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
+          <table>
+            <thead>
+              <tr>
+                <th>Пользователь</th>
+                <th style="text-align:center">Клики DE</th>
+                <th style="text-align:center">Клики RU</th>
+                <th style="text-align:center">Импорты DE</th>
+                <th style="text-align:center">Импорты RU</th>
+                <th style="text-align:center">Выбор</th>
+                <th style="text-align:right">Активность</th>
+              </tr>
+            </thead>
+            <tbody id="dash-sub-stats-table">
+              <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:10px">Загрузка статистики импорта...</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div style="display:flex;gap:6px;align-items:center">
-          <button class="btn btn-sm" onclick="loadSubImportStats(7)" style="padding:4px 8px;font-size:11px;background:var(--card)">7д</button>
-          <button class="btn btn-sm" onclick="loadSubImportStats(30)" style="padding:4px 8px;font-size:11px;background:var(--accent)">30д</button>
-        </div>
-      </div>
-
-      <div class="cards mb" id="dash-sub-stats-cards"></div>
-
-      <div class="table-wrap mb" style="max-height:360px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
-        <table>
-          <thead>
-            <tr>
-              <th>Пользователь</th>
-              <th style="text-align:center">Клики 🇩🇪 DE (snk.wtf)</th>
-              <th style="text-align:center">Клики 🇷🇺 RU (Selectel)</th>
-              <th style="text-align:center">Импорты 🇩🇪 DE</th>
-              <th style="text-align:center">Импорты 🇷🇺 RU</th>
-              <th style="text-align:center">Выбор</th>
-              <th style="text-align:right">Последняя активность</th>
-            </tr>
-          </thead>
-          <tbody id="dash-sub-stats-table">
-            <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:14px">Загрузка статистики импорта...</td></tr>
-          </tbody>
-        </table>
-      </div>
+      </details>
 
       <details class="mb">
         <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">
@@ -578,12 +599,12 @@
         </table>
       </div>
 
-      <details class="mb">
-        <summary style="cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px;color:var(--muted);display:flex;align-items:center;justify-content:space-between">
-          <span>📴 OFFLINE <span id="offline-count" style="color:var(--orange)"></span></span>
+      <details class="mb" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
+        <summary style="cursor:pointer;color:var(--muted);font-weight:600;font-size:13px;user-select:none;display:flex;align-items:center;justify-content:space-between">
+          <span>📴 OFFLINE <span id="offline-count" style="color:var(--orange);font-size:12px"></span></span>
           <button class="btn" onclick="event.stopPropagation();refreshOffline()" style="font-size:11px;padding:3px 8px" title="Обновить список офлайн пользователей">🔄 Обновить офлайн</button>
         </summary>
-        <div class="table-wrap mb" style="margin-top:8px">
+        <div class="table-wrap" style="margin-top:10px">
           <table>
             <thead>
               <tr>
@@ -600,7 +621,7 @@
       </details>
 
       <details class="mb" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
-        <summary style="cursor:pointer;color:var(--muted);font-weight:600;font-size:13px;user-select:none">
+        <summary style="cursor:pointer;color:var(--muted);font-weight:600;font-size:13px;user-select:none;list-style:none;display:flex;align-items:center;gap:6px">
           🛠️ ТЕСТОВЫЕ / АДМИНСКИЕ АККАУНТЫ БЕЗ EXPIRES <span id="offline-admin-count" style="color:var(--muted);font-size:12px"></span>
         </summary>
         <div class="table-wrap" style="margin-top:10px">
@@ -658,13 +679,13 @@
       </details>
 
       <details class="mb">
-        <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-          <span>RECENT PAYMENTS</span>
-          <span style="font-size:12px;font-weight:normal" onclick="event.stopPropagation()">
+        <summary style="color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px">
+          <span style="float:right;font-size:12px;font-weight:normal" onclick="event.stopPropagation()">
             <button class="btn btn-sm active" id="btn-pay-filter-all" onclick="filterRecentPayments('all')" style="padding:2px 8px;font-size:11px">Все</button>
             <button class="btn btn-sm" id="btn-pay-filter-rub" onclick="filterRecentPayments('rub')" style="padding:2px 8px;font-size:11px">💳 ЮKassa</button>
             <button class="btn btn-sm" id="btn-pay-filter-stars" onclick="filterRecentPayments('stars')" style="padding:2px 8px;font-size:11px;background:#f59e0b22;color:#fbbf24;border:1px solid #f59e0b44">⭐️ Stars</button>
           </span>
+          <span>RECENT PAYMENTS</span>
         </summary>
         <div class="table-wrap">
           <table>
@@ -730,7 +751,7 @@
           + Внести расход за сервер
         </button>
       </div>
-      <div class="cards" id="dash-finance"></div>
+      <div class="cards" id="dash-finance" style="grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:10px"></div>
       <div id="dash-monthly" class="mb"></div>
       <div id="dash-upcoming-renewals-block" class="mb"></div>
     </div>
@@ -2816,7 +2837,7 @@
         }
       } catch (e) { console.error('recently-expired render error:', e); }
 
-      // Site analytics
+      /* Site analytics (disabled)
       try {
         const ss = await api('/api/admin/site-stats');
         const t = (ss && ss.total) || {}, td = (ss && ss.today) || {};
@@ -2845,36 +2866,49 @@
             </div>`;
         }
       } catch(e) { console.warn('site-stats:', e); }
+      */
 
       // Subscription import stats (DE vs RU)
       window.loadSubImportStats = async function(days = 30) {
         try {
+          const b7 = document.getElementById('btn-sub-stats-7');
+          const b30 = document.getElementById('btn-sub-stats-30');
+          if (b7 && b30) {
+            b7.style.background = days === 7 ? 'var(--accent)' : 'var(--card)';
+            b30.style.background = days === 30 ? 'var(--accent)' : 'var(--card)';
+          }
+
           const res = await api('/api/admin/sub-import-stats?days=' + days);
           const s = (res && res.summary) || {};
           const users = (res && res.users) || [];
 
+          const sumEl = document.getElementById('dash-sub-stats-summary');
+          if (sumEl) {
+            sumEl.innerHTML = `• 🇩🇪 ${s.de_clicks_total || 0} кл / ${s.de_fetches_total || 0} имп • 🇷🇺 ${s.ru_clicks_total || 0} кл / ${s.ru_fetches_total || 0} имп`;
+          }
+
           const cardsEl = document.getElementById('dash-sub-stats-cards');
           if (cardsEl) {
             cardsEl.innerHTML = `
-              <div class="card">
-                <h3>🇩🇪 Клики DE (snk.wtf)</h3>
-                <div class="val" style="color:#a78bfa">${s.de_clicks_total || 0}</div>
-                <div class="sub">сегодня: ${s.de_clicks_today || 0}</div>
+              <div class="card" style="padding:8px 10px">
+                <h3 style="font-size:11px;color:var(--muted)">🇩🇪 Клики DE</h3>
+                <div class="val" style="font-size:18px;color:#a78bfa">${s.de_clicks_total || 0}</div>
+                <div class="sub" style="font-size:10px">сегодня: ${s.de_clicks_today || 0}</div>
               </div>
-              <div class="card">
-                <h3>🇷🇺 Клики RU (Selectel)</h3>
-                <div class="val" style="color:#38bdf8">${s.ru_clicks_total || 0}</div>
-                <div class="sub">сегодня: ${s.ru_clicks_today || 0}</div>
+              <div class="card" style="padding:8px 10px">
+                <h3 style="font-size:11px;color:var(--muted)">🇷🇺 Клики RU</h3>
+                <div class="val" style="font-size:18px;color:#38bdf8">${s.ru_clicks_total || 0}</div>
+                <div class="sub" style="font-size:10px">сегодня: ${s.ru_clicks_today || 0}</div>
               </div>
-              <div class="card">
-                <h3>📥 Импорты DE (Hetzner)</h3>
-                <div class="val" style="color:#4ade80">${s.de_fetches_total || 0}</div>
-                <div class="sub">сегодня: ${s.de_fetches_today || 0}</div>
+              <div class="card" style="padding:8px 10px">
+                <h3 style="font-size:11px;color:var(--muted)">📥 Импорты DE</h3>
+                <div class="val" style="font-size:18px;color:#4ade80">${s.de_fetches_total || 0}</div>
+                <div class="sub" style="font-size:10px">сегодня: ${s.de_fetches_today || 0}</div>
               </div>
-              <div class="card">
-                <h3>📥 Импорты RU (Selectel)</h3>
-                <div class="val" style="color:#34d399">${s.ru_fetches_total || 0}</div>
-                <div class="sub">сегодня: ${s.ru_fetches_today || 0}</div>
+              <div class="card" style="padding:8px 10px">
+                <h3 style="font-size:11px;color:var(--muted)">📥 Импорты RU</h3>
+                <div class="val" style="font-size:18px;color:#34d399">${s.ru_fetches_total || 0}</div>
+                <div class="sub" style="font-size:10px">сегодня: ${s.ru_fetches_today || 0}</div>
               </div>`;
           }
 
@@ -2902,13 +2936,13 @@
               const lastActFmt = u.last_activity ? fmtDate(u.last_activity) : '—';
 
               return `<tr>
-                <td>${userCell}</td>
-                <td style="text-align:center" class="mono">${u.de_clicks > 0 ? '<b style="color:#a78bfa">' + u.de_clicks + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
-                <td style="text-align:center" class="mono">${u.ru_clicks > 0 ? '<b style="color:#38bdf8">' + u.ru_clicks + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
-                <td style="text-align:center" class="mono">${u.de_fetches > 0 ? '<b style="color:#4ade80">' + u.de_fetches + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
-                <td style="text-align:center" class="mono">${u.ru_fetches > 0 ? '<b style="color:#34d399">' + u.ru_fetches + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
-                <td style="text-align:center">${choiceBadge}</td>
-                <td style="text-align:right;color:var(--muted);font-size:12px">${lastActFmt}</td>
+                <td style="padding:4px 8px">${userCell}</td>
+                <td style="text-align:center;padding:4px 8px" class="mono">${u.de_clicks > 0 ? '<b style="color:#a78bfa">' + u.de_clicks + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
+                <td style="text-align:center;padding:4px 8px" class="mono">${u.ru_clicks > 0 ? '<b style="color:#38bdf8">' + u.ru_clicks + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
+                <td style="text-align:center;padding:4px 8px" class="mono">${u.de_fetches > 0 ? '<b style="color:#4ade80">' + u.de_fetches + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
+                <td style="text-align:center;padding:4px 8px" class="mono">${u.ru_fetches > 0 ? '<b style="color:#34d399">' + u.ru_fetches + '</b>' : '<span style="color:var(--muted)">0</span>'}</td>
+                <td style="text-align:center;padding:4px 8px">${choiceBadge}</td>
+                <td style="text-align:right;color:var(--muted);font-size:11px;padding:4px 8px">${lastActFmt}</td>
               </tr>`;
             }).join('');
           }
@@ -3077,94 +3111,121 @@
       try {
         fin = await api('/api/admin/finance');
         if (fin) {
-          const profitColor = (fin.profit || 0) >= 0 ? 'var(--green)' : 'var(--red)';
-          const monthlyProfitColor = (fin.monthly_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)';
           const dashFinEl = document.getElementById('dash-finance');
           if (dashFinEl) {
-            const starsRev = Number(fin.total_revenue_stars || 0);
-            const starsCnt = Number(fin.total_payments_stars || 0);
-            const starsEstRub = Math.round(starsRev * 1.3);
+            const p = fin.projections || {};
+            const fc = p.forecast || {};
+            const tm = p.target_maintenance || {};
+            const mtd = p.mtd || {};
+
+            const serverCost = Number(fc.server_monthly_cost || fin.server_monthly_cost || 0);
+            const mtdRev = Number(mtd.revenue || 0);
+            const mtdProfit = Number(mtd.profit != null ? mtd.profit : (mtdRev - serverCost));
+            const projProfit = Number(fc.projected_profit || 0);
+            const projRev = Number(fc.projected_revenue || 0);
+            const projProfitColor = projProfit >= 0 ? 'var(--green)' : 'var(--red)';
+            const mtdProfitColor = mtdProfit >= 0 ? 'var(--green)' : 'var(--red)';
+
+            // Breakeven calculations
+            const breakevenDiff = serverCost - mtdRev;
+            const isBreakevenReached = breakevenDiff <= 0;
+            const breakevenRemainingRub = Math.max(0, breakevenDiff);
+            const aov = Number(fc.aov || 200);
+            const breakevenRemainingPayments = breakevenRemainingRub > 0 ? Math.ceil(breakevenRemainingRub / aov) : 0;
+
+            // Subscribers counts
+            const autopayCount = Number(tm.autopay_subscribers_count || 0);
+            const payingTotal = Number(tm.paying_subscribers_total || 0);
+            const manualCount = tm.manual_subscribers_count != null
+              ? Number(tm.manual_subscribers_count)
+              : Math.max(0, payingTotal - autopayCount);
+
+            const autopayExpectedRest = Number(fc.autopay_guaranteed_rest_of_month || 0);
+            const manualPotentialRest = Number(fc.manual_paying_potential_rest_of_month || 0);
+            const mrr = Number(fc.mrr || 0);
 
             let cardsHtml = `
-              <div class="card">
+              <!-- 1. Прогноз прибыли на месяц -->
+              <div class="card" style="border-color:#38bdf844;background:linear-gradient(180deg, #0b1329 0%, var(--card) 100%)">
                 <div style="display:flex;justify-content:space-between;align-items:center">
-                  <h3>Total Revenue</h3>
-                  <span class="badge" style="background:#05966933;color:var(--green);font-size:11px">ROI: ${fin.roi_percent || 0}%</span>
+                  <h3 style="color:#38bdf8">🔮 Прогноз прибыли</h3>
+                  <span class="badge" style="background:#0284c733;color:#38bdf8;font-size:10px">${esc(mtd.month || '')}</span>
                 </div>
-                <div class="val">${Number(fin.total_revenue_rub || fin.total_revenue || 0).toLocaleString()} ₽</div>
-                <div class="sub" style="margin-top:4px">
-                  <span style="color:${profitColor};font-weight:600">
-                    Прибыль: ${(fin.profit || 0) >= 0 ? '+' : ''}${Number(fin.profit || 0).toLocaleString()} ₽
-                  </span>
-                  <span style="color:var(--muted)"> • ${fin.days_running || 0} дней • ${fin.total_payments_rub || 0} опл. ₽${starsCnt > 0 ? ` + ${starsCnt} опл. ⭐️` : ''}</span>
+                <div class="val" style="color:${projProfitColor}">
+                  ${projProfit >= 0 ? '+' : ''}${Math.round(projProfit).toLocaleString()} ₽
                 </div>
-              </div>
-              <div class="card" style="border-color:#f59e0b44;background:linear-gradient(180deg, #1c1500 0%, var(--card) 100%)">
-                <div style="display:flex;justify-content:space-between;align-items:center">
-                  <h3 style="color:#fbbf24">⭐️ Telegram Stars</h3>
-                  <span class="badge" style="background:#f59e0b33;color:#fbbf24;font-size:10px">${starsCnt} опл.</span>
-                </div>
-                <div class="val" style="color:#fbbf24">${starsRev.toLocaleString()} ⭐️</div>
                 <div class="sub" style="color:var(--muted)">
-                  ≈ ${starsEstRub.toLocaleString()} ₽ (курс Fragment ~$0.013/⭐️)
+                  Выручка ~${Math.round(projRev).toLocaleString()} ₽ • Сервер ${Math.round(serverCost).toLocaleString()} ₽
                 </div>
               </div>
-              <div class="card">
-                <h3>Server Cost</h3>
-                <div class="val">${Number(fin.server_monthly_cost || 0).toLocaleString()} ₽ <small style="font-size:12px;font-weight:normal;color:var(--muted)">тек. мес</small></div>
-                <div class="sub">Итого за все месяцы: ${Number(fin.total_cost || 0).toLocaleString()} ₽</div>
+
+              <!-- 2. Оплачено в этом месяце (MTD) -->
+              <div class="card" style="border-color:#05966944">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <h3 style="color:var(--green)">💳 Оплачено (MTD)</h3>
+                  <span class="badge" style="background:#05966933;color:var(--green);font-size:10px">${mtd.payments_count || 0} опл.</span>
+                </div>
+                <div class="val" style="color:var(--text)">
+                  ${Math.round(mtdRev).toLocaleString()} ₽
+                </div>
+                <div class="sub" style="color:${mtdProfitColor}">
+                  Прибыль: ${mtdProfit >= 0 ? '+' : ''}${Math.round(mtdProfit).toLocaleString()} ₽${mtd.revenue_stars ? ` (+${mtd.revenue_stars} ⭐️)` : ''}
+                </div>
               </div>
-              <div class="card">
-                <h3>Monthly Avg</h3>
-                <div class="val">${Number(fin.avg_monthly_revenue || 0).toLocaleString()} ₽ <small style="font-size:12px;font-weight:normal;color:var(--muted)">выручка/мес</small></div>
-                <div class="sub" style="color:${monthlyProfitColor}">
-                  Прибыль: ${(fin.monthly_profit || 0) >= 0 ? '+' : ''}${Number(fin.monthly_profit || 0).toLocaleString()} ₽/мес
+
+              <!-- 3. Точка безубыточности -->
+              <div class="card" style="border-color:#fbbf2444">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <h3 style="color:#fbbf24">⚖️ До безубыточности</h3>
+                  <span class="badge" style="background:${isBreakevenReached ? '#05966933' : '#d9770633'};color:${isBreakevenReached ? 'var(--green)' : '#fbbf24'};font-size:10px">
+                    ${isBreakevenReached ? '100%+' : Math.round((mtdRev / Math.max(1, serverCost)) * 100) + '%'}
+                  </span>
+                </div>
+                <div class="val" style="color:${isBreakevenReached ? 'var(--green)' : '#fbbf24'}">
+                  ${isBreakevenReached ? '✅ Покрыто' : `Осталось ${Math.round(breakevenRemainingRub).toLocaleString()} ₽`}
+                </div>
+                <div class="sub" style="color:var(--muted)">
+                  ${isBreakevenReached
+                    ? `Серверы закрыты (${Math.round(serverCost).toLocaleString()} ₽) • плюс +${Math.round(mtdRev - serverCost).toLocaleString()} ₽`
+                    : `Еще ${breakevenRemainingPayments} опл. при чеке ~${Math.round(aov)} ₽`}
+                </div>
+              </div>
+
+              <!-- 4. Автоплатежные аккаунты -->
+              <div class="card" style="border-color:#a855f744">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <h3 style="color:#c084fc">⚡ Автоплатежи</h3>
+                  <span class="badge" style="background:#a855f733;color:#c084fc;font-size:10px">активные</span>
+                </div>
+                <div class="val" style="color:#c084fc">${autopayCount} акк.</div>
+                <div class="sub" style="color:var(--muted)">
+                  Ожидается +${Math.round(autopayExpectedRest).toLocaleString()} ₽ до конца мес.
+                </div>
+              </div>
+
+              <!-- 5. Ручные продления -->
+              <div class="card" style="border-color:#64748b44">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <h3 style="color:#94a3b8">🖐️ Ручные</h3>
+                  <span class="badge" style="background:#33415555;color:#94a3b8;font-size:10px">активные</span>
+                </div>
+                <div class="val" style="color:#e2e8f0">${manualCount} акк.</div>
+                <div class="sub" style="color:var(--muted)">
+                  Потенциал +${Math.round(manualPotentialRest).toLocaleString()} ₽ до конца мес.
+                </div>
+              </div>
+
+              <!-- 6. Регулярный доход (MRR) -->
+              <div class="card" style="border-color:#22c55e44">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <h3 style="color:var(--green)">🔄 Доход MRR</h3>
+                  <span class="badge" style="background:#05966933;color:var(--green);font-size:10px">${payingTotal} платящих</span>
+                </div>
+                <div class="val" style="color:var(--green)">${Math.round(mrr).toLocaleString()} ₽/мес</div>
+                <div class="sub" style="color:var(--muted)">
+                  ${payingTotal} платящих (🎁 ${tm.trial_subscribers_count || 0} триалов)
                 </div>
               </div>`;
-
-            if (fin.projections) {
-              const p = fin.projections;
-              const fc = p.forecast || {};
-              const tm = p.target_maintenance || {};
-              const mtd = p.mtd || {};
-              const projProfitColor = (fc.projected_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)';
-              const statusBadgeBg = tm.status === 'ACHIEVED' ? '#05966933' : (tm.status === 'ON_TRACK' ? '#0284c733' : '#d9770633');
-              const statusBadgeColor = tm.status === 'ACHIEVED' ? 'var(--green)' : (tm.status === 'ON_TRACK' ? '#38bdf8' : 'var(--orange)');
-
-              cardsHtml += `
-                <div class="card" style="border-color:#38bdf844;background:linear-gradient(180deg, #0b1329 0%, var(--card) 100%)">
-                  <div style="display:flex;justify-content:space-between;align-items:center">
-                    <h3 style="color:#38bdf8">🔮 Прогноз на месяц</h3>
-                    <span class="badge" style="background:#0284c733;color:#38bdf8;font-size:10px">${esc(mtd.month || '')}</span>
-                  </div>
-                  <div class="val" style="color:#38bdf8">~${Number(fc.projected_revenue || 0).toLocaleString()} ₽</div>
-                  <div class="sub" style="color:${projProfitColor}">
-                    Прибыль: +${Number(fc.projected_profit || 0).toLocaleString()} ₽ (${fc.growth_pct >= 0 ? '+' : ''}${fc.growth_pct}% к пред. мес)
-                  </div>
-                </div>
-
-                <div class="card" style="border-color:#a855f744;background:linear-gradient(180deg, #18122b 0%, var(--card) 100%)">
-                  <div style="display:flex;justify-content:space-between;align-items:center">
-                    <h3 style="color:#c084fc">🎯 Удержание прибыли</h3>
-                    <span class="badge" style="background:${statusBadgeBg};color:${statusBadgeColor};font-size:10px">${esc(tm.status || '')}</span>
-                  </div>
-                  <div class="val" style="color:#c084fc">${tm.payments_completed || 0} / ${tm.target_payments_needed || 0} опл.</div>
-                  <div style="margin:6px 0 4px 0;background:var(--bg);height:6px;border-radius:3px;overflow:hidden;border:1px solid #333">
-                    <div style="background:var(--green);width:${Math.min(100, tm.progress_percent || 0)}%;height:100%"></div>
-                  </div>
-                  <div class="sub" style="color:var(--muted)">
-                    ${tm.payments_remaining > 0 ? `Осталось <b>${tm.payments_remaining} опл.</b> для цели +${Number(tm.target_profit).toLocaleString()} ₽` : '✅ Цель месяца выполнена!'}
-                  </div>
-                </div>
-
-                <div class="card">
-                  <h3>🔄 Регулярный доход (MRR)</h3>
-                  <div class="val" style="color:var(--green)">${Number(fc.mrr || 0).toLocaleString()} ₽/мес</div>
-                  <div class="sub" style="color:var(--muted)">
-                    ⚡ ${tm.autopay_subscribers_count || 0} авто • ${tm.paying_subscribers_total || 0} платящих (🎁 ${tm.trial_subscribers_count || 0} триалов)
-                  </div>
-                </div>`;
-            }
 
             dashFinEl.innerHTML = cardsHtml;
           }
@@ -3255,50 +3316,92 @@
 
       // Monthly breakdown
       if (fin && fin.monthly && fin.monthly.length) {
+        // Month name in Russian: "нояб. 2026", "окт. 2026", etc.
+        const formatMonthRu = (mStr) => {
+          if (!mStr) return '—';
+          const p = mStr.split('-');
+          if (p.length !== 2) return mStr;
+          const months = ['янв.', 'февр.', 'март', 'апр.', 'май', 'июнь', 'июль', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.'];
+          const idx = parseInt(p[1], 10) - 1;
+          return `${months[idx] || p[1]} ${p[0]}`;
+        };
+
+        const getShortServerName = (name) => {
+          if (!name) return 'Сервер';
+          if (name.includes('Hetzner')) return '🇩🇪 Hetzner';
+          if (name.includes('Hostinger') || name.includes('NL')) return '🇳🇱 Hostinger';
+          if (name.includes('Selectel')) return '🇷🇺 Selectel';
+          if (name.includes('Домен') || name.includes('DNS')) return '🌐 Домены';
+          return name.replace(/\([^)]*\)/g, '').trim();
+        };
+
+        // Current calendar month string e.g. "2026-11"
+        const curMonthStr = new Date().toISOString().slice(0, 7);
+
+        // Sort months descending (newest first)
+        const sortedMonths = [...fin.monthly].sort((a, b) => (b.month || '').localeCompare(a.month || ''));
+
+        // Totals
+        let totPayments = 0, totRevRub = 0, totRevStars = 0, totCost = 0;
+        fin.monthly.forEach(m => {
+          totPayments += Number(m.payments || 0);
+          totRevRub += Number(m.revenue_rub || m.revenue || 0);
+          totRevStars += Number(m.revenue_stars || 0);
+          totCost += Number(m.server_cost || 0);
+        });
+        const totNet = totRevRub - totCost;
+        const totNetColor = totNet >= 0 ? 'var(--green)' : 'var(--red)';
+
         let mhtml = `
-          <div class="table-wrap">
+          <div class="table-wrap" style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
             <table>
               <thead>
                 <tr>
-                  <th>Month</th>
-                  <th>Payments</th>
-                  <th>Revenue</th>
-                  <th>Server Expense</th>
-                  <th>Details / Rate</th>
-                  <th>Net Profit</th>
-                  <th>Action</th>
+                  <th style="text-align:left;min-width:110px">Месяц</th>
+                  <th style="text-align:center;min-width:90px">Оплаты</th>
+                  <th style="text-align:right;min-width:110px">Выручка</th>
+                  <th style="text-align:right;min-width:110px">Расход серверов</th>
+                  <th style="text-align:left;min-width:260px">Детализация расходов</th>
+                  <th style="text-align:right;min-width:110px">Чистая прибыль</th>
                 </tr>
               </thead>
               <tbody>`;
-        fin.monthly.forEach(m => {
-          const cost = m.server_cost || 0;
-          const net = (m.revenue || 0) - cost;
+
+        sortedMonths.forEach(m => {
+          const cost = Number(m.server_cost || 0);
+          const rev = Number(m.revenue_rub || m.revenue || 0);
+          const net = rev - cost;
           const netColor = net >= 0 ? 'var(--green)' : 'var(--red)';
           const meta = m.cost_meta || {};
           const items = meta.items || [];
-          
-          let metaStr = '';
+          const isCur = m.month === curMonthStr;
+
+          let chipsHtml = '';
           if (items.length > 0) {
-            metaStr = items.map(it => {
+            chipsHtml = items.map(it => {
+              const shortName = getShortServerName(it.server_name);
               const sym = it.currency === 'EUR' ? '€' : (it.currency === 'USD' ? '$' : '₽');
-              const rateStr = (it.currency !== 'RUB' && it.effective_rate) ? `@ ${it.effective_rate}₽` : '';
-              const origStr = (it.currency !== 'RUB' && it.amount_currency) ? `(${it.amount_currency}${sym} ${rateStr})` : '';
+              const origStr = (it.currency !== 'RUB' && it.amount_currency)
+                ? `${it.amount_currency}${sym}${it.effective_rate ? ' @ ' + it.effective_rate + '₽' : ''}`
+                : '';
+              const tooltip = `${it.server_name}: ${Number(it.cost_rub).toLocaleString()} ₽ ${origStr ? '(' + origStr + ')' : ''}. Нажмите для редактирования`;
               const itemEditJson = encodeURIComponent(JSON.stringify(it));
-              return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px;font-size:12px;background:#151515;padding:3px 6px;border-radius:4px">
-                <span><b>${it.server_name}</b>: ${Number(it.cost_rub).toLocaleString()} ₽ <small style="color:var(--muted)">${origStr}</small></span>
-                <button class="btn sm" style="padding:1px 6px;font-size:10px" onclick="openExpenseModal('${itemEditJson}')">✏️</button>
-              </div>`;
+              return `<span onclick="openExpenseModal('${itemEditJson}')" title="${esc(tooltip)}" style="display:inline-flex;align-items:center;gap:4px;background:#18181b;border:1px solid #27272a;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:11px;margin:2px 4px 2px 0" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='#27272a'">
+                <span>${shortName}</span>
+                <b style="color:var(--text)">${Number(it.cost_rub).toLocaleString()} ₽</b>
+                <span style="opacity:0.6;font-size:10px">✏️</span>
+              </span>`;
             }).join('');
           } else if (meta.amount_currency && meta.currency && meta.currency !== 'RUB') {
             const sym = meta.currency === 'EUR' ? '€' : (meta.currency === 'USD' ? '$' : meta.currency);
-            metaStr = `<span class="badge" style="background:#222;color:#fff">${meta.amount_currency} ${sym}</span> `;
+            chipsHtml = `<span class="badge" style="background:#222;color:#fff">${meta.amount_currency} ${sym}</span> `;
             if (meta.effective_rate) {
-              metaStr += `<span style="font-size:11px;color:var(--muted)">@ ${meta.effective_rate} ₽</span>`;
+              chipsHtml += `<span style="font-size:11px;color:var(--muted)">@ ${meta.effective_rate} ₽</span>`;
             }
           } else if (meta.details) {
-            metaStr = `<span style="font-size:11px;color:var(--muted)">${meta.details}</span>`;
+            chipsHtml = `<span style="font-size:11px;color:var(--muted)">${meta.details}</span>`;
           } else {
-            metaStr = '—';
+            chipsHtml = '<span style="color:var(--muted);font-size:12px">—</span>';
           }
 
           const addForMonthJson = encodeURIComponent(JSON.stringify({
@@ -3306,31 +3409,51 @@
             server_key: 'hetzner_de',
             currency: 'EUR'
           }));
+          const addBtn = `<button class="btn sm" style="padding:1px 6px;font-size:10px;vertical-align:middle;margin-left:4px" title="Добавить сервер за ${formatMonthRu(m.month)}" onclick="openExpenseModal('${addForMonthJson}')">+ Сервер</button>`;
 
           const mStars = Number(m.revenue_stars || 0);
           const mStarsCnt = Number(m.payments_stars || 0);
           const revDisplay = mStars > 0
-            ? `${Number(m.revenue_rub || m.revenue || 0).toLocaleString()} ₽<br><span style="color:#fbbf24;font-size:11px;font-weight:600">+${mStars.toLocaleString()} ⭐️</span>`
-            : `${Number(m.revenue || 0).toLocaleString()} ₽`;
+            ? `<b>${rev.toLocaleString()} ₽</b><br><span style="color:#fbbf24;font-size:11px;font-weight:600">+${mStars.toLocaleString()} ⭐️</span>`
+            : `<b>${rev.toLocaleString()} ₽</b>`;
           const payDisplay = mStarsCnt > 0
-            ? `${m.payments} <span style="font-size:11px;color:var(--muted)">(${m.payments_rub || (m.payments - mStarsCnt)} ₽ / ${mStarsCnt} ⭐️)</span>`
-            : `${m.payments}`;
+            ? `<span>${m.payments}</span> <small style="color:var(--muted);font-size:10px">(${m.payments_rub || (m.payments - mStarsCnt)} ₽ / ${mStarsCnt} ⭐️)</small>`
+            : `<span>${m.payments}</span>`;
+
+          const rowBg = isCur ? 'background:rgba(2,132,199,0.04)' : '';
+          const monthBadge = isCur ? ' <span class="badge" style="background:#0284c733;color:#38bdf8;font-size:10px;padding:1px 5px">тек.</span>' : '';
 
           mhtml += `
-                <tr>
-                  <td><b>${m.month}</b></td>
-                  <td>${payDisplay}</td>
-                  <td>${revDisplay}</td>
-                  <td><b>${Number(cost).toLocaleString()} ₽</b></td>
-                  <td style="min-width:240px">${metaStr}</td>
-                  <td style="color:${netColor};font-weight:600">${net >= 0 ? '+' : ''}${Number(net).toLocaleString()} ₽</td>
-                  <td>
-                    <button class="btn sm" style="padding:2px 8px;font-size:11px" title="Добавить сервер за этот месяц" onclick="openExpenseModal('${addForMonthJson}')">+ Сервер</button>
+                <tr style="${rowBg}">
+                  <td style="text-align:left">
+                    <b>${formatMonthRu(m.month)}</b>${monthBadge}
+                  </td>
+                  <td style="text-align:center">${payDisplay}</td>
+                  <td style="text-align:right">${revDisplay}</td>
+                  <td style="text-align:right"><b>${cost.toLocaleString()} ₽</b></td>
+                  <td style="text-align:left">${chipsHtml}${addBtn}</td>
+                  <td style="text-align:right;color:${netColor};font-weight:600">
+                    ${net >= 0 ? '+' : ''}${net.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})} ₽
                   </td>
                 </tr>`;
         });
+
         mhtml += `
               </tbody>
+              <tfoot style="border-top:2px solid var(--border);font-weight:600;background:rgba(255,255,255,0.02)">
+                <tr>
+                  <td style="text-align:left">ИТОГО</td>
+                  <td style="text-align:center">${totPayments}</td>
+                  <td style="text-align:right">
+                    ${totRevRub.toLocaleString()} ₽${totRevStars > 0 ? `<br><small style="color:#fbbf24">+${totRevStars.toLocaleString()} ⭐️</small>` : ''}
+                  </td>
+                  <td style="text-align:right">${totCost.toLocaleString()} ₽</td>
+                  <td style="text-align:left;color:var(--muted);font-size:11px;font-weight:normal">За все периоды работы</td>
+                  <td style="text-align:right;color:${totNetColor};font-size:14px">
+                    ${totNet >= 0 ? '+' : ''}${totNet.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})} ₽
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>`;
         const dashMonthlyEl = document.getElementById('dash-monthly');

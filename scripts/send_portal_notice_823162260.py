@@ -13,8 +13,8 @@ from bot_xui.messaging import send_link_safely
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-TG_ID = 823162260
-WEB_TOKEN = "b_1ALbkM-ptxAXPWpnreKA"
+TG_ID = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 823162260
+WEB_TOKEN = sys.argv[2] if len(sys.argv) > 2 else os.getenv("TARGET_WEB_TOKEN", "REDACTED_WEB_TOKEN")
 
 MESSAGE = (
     "Добрый день, Светлана! Мы провели анализ и готовы предложить "
