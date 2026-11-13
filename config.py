@@ -120,7 +120,7 @@ SMTP_FROM = os.getenv("SMTP_FROM")
 # MTProto Proxy
 MTPROTO_SERVER = os.getenv("MTPROTO_SERVER", "caretg.tiinservice.online")
 MTPROTO_PORT = os.getenv("MTPROTO_PORT", "8443")
-MTPROTO_SECRET = os.getenv("MTPROTO_SECRET", "7onLTQ6ONSvW7Cnj8uvSaGZjYXJldGcudGlpbnNlcnZpY2Uub25saW5l")
+MTPROTO_SECRET = os.getenv("MTPROTO_SECRET", "")
 
 REFERRAL_REWARD_DAYS = int(os.getenv("REFERRAL_REWARD_DAYS", "10"))
 REFERRAL_NEWCOMER_DAYS = int(os.getenv("REFERRAL_NEWCOMER_DAYS", "10"))

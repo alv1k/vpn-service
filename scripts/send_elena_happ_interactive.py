@@ -18,8 +18,8 @@ from bot_xui.messaging import send_link_safely
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-TG_ID = 281603923
-WEB_TOKEN = "B7iBik8zxPEXwyvrLWKJJg"
+TG_ID = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 281603923
+WEB_TOKEN = sys.argv[2] if len(sys.argv) > 2 else os.getenv("TARGET_WEB_TOKEN", "REDACTED_WEB_TOKEN")
 
 MESSAGE_TEXT = (
     "Елена, здравствуйте! 🐿\n\n"
