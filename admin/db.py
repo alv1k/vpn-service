@@ -562,6 +562,7 @@ def get_financial_projections() -> dict:
             "breakeven_payments_needed": breakeven_payments,
             "paying_subscribers_total": paying_count,
             "autopay_subscribers_count": sum(1 for x in upcoming_list if x["user_type"] == "autopay"),
+            "manual_subscribers_count": sum(1 for x in upcoming_list if x["user_type"] == "manual"),
             "trial_subscribers_count": trial_count,
             "special_subscribers_count": special_count,
             "active_subscribers_total": len(active_users),

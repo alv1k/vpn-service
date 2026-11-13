@@ -646,12 +646,12 @@ margin-top:.8rem;transition:all .15s}}
     <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
         Бесплатный MTProto-прокси для Telegram. Работает без VPN.
     </p>
-    <a href="tg://proxy?server=mtproto.tiin.su&port=443&secret=ee1234567890abcdef1234567890abcdef"
+    <a href="tg://proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}&secret={MTPROTO_SECRET}"
        class="connect-btn primary" style="text-decoration:none;text-align:center;display:block">
         ⚡ Подключить прокси
     </a>
     <p style="color:#666;font-size:.75rem;text-align:center;margin-top:.6rem">
-        <a href="https://t.me/proxy?server=mtproto.tiin.su&port=443&secret=ee1234567890abcdef1234567890abcdef"
+        <a href="https://t.me/proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}&secret={MTPROTO_SECRET}"
            style="color:#a78bfa;text-decoration:none">Альтернативная ссылка</a>
     </p>
 </div>

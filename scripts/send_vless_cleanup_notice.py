@@ -15,9 +15,8 @@ from api.db import get_web_token, log_message_sent
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-TG_ID = 6864368530
-
-WEB_TOKEN = "CBErymE2P1idQIel-VBqvg"
+TG_ID = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 6864368530
+WEB_TOKEN = sys.argv[2] if len(sys.argv) > 2 else os.getenv("TARGET_WEB_TOKEN", "REDACTED_WEB_TOKEN")
 
 MESSAGE = (
     "Добрый день, Александр! Мы продолжили изучать ситуацию по вашей заявке, "

@@ -276,18 +276,43 @@ def deactivate_xui_client(client_name: str) -> bool:
 
 
 def get_subid_from_xui_db(client_email: str) -> str | None:
-    """Получает subId клиента из базы данных 3x-ui."""
+    """Получает subId клиента из базы данных 3x-ui (inbounds.settings) или vpn_keys."""
     db_path = "/etc/x-ui/x-ui.db"
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        cur.execute("SELECT subId FROM client_traffics WHERE email = ?", (client_email,))
-        row = cur.fetchone()
+        cur.execute("SELECT settings FROM inbounds")
+        for (settings_str,) in cur.fetchall():
+            if not settings_str:
+                continue
+            try:
+                settings = json.loads(settings_str)
+                for client in settings.get("clients", []):
+                    if client.get("email") == client_email and client.get("subId"):
+                        conn.close()
+                        return client.get("subId")
+            except Exception:
+                continue
         conn.close()
-        return row[0] if row else None
     except Exception as e:
-        logger.error(f"Failed to get subId from DB: {e}")
-        return None
+        logger.error(f"Failed to get subId from x-ui DB: {e}")
+
+    # Fallback to MySQL vpn_keys if client already had an issued subscription
+    try:
+        from api.db import execute_query
+        row = execute_query(
+            "SELECT subscription_link FROM vpn_keys WHERE client_name = %s AND subscription_link IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (client_email,),
+            fetch="one"
+        )
+        if row and row.get("subscription_link"):
+            parts = row["subscription_link"].rstrip("/").split("/")
+            if parts:
+                return parts[-1]
+    except Exception as e:
+        logger.error(f"Failed to get subId from vpn_keys: {e}")
+
+    return None
 
 async def process_refund(payment_id: str) -> bool:
     """Деактивирует VPN конфиг (3x-ui + AWG) при возврате платежа"""
@@ -427,17 +452,25 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             # ===== Создаем/продлеваем клиента в 3x-ui (VLESS + Hysteria) =====
             sub_id = None
             existing = None
-            if tg_id and tg_id != 0:
-                existing = xui.get_client_by_tg_id(tg_id)
-            if not existing:
-                existing = xui.get_client_by_email(client_name)
+
+            # Сначала ищем по email среди активных инбаундов VLESS/Hysteria
+            candidate_emails = [c for c in [client_name, f"tiin_{tg_id}" if tg_id else None, f"tiin_web_{user_id}" if user_id else None] if c]
+            for candidate_email in candidate_emails:
+                cand = xui.get_client_by_email(candidate_email)
+                if cand and cand.get('inbound_id') in ACTIVE_INBOUND_IDS:
+                    existing = cand
+                    break
+
+            # Если не найден по email, ищем по tg_id строго среди ACTIVE_INBOUND_IDS (исключая Inbound 17 AmneziaWG)
             if not existing and tg_id and tg_id != 0:
-                existing = xui.get_client_by_email(f"tiin_{tg_id}")
-            if not existing and user_id:
-                existing = xui.get_client_by_email(f"tiin_web_{user_id}")
+                cand = xui.get_client_by_tg_id(tg_id)
+                if cand and cand.get('inbound_id') in ACTIVE_INBOUND_IDS:
+                    existing = cand
 
             if existing:
-                client_id = existing['client']['id']
+                client_id = existing['client'].get('uuid') or existing['client'].get('id')
+                if isinstance(client_id, int) or (isinstance(client_id, str) and client_id.isdigit()):
+                    client_id = existing['client'].get('uuid') or str(client_id)
                 sub_id = existing['client'].get('subId')
                 logger.info(f"Existing client found, reusing uuid: {client_id}")
                 import time as _time
@@ -475,8 +508,11 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             hysteria_ok = True
 
             if hysteria_ok:
+                hy2_auth = (existing['client'].get('auth') or existing['client'].get('password')) if existing and isinstance(existing.get('client'), dict) else None
+                if not hy2_auth and client_id:
+                    hy2_auth = str(client_id).replace("-", "")
                 hysteria_link = generate_hysteria2_link(
-                    auth=client_id,
+                    auth=hy2_auth or client_id,
                     domain=VLESS_DOMAIN,
                     port=HYSTERIA_PORT,
                     client_name=client_name,
@@ -488,7 +524,24 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
             # ===== ПОЛУЧАЕМ / ГЕНЕРИРУЕМ subId ДЛЯ ПОДПИСКИ (Fallback) =====
             if not sub_id:
-                sub_id = get_subid_from_xui_db(client_name)
+                for cand_email in filter(None, [client_name, f"tiin_{tg_id}" if tg_id else None, f"tiin_web_{user_id}" if user_id else None]):
+                    sub_id = get_subid_from_xui_db(cand_email)
+                    if sub_id:
+                        break
+
+            # Дополнительный поиск в vpn_keys по tg_id / user_id
+            if not sub_id:
+                try:
+                    from api.db import execute_query
+                    k_row = execute_query(
+                        "SELECT subscription_link FROM vpn_keys WHERE (tg_id = %s OR user_id = %s) AND vpn_type = 'vless' AND subscription_link IS NOT NULL ORDER BY id DESC LIMIT 1",
+                        (tg_id, user_id),
+                        fetch="one"
+                    )
+                    if k_row and k_row.get("subscription_link"):
+                        sub_id = k_row["subscription_link"].rstrip("/").split("/")[-1]
+                except Exception as e:
+                    logger.warning(f"Failed to lookup sub_id from vpn_keys: {e}")
             
             if not sub_id:
                 import secrets
@@ -583,7 +636,17 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         # single source of truth and re-sync 3x-ui.
         if vpn_type == "vless" and subscription_until and tg_id and tg_id != 0:
             sub_until_ms = int(subscription_until.replace(tzinfo=timezone.utc).timestamp() * 1000) if subscription_until.tzinfo is None else int(subscription_until.timestamp() * 1000)
-            existing_xui = xui.get_client_by_tg_id(tg_id)
+            existing_xui = existing
+            if not existing_xui or existing_xui.get('inbound_id') not in ACTIVE_INBOUND_IDS:
+                for candidate_email in filter(None, [client_name, f"tiin_{tg_id}"]):
+                    cand = xui.get_client_by_email(candidate_email)
+                    if cand and cand.get('inbound_id') in ACTIVE_INBOUND_IDS:
+                        existing_xui = cand
+                        break
+            if not existing_xui or existing_xui.get('inbound_id') not in ACTIVE_INBOUND_IDS:
+                cand = xui.get_client_by_tg_id(tg_id)
+                if cand and cand.get('inbound_id') in ACTIVE_INBOUND_IDS:
+                    existing_xui = cand
             if existing_xui:
                 email = existing_xui['client'].get('email')
                 if email:
@@ -614,7 +677,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                             enable=True,
                             tg_id=tg_id,
                             uuid_str=client_id,
-                            sub_id=existing_xui['client'].get('subId'),
+                            auth=existing_xui['client'].get('auth') or existing_xui['client'].get('password'),
+                            sub_id=sub_id or existing_xui['client'].get('subId'),
                         )
                     except Exception as ru_err:
                         logger.warning(f"Failed to sync client to RU node during payment: {ru_err}")

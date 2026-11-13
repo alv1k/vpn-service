@@ -11,8 +11,11 @@ STATE_FILE="/root/data/ru_bridge_state"
 LOG_FILE="/root/logs/ru-bridge-failover.log"
 LOCK_FILE="/tmp/ru_bridge_failover.lock"
 
-BOT_TOKEN="8075947163:AAEQ5A4rmMLRXjynOiNH3lXWQV-EHwCkdn8"
-ADMIN_CHAT_ID="364224373"
+BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+if [ -z "$BOT_TOKEN" ] && [ -f "/home/alvik/vpn-service/.env" ]; then
+    BOT_TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' /home/alvik/vpn-service/.env | cut -d= -f2- | tr -d '"'\'')
+fi
+ADMIN_CHAT_ID="${ADMIN_TG_ID:-364224373}"
 
 DE_HOST="344988.snk.wtf"
 DE_PORT="38745"

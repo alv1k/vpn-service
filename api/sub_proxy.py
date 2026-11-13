@@ -1537,7 +1537,7 @@ async def proxy_subscription(token: str, request: Request = None):
     is_browser = "text/html" in accept
 
     # Detect if client requests sing-box or Clash Meta format
-    wants_singbox = any(k in ua.lower() for k in ["sing-box", "hiddify", "karing"])
+    wants_singbox = any(k in ua.lower() for k in ["sing-box", "hiddify", "karing", "incy"])
     q_params = getattr(request, "query_params", None)
     fmt = q_params.get("format") if q_params else None
     wants_clash = any(k in ua.lower() for k in ["clash", "flclash", "mihomo", "stash"]) or (fmt == "clash")

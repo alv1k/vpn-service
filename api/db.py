@@ -809,12 +809,12 @@ def upsert_vpn_key(
     """
     logger.debug(f"upsert_vpn_key called, tg_id={tg_id}, vpn_type={vpn_type}")
     
-    # Try to find an existing active key for this user and type
+    # Try to find an existing active or latest key for this user and type
     where = "tg_id = %s" if tg_id else "user_id = %s"
     val = tg_id if tg_id else user_id
     
     existing = execute_query(
-        f"SELECT id FROM vpn_keys WHERE {where} AND vpn_type = %s AND expires_at > NOW() LIMIT 1",
+        f"SELECT id FROM vpn_keys WHERE {where} AND vpn_type = %s ORDER BY expires_at DESC LIMIT 1",
         (val, vpn_type), fetch='one'
     )
     
@@ -824,11 +824,12 @@ def upsert_vpn_key(
             UPDATE vpn_keys 
             SET payment_id = %s, client_id = %s, client_name = %s, client_ip = %s, 
                 client_public_key = %s, vless_link = %s, xhttp_link = %s, hysteria_link = %s, 
-                expires_at = %s, subscription_link = %s, vpn_file = %s
+                expires_at = %s, subscription_link = %s, vpn_file = %s,
+                user_id = COALESCE(%s, user_id)
             WHERE id = %s
             """,
             (payment_id, client_id, client_name, client_ip, client_public_key, 
-             vless_link, xhttp_link, hysteria_link, expires_at, subscription_link, vpn_file, existing['id'])
+             vless_link, xhttp_link, hysteria_link, expires_at, subscription_link, vpn_file, user_id, existing['id'])
         )
         logger.info(f"Updated existing VPN key {existing['id']} for user {val}")
     else:
@@ -941,8 +942,12 @@ def sync_expiry(tg_id: int, expires_at_utc: datetime):
 
         # Re-enable in RU 3x-ui
         from bot_xui.multi_node import sync_client_to_ru_node
-        uuid_val = vk.get('client_id') if vk else (existing['client'].get('id') if existing else None)
-        sync_client_to_ru_node(email=email, expiry_ms=exp_ms, enable=True, tg_id=tg_id, uuid_str=uuid_val)
+        raw_uuid = vk.get('client_id') if vk else None
+        if not raw_uuid or (isinstance(raw_uuid, str) and raw_uuid.isdigit()) or isinstance(raw_uuid, int):
+            raw_uuid = existing['client'].get('uuid') or existing['client'].get('id') if existing else raw_uuid
+        uuid_val = str(raw_uuid) if raw_uuid else None
+        client_auth = existing['client'].get('auth') or existing['client'].get('password') if existing else None
+        sync_client_to_ru_node(email=email, expiry_ms=exp_ms, enable=True, tg_id=tg_id, uuid_str=uuid_val, auth=client_auth)
 
         # Re-enable in AWG if exists (legacy systemd awg_api disabled)
         # from awg_api import db as awg_db
@@ -1018,12 +1023,17 @@ def sync_expiry_by_user_id(user_id: int, expires_at_utc: datetime):
                 xui.update_client_expiry(existing['inbound_id'], existing['client'], exp_ms)
 
             from bot_xui.multi_node import sync_client_to_ru_node
+            raw_uuid = vk.get('client_id') if vk else None
+            if not raw_uuid or (isinstance(raw_uuid, str) and raw_uuid.isdigit()) or isinstance(raw_uuid, int):
+                raw_uuid = existing['client'].get('uuid') or existing['client'].get('id') if existing else raw_uuid
+            client_auth = existing['client'].get('auth') or existing['client'].get('password') if existing else None
             sync_client_to_ru_node(
                 email=email,
                 expiry_ms=exp_ms,
                 enable=True,
                 tg_id=vk.get('tg_id', 0),
-                uuid_str=vk.get('client_id')
+                uuid_str=str(raw_uuid) if raw_uuid else None,
+                auth=client_auth
             )
 
         # from awg_api import db as awg_db

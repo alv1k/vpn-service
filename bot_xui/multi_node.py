@@ -66,7 +66,8 @@ def sync_client_to_ru_node(
             new_expiry = expiry_ms if expiry_ms is not None else current_expiry
             new_enable = enable if enable is not None else client.get("enable", True)
 
-            target_auth = auth or (uuid_str.replace("-", "") if uuid_str else client.get("auth"))
+            clean_uuid = str(uuid_str).replace("-", "") if uuid_str and len(str(uuid_str)) > 10 else None
+            target_auth = auth or client.get("auth") or clean_uuid
 
             payload = {
                 "email": email,
@@ -94,7 +95,8 @@ def sync_client_to_ru_node(
         else:
             # Клиент не найден на RU-ноде — создаём его
             logger.info(f"ℹ️ [RU-Node] Client {email} not found on RU node. Creating...")
-            target_auth = auth or (uuid_str.replace("-", "") if uuid_str else None)
+            clean_uuid = str(uuid_str).replace("-", "") if uuid_str and len(str(uuid_str)) > 10 else None
+            target_auth = auth or clean_uuid
             client_payload = {
                 "email": email,
                 "limitIp": limit_ip,
@@ -105,7 +107,7 @@ def sync_client_to_ru_node(
                 "reset": 0,
                 "flow": flow,
             }
-            if uuid_str:
+            if uuid_str and len(str(uuid_str)) > 10:
                 client_payload["id"] = str(uuid_str)
             if target_auth:
                 client_payload["auth"] = str(target_auth)
