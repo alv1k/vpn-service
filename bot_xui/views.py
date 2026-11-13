@@ -10,7 +10,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot_xui.tariffs import TARIFFS
 from api.db import get_keys_by_tg_id, get_user_email, is_awg_test_activated, is_vless_test_activated, get_permanent_discount, update_vless_link, get_web_token, get_user_by_tg_id, get_payment_by_id, get_referral_count, get_user_by_web_token
-from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, get_user_sub_url
+from bot_xui.helpers import convert_to_local, make_back_keyboard, make_main_keyboard, MAIN_MENU_TEXT, tariff_emoji, safe_edit_text, safe_edit_text_logged, reply_text_logged, reply_photo_logged, reply_document_logged, _log_message, make_qr_bytes, WEB_BASE_URL, SUB_URL_BASE, get_sub_url_base_for_user
+
 from bot_xui.test_mode import is_test_mode
 from config import ADMIN_TG_ID, REFERRAL_REWARD_DAYS, BOT_USERNAME
 
@@ -36,6 +37,7 @@ def _format_date_long(dt: datetime, offset_hours: int = 9) -> str:
 
 def build_main_menu_text(tg_id: int) -> str:
     keys = get_keys_by_tg_id(tg_id)
+    keys = [k for k in keys if k.get("vpn_type") != "naiveproxy"]
 
     # Защитный fallback: ключей нет вообще (например, не сработала авто-выдача).
     if not keys:
@@ -48,30 +50,63 @@ def build_main_menu_text(tg_id: int) -> str:
         key=lambda k: k.get("expires_at") or datetime.min,
     )
 
-    sub_info, is_test = _build_subscription_info(tg_id, key)
+    user = get_user_by_tg_id(tg_id)
+    first_name = (user or {}).get("first_name") or ""
+
+    # Определяем тариф через payment_id
+    tariff_name = ""
+    device_limit = 10
+    is_test = False
+    payment_id = key.get("payment_id")
+    if not payment_id:
+        for k in keys:
+            if k.get("payment_id"):
+                payment_id = k["payment_id"]
+                break
+    if payment_id:
+        payment = get_payment_by_id(payment_id)
+        if payment:
+            tariff_key = payment.get("tariff", "")
+            tariff = TARIFFS.get(tariff_key)
+            if tariff:
+                tariff_name = tariff["name"]
+                device_limit = tariff.get("device_limit", 10)
+                is_test = tariff.get("is_test", False)
+
     is_active = bool(key.get("expires_at") and key["expires_at"] > datetime.utcnow())
-    expiry_label = "⏱ Истекает" if is_active else "⏱ Истекла"
+    expiry_date_str = _format_date_long(key.get('expires_at'))
+    expiry_status = f"⏳ Активен до: {expiry_date_str}" if is_active else f"⌛️ Истек: {expiry_date_str}"
 
     ref_count = get_referral_count(tg_id)
     ref_days = ref_count * REFERRAL_REWARD_DAYS
+    ref_link = f"https://t.me/{BOT_USERNAME}?start={tg_id}"
+
+    greeting = f"Рады видеть, <b>{first_name} 💫</b>\n\n" if first_name else ""
 
     text = (
-        f"⚡️ <b> тииҥ VPN 🐿</b>\n\n"
-        f"{sub_info}\n"
-        f"{expiry_label} {_format_date_long(key.get('expires_at'))}\n\n"
+        f"⚡️ <b>Личный кабинет • тииҥ VPN 🐿</b>\n\n"
+        f"{greeting}"
+        f"<blockquote>💎 <b>Активная подписка</b>\n"
+        f"├ 📦 <b>План:</b> {tariff_name or 'Базовый'}\n"
+        f"├ 📊 <b>Трафик:</b> {'10 ГБ' if is_test else '♾️ Не ограничен'}\n"
+        f"├ 📱 <b>Лимит:</b> до {device_limit} устройств\n"
+        f"└ {expiry_status}</blockquote>\n\n"
     )
 
     token = get_web_token(tg_id)
     if token:
-        text += f'🪄 <a href="https://344988.snk.wtf/my/{token}">Гид по подключению</a>\n\n'
+        text += f'🚀 <b>Быстрый старт:</b> <a href="{WEB_BASE_URL}/my/{token}">Инструкция по настройке</a>\n\n'
+
+    bonus_header = f"Дарим <b>+{REFERRAL_REWARD_DAYS} дней</b> за каждого приглашенного друга:" if ref_days == 0 else f"👥 Бонус за друзей: <b>+{ref_days} дн.</b> (+{REFERRAL_REWARD_DAYS} дн. за нового друга):"
 
     text += (
-        f"<blockquote>👥 Бонус за друзей: +{ref_days} дн.</blockquote>\n"
-        f"Воспользуйся реферальной ссылкой:\n➡️➡️➡️ <code>https://t.me/{BOT_USERNAME}?start={tg_id}</code> ⬅️"
+        f"<blockquote>👥 <b>Бонусная программа</b>\n"
+        f"{bonus_header}\n"
+        f"🔗 <code>{ref_link}</code></blockquote>"
     )
 
     if is_active and is_test:
-        text += "\n\n⚡ <b>Можно приобрести тариф ☺</b> Жми «Тарифы»"
+        text += "\n\n⚡ <b>Можно приобрести тариф ☺</b> Жми «💎 Тарифы»"
     elif not is_active:
         text += "\n\n⚡ <b>Подписка истекла.</b> Выбери новый тариф 👇"
 
@@ -84,9 +119,6 @@ def build_main_menu_text(tg_id: int) -> str:
 
 async def show_main_menu(query, xui=None):
     tg_id = query.from_user.id
-    if xui is not None:
-        from bot_xui.vpn_factory import auto_grant_test_and_notify
-        await auto_grant_test_and_notify(tg_id, xui, query.message.reply_photo)
 
     text = build_main_menu_text(tg_id)
     markup = make_main_keyboard(tg_id)
@@ -113,6 +145,10 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
     awg_used   = is_awg_test_activated(tg_id)
     vless_used = is_vless_test_activated(tg_id)
     perm_discount = get_permanent_discount(tg_id)
+    from api.db import has_winback_discount
+    from config import WINBACK_DISCOUNT_PERCENT
+    winback_discount = WINBACK_DISCOUNT_PERCENT if has_winback_discount(tg_id) else 0
+    effective_discount = max(perm_discount, winback_discount)
 
     test_tariffs    = []
     regular_tariffs = []
@@ -135,16 +171,17 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
     else:
         text = "💎 <b>Тарифы VPN</b>\n\n"
 
-    if perm_discount > 0:
-        text += f"🏷 Ваша скидка: <b>{perm_discount}%</b>\n\n"
+    if effective_discount > 0:
+        discount_label = "🏷 Ваша персональная скидка 20%:" if winback_discount > 0 else "🏷 Ваша скидка:"
+        text += f"{discount_label} <b>{effective_discount}%</b>\n\n"
 
     if test_tariffs and not (awg_used or vless_used) and mode == "buy":
         for t in test_tariffs:
             text += f"🎁 <b>{t['name']}</b> — бесплатно\n\n"
 
     for i, t in enumerate(regular_tariffs):
-        if perm_discount > 0:
-            discounted = max(1, round(t['price'] * (100 - perm_discount) / 100))
+        if effective_discount > 0:
+            discounted = max(1, round(t['price'] * (100 - effective_discount) / 100))
             ppd = discounted / t["days"] if t.get("days") else 0
             price_str = f"<s>{t['price']}₽</s> <b>{discounted}₽</b>"
         else:
@@ -176,8 +213,8 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
 
     row: list = []
     for i, t in enumerate(regular_tariffs):
-        if perm_discount > 0:
-            btn_price = max(1, round(t['price'] * (100 - perm_discount) / 100))
+        if effective_discount > 0:
+            btn_price = max(1, round(t['price'] * (100 - effective_discount) / 100))
             label = f"{tariff_emoji(t.get('days', 0))} {t['days']}дн | {btn_price}₽"
         else:
             label = f"{tariff_emoji(t.get('days', 0))} {t['days']}дн | {t['price']}₽"
@@ -203,14 +240,14 @@ def _build_tariff_text_and_keyboard(tg_id: int, mode: str = "buy") -> tuple[str,
 
 async def show_tariffs(query):
     text, markup = _build_tariff_text_and_keyboard(query.from_user.id, mode="buy")
-    await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+    await safe_edit_text_logged(query, text, "tariffs", reply_markup=markup)
 
 
 async def show_renew_tariffs(query, context, inbound_id: int, client_name: str):
     """Клавиатура продления — сохраняет контекст и показывает тарифы."""
     context.user_data["renew_info"] = {"inbound_id": inbound_id, "client_name": client_name}
     text, markup = _build_tariff_text_and_keyboard(query.from_user.id, mode="renew")
-    await query.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
+    await reply_text_logged(query.message.chat, text, "renew_tariffs", reply_markup=markup, parse_mode="HTML")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -241,17 +278,15 @@ def _refresh_vless_links(tg_id: int, xui):
 
 
 _PROTOCOL_LABELS = {
-    "softether": ("🖥", "SoftEther"),
-    "vless":     ("🟢", "VLESS"),
-    "awg":       ("📱", "AmneziaWG"),
-    "hysteria":  ("🚀", "Hysteria 2"),
+    "vless":      ("🟢", "VLESS"),
+    "awg":        ("📱", "AmneziaWG"),
+    "hysteria":   ("🚀", "Hysteria 2"),
 }
 
 _PROTOCOL_DESCRIPTIONS = {
-    "softether": "Windows XP/7/10/11",
-    "vless":     "Reality • Все платформы",
-    "awg":       "AmneziaWG • Нестабильные каналы",
-    "hysteria":  "Hysteria 2 • Обход блокировок",
+    "vless":      "Reality • Все платформы",
+    "awg":        "AmneziaWG • Нестабильные каналы",
+    "hysteria":   "Hysteria 2 • Обход блокировок",
 }
 
 
@@ -302,6 +337,8 @@ async def show_configs(query, xui=None):
 
     keys  = get_keys_by_tg_id(tg_id)
 
+    keys = [k for k in keys if k.get("vpn_type") != "naiveproxy"]
+
     if not keys:
         await _show_no_configs(query)
         return
@@ -315,6 +352,8 @@ async def show_configs(query, xui=None):
         return
 
     text = "🔑 <b>Ваши конфиги</b>\n\n"
+    keyboard: list = []
+
     if active_keys:
         for key in active_keys:
             emoji, label = _pretty_config_label(key)
@@ -323,32 +362,45 @@ async def show_configs(query, xui=None):
             text += f"{emoji} <b>{label}</b>\n"
             text += f"   <i>{desc}</i> · до {date}\n\n"
 
-    text += "<i>Нажмите, чтобы показать данные подключения:</i>"
+        text += "<i>Нажмите, чтобы показать данные подключения:</i>"
 
-    keyboard: list = []
-    row: list = []
-    for i, key in enumerate(active_keys):
-        emoji, label = _pretty_config_label(key, short=True)
-        row.append(InlineKeyboardButton(f"{emoji} {label}", callback_data=f"show_key_{key['client_name']}"))
-        if len(row) == 2 or i == len(active_keys) - 1:
-            keyboard.append(row)
-            row = []
+        row: list = []
+        for i, key in enumerate(active_keys):
+            emoji, label = _pretty_config_label(key, short=True)
+            row.append(InlineKeyboardButton(f"{emoji} {label}", callback_data=f"show_key_{key['client_name']}"))
+            if len(row) == 2 or i == len(active_keys) - 1:
+                keyboard.append(row)
+                row = []
 
-    # Additional protocol buttons for active subscribers
-    if active_keys:
-        has_awg = any(k['vpn_type'] == 'awg' for k in active_keys)
-        has_se  = any(k['vpn_type'] == 'softether' for k in active_keys)
+        has_awg    = any(k['vpn_type'] == 'awg' for k in active_keys)
         extra_row = []
         if not has_awg:
             extra_row.append(InlineKeyboardButton("➕ AmneziaWG", callback_data="get_awg_config"))
-        if not has_se:
-            extra_row.append(InlineKeyboardButton("➕ SoftEther", callback_data="get_softether_config"))
         if extra_row:
             keyboard.append(extra_row)
 
+    if expired_keys:
+        if active_keys:
+            text += "\n\n"
+        text += "⌛ <b>Истёкшие конфиги:</b>\n\n"
+        for key in expired_keys:
+            emoji, label = _pretty_config_label(key)
+            desc = _PROTOCOL_DESCRIPTIONS.get(key.get("vpn_type", "").lower(), "")
+            date = convert_to_local(key['expires_at'])
+            text += f"{emoji} <s>{label}</s>\n"
+            text += f"   <i>{desc}</i> · до {date}\n\n"
+
+        has_awg_any = any(k['vpn_type'] == 'awg' for k in keys)
+        if not has_awg_any:
+            keyboard.append([InlineKeyboardButton("➕ AmneziaWG 2.0", callback_data="get_awg_config_v2")])
+
+        if not active_keys:
+            text += "<i>Подписка истекла. Выберите тариф для продления.</i>"
+            keyboard.append([InlineKeyboardButton("💎 Тарифы", callback_data="tariffs")])
+
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")])
 
-    await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await safe_edit_text_logged(query, text, "my_configs", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _show_no_configs(query):
@@ -360,11 +412,8 @@ async def _show_no_configs(query):
         [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")],
     ]
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="HTML",
-    )
+    await safe_edit_text_logged(query, text, "my_configs",
+        reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -416,7 +465,7 @@ def _build_subscription_info(tg_id: int, key: dict) -> tuple[str, bool]:
 async def show_single_config(query, client_name: str, xui):
     tg_id = query.from_user.id
     keys  = get_keys_by_tg_id(tg_id)
-    key   = next((k for k in keys if k["client_name"] == client_name), None)
+    key   = next((k for k in keys if k["client_name"] == client_name and k.get("vpn_type") != "naiveproxy"), None)
 
     if not key:
         await query.answer("❌ Конфиг не найден", show_alert=True)
@@ -433,49 +482,6 @@ async def show_single_config(query, client_name: str, xui):
         back_buttons.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])
     back_buttons.append([InlineKeyboardButton("🔙 К списку", callback_data="my_configs")])
     back_markup = InlineKeyboardMarkup(back_buttons)
-
-    # SoftEther — текстовое сообщение без QR
-    if key["vpn_type"] == "softether":
-        import json
-        try:
-            creds = json.loads(key.get("vless_link") or "{}")
-        except (json.JSONDecodeError, TypeError):
-            creds = {}
-
-        caption = (
-            f"{sub_info}\n\n"
-            f"{pretty_emoji} <b>{pretty_label}</b>  {status[0]} {status[1]}\n"
-            f"⏱ До: {convert_to_local(expires_at)}\n\n"
-            f"<b>Данные для подключения:</b>\n\n"
-            f"Сервер: <pre>{creds.get('host', '')}</pre>\n"
-            f"Порт: <pre>{creds.get('port', '')}</pre>\n"
-            f"Hub: <pre>{creds.get('hub', '')}</pre>\n"
-            f"Логин: <pre>{creds.get('username', '')}</pre>\n"
-            f"Пароль: <pre>{creds.get('password', '')}</pre>\n"
-        )
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-
-        # Отправляем .vpn файл если есть
-        vpn_file_content = key.get("vpn_file")
-        if vpn_file_content:
-            vpn_bio = BytesIO(vpn_file_content.encode("utf-8"))
-            vpn_bio.name = f"tiin_vpn_{creds.get('username', 'config')}.vpn"
-            await query.message.chat.send_document(
-                document=vpn_bio,
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=back_markup,
-            )
-        else:
-            await query.message.chat.send_message(
-                text=caption,
-                parse_mode="HTML",
-                reply_markup=back_markup,
-            )
-        return
 
     # AWG — отправить .conf файл
     if key["vpn_type"] == "awg":
@@ -498,32 +504,28 @@ async def show_single_config(query, client_name: str, xui):
             await query.message.delete()
         except Exception:
             pass
-        await query.message.chat.send_document(
-            document=conf_bio,
+        await reply_document_logged(
+            query.message.chat, conf_bio, "single_config",
             caption=caption,
-            parse_mode="HTML",
             reply_markup=back_markup,
         )
         return
 
-    # VLESS — QR + ссылка подписки (через прокси-эндпоинт, который переписывает remark)
-    token = get_web_token(tg_id)
-    user_data = get_user_by_web_token(token)
-    sub_url = get_user_sub_url(tg_id, user_data['id']) or key.get("subscription_link") or ""
+    web_token = get_web_token(tg_id)
+    qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+    bio = make_qr_bytes(qr_url) if qr_url else None
     vless_link = key.get("vless_link") or ""
+    xhttp_link = key.get("xhttp_link") or ""
     hysteria_link = key.get("hysteria_link") or ""
 
-    bio = BytesIO()
-    bio.name = "qr.png"
-    qr = qrcode.QRCode(version=1, box_size=8, border=4)
-    qr.add_data(sub_url)
-    qr.make(fit=True)
-    qr.make_image(fill_color="black", back_color="white").save(bio, "PNG")
-    bio.seek(0)
-
     from config import SERVER_LOCATION
-    # Subscription link is always included — it's the primary way to connect
-    sub_link_text = f"📎 <b>Ссылка подписки</b> (VLESS + Hysteria в одной):\n<code>{sub_url}</code>"
+    my_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+    user_sub_base = get_sub_url_base_for_user(tg_id)
+    sub_proxy_url = f"{user_sub_base}/sub/{web_token}" if web_token else ""
+    sub_link_text = (
+        "✨ <b>Умная маршрутизация TIIN активна</b>\n"
+        "<i>Российские сервисы (Сбер, Госуслуги, Ozon) работают напрямую, YouTube и заблокированные сайты — через скоростной туннель.</i>"
+    )
 
     caption = (
         f"{sub_info}\n\n"
@@ -538,38 +540,24 @@ async def show_single_config(query, client_name: str, xui):
         f"🚀 <b>Hysteria 2</b>\n"
         f"   <i>Скоростной, обход жёстких блокировок</i>\n\n"
         f"{sub_link_text}\n\n"
-        f"💡 <i>Скопируйте ссылку или отсканируйте QR-код</i>"
+        f"💡 <i>Отсканируйте QR-код или нажмите кнопку ниже для настройки в 1 клик:</i>"
     )
 
-    instr_token = get_web_token(tg_id)
-    if instr_token:
-        caption += f'\n\n📖 <a href="https://344988.snk.wtf/my/{instr_token}">Инструкция по подключению</a>'
-
-    # Telegram caption limit is 1024 chars; append standalone links only if they fit
-    extra_links = ""
-    if vless_link:
-        extra_links += f"\n\n🟢 <b>VLESS standalone:</b>\n<code>{vless_link}</code>"
-    if hysteria_link:
-        extra_links += f"\n\n🚀 <b>Hysteria 2 standalone:</b>\n<code>{hysteria_link}</code>"
-
-    if len(caption) + len(extra_links) <= 950:
-        caption += extra_links
-    else:
-        logger.info(f"show_single_config: standalone links dropped, caption={len(caption)}, extra={len(extra_links)}, total={len(caption)+len(extra_links)}")
-    # If too long: sub_url subscription link is always kept, standalone links dropped
+    if web_token:
+        caption += f'\n\n📖 <a href="{WEB_BASE_URL}/my/{web_token}">Инструкция и мастер подключения</a>'
 
     logger.info(f"show_single_config: sending photo caption, length={len(caption)}")
 
-    # Telegram caption limit is 1024 chars — truncate if needed
     if len(caption) > 1024:
         caption = caption[:1020] + "…"
         logger.warning(f"show_single_config: caption truncated to 1024 chars")
 
-    keyboard = [
-        [InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")],
-    ]
-    if instr_token:
-        keyboard.append([InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{instr_token}")])
+    keyboard = []
+    if web_token:
+        keyboard.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=f"{WEB_BASE_URL}/go-connect/{web_token}")])
+        keyboard.append([InlineKeyboardButton("🔗 Ссылки подписки (2 способа)", callback_data=f"sub_links_{web_token}")])
+        keyboard.append([InlineKeyboardButton("👤 Личный кабинет и инструкции", url=f"{WEB_BASE_URL}/my/{web_token}")])
+    keyboard.append([InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")])
     if is_test_tariff:
         keyboard.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])
     keyboard.append([InlineKeyboardButton("🔙 К списку", callback_data="my_configs")])
@@ -578,12 +566,34 @@ async def show_single_config(query, client_name: str, xui):
         await query.message.delete()
     except Exception:
         pass
-    await query.message.chat.send_photo(
-        photo=bio,
+    await reply_photo_logged(
+        query.message.chat, bio, "single_config",
         caption=caption,
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+
+
+async def show_sub_links(query, token: str):
+    """Показывает 2 способа импорта подписки (DE 344988.snk.wtf и RU Selectel)."""
+    de_url = f"https://344988.snk.wtf/sub/{token}"
+    ru_url = f"https://ru-server.tiinservice.online/sub/{token}"
+    text = (
+        "🔗 <b>Ссылки для импорта подписки (2 способа)</b>\n\n"
+        "Если в вашем приложении (Happ, Hiddify, v2rayNG, Karing, Shadowrocket) подписка не обновляется или выдает ошибку сети, используйте второй способ:\n\n"
+        "1️⃣ <b>Способ 1: Основной (Германия)</b>\n"
+        f"<code>{de_url}</code>\n"
+        "<i>(Прямой европейский канал к серверу Hetzner)</i>\n\n"
+        "2️⃣ <b>Способ 2: Резервный шлюз РФ (Selectel СПб)</b>\n"
+        f"<code>{ru_url}</code>\n"
+        "<i>(Обходит фильтрацию и блокировки МТС, МегаФон, Билайн, Ростелеком)</i>\n\n"
+        "💡 <i>Нажмите на любую ссылку выше, чтобы скопировать её в буфер обмена, затем в приложении нажмите «+» ➔ «Добавить из буфера обмена».</i>"
+    )
+    keyboard = [
+        [InlineKeyboardButton("⚡ 1-клик: Основной", url=f"https://344988.snk.wtf/go-connect/{token}")],
+        [InlineKeyboardButton("⚡ 1-клик: Резервный РФ", url=f"https://ru-server.tiinservice.online/go-connect/{token}")],
+        [InlineKeyboardButton("🔙 К списку", callback_data="my_configs")],
+    ]
+    await safe_edit_text_logged(query, text, "sub_links", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 # async def show_vless_link(query, client_name: str):

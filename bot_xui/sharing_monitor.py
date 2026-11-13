@@ -19,10 +19,19 @@ IP_MAX_AGE = 2 * 3600  # 2 hours
 
 def cleanup_stale_ips():
     """Remove IPs older than IP_MAX_AGE from inbound_client_ips."""
-    try:
-        conn = sqlite3.connect(XUI_DB_PATH, timeout=10)
-    except Exception as e:
-        logger.warning(f"[ip_cleanup] Cannot open DB: {e}")
+    for attempt in range(3):
+        try:
+            conn = sqlite3.connect(XUI_DB_PATH, timeout=15)
+            break
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() or "readonly" in str(e).lower():
+                logger.warning(f"[ip_cleanup] DB busy (attempt {attempt+1}/3), retrying...")
+                time.sleep(2)
+            else:
+                logger.warning(f"[ip_cleanup] Cannot open DB: {e}")
+                return
+    else:
+        logger.error("[ip_cleanup] Failed to open DB after 3 attempts")
         return
 
     try:

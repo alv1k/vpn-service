@@ -155,6 +155,17 @@ def delete_client(client_id: str) -> bool:
     return affected > 0
 
 
+def delete_client_by_name(name: str) -> bool:
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM awg_clients WHERE name=%s", (name,))
+    affected = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    return affected > 0
+
+
 def update_client_enabled(client_id: str, enabled: bool) -> bool:
     conn = _get_conn()
     cur = conn.cursor()

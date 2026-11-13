@@ -173,7 +173,7 @@ def test_reward_referrer_by_id(mock_get_pool):
 @patch("api.db._web_referral_promo_days", return_value=0)
 @patch("api.db._get_pool")
 def test_reward_newcomer_by_id_normal(mock_get_pool, mock_promo):
-    """Outside promo → newcomer gets REFERRAL_NEWCOMER_DAYS (3)."""
+    """Outside promo → newcomer gets REFERRAL_NEWCOMER_DAYS."""
     mock_pool, mock_conn, mock_cursor = _make_mock_pool()
     mock_get_pool.return_value = mock_pool
     mock_cursor.fetchone.return_value = {"subscription_until": datetime(2026, 4, 1, 10, 0)}

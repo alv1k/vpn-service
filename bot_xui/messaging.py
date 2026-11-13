@@ -89,16 +89,37 @@ async def send_link_safely(
         if response.status_code == 200:
             logger.info(f"✅ Message sent to {tg_id}")
             try:
-                from api.db import log_message_sent
+                from api.db import execute_query, log_message_sent
+                execute_query("UPDATE users SET bot_blocked = 0 WHERE tg_id = %s AND bot_blocked = 1", (tg_id,))
                 log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='sent')
             except Exception:
                 pass
             return True
 
+        error_text = response.text[:255]
+        is_block = False
+        try:
+            resp_json = response.json()
+            desc = resp_json.get("description", "").lower()
+            if "blocked" in desc or "deactivated" in desc:
+                is_block = True
+        except Exception:
+            pass
+
+        if is_block:
+            logger.info(f"🚫 User {tg_id} blocked bot — marking in DB")
+            try:
+                from api.db import execute_query, log_message_sent
+                execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (tg_id,))
+                log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='blocked', error_text=error_text)
+            except Exception:
+                pass
+            return False
+
         logger.warning(f"⚠️ sendMessage failed: {response.text}")
         try:
             from api.db import log_message_sent
-            log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='failed', error_text=response.text[:255])
+            log_message_sent(tg_id=tg_id, source=source, scenario=scenario, message_text=text, status='failed', error_text=error_text)
         except Exception:
             pass
         return False

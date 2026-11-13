@@ -15,6 +15,7 @@ YOO_KASSA_SECRET_KEY = os.getenv("YOO_KASSA_SECRET_KEY")
 # YooKassa: тестовые креды (для админского тест-режима)
 YOO_KASSA_TEST_SHOP_ID = os.getenv("YOO_KASSA_TEST_SHOP_ID")
 YOO_KASSA_TEST_SECRET_KEY = os.getenv("YOO_KASSA_TEST_SECRET_KEY")
+YOO_KASSA_PROXY = os.getenv("YOO_KASSA_PROXY", "http://127.0.0.1:10809")
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
@@ -47,6 +48,10 @@ XUI_PASSWORD = os.getenv("XUI_PASSWORD")
 XUI_TOTP_SECRET = os.getenv("XUI_TOTP_SECRET", "")
 XUI_SUB_PATH = os.getenv("XUI_SUB_PATH")
 
+# Portal / Web base URL for client cabinet and subscriptions (accessible without VPN in RU)
+PORTAL_BASE_URL = os.getenv("PORTAL_BASE_URL", "https://ru-server.tiinservice.online")
+SUB_BASE_URL = os.getenv("SUB_BASE_URL", "https://sub.tiinservice.online")
+
 # VLESS настройки
 VLESS_DOMAIN = os.getenv("VLESS_DOMAIN")
 VLESS_PORT = int(os.getenv("VLESS_PORT", "443"))
@@ -63,20 +68,48 @@ HYSTERIA_PORT = int(os.getenv("HYSTERIA_PORT", "54321"))
 HYSTERIA_SNI = os.getenv("HYSTERIA_SNI") or VLESS_SNI or VLESS_DOMAIN
 HYSTERIA_INBOUND_ID = int(os.getenv("HYSTERIA_INBOUND_ID", "4"))
 
+# VLESS XHTTP inbound (дополнительный на Reality)
+VLESS_HTTP_PORT = int(os.getenv("VLESS_HTTP_PORT", "47447"))
+VLESS_XHTTP_PBK = os.getenv("VLESS_XHTTP_PBK")
+_VLESS_XHTTP_SID_RAW = os.getenv("VLESS_XHTTP_SID", "")
+VLESS_XHTTP_SID_LIST = [s.strip() for s in _VLESS_XHTTP_SID_RAW.split(",") if s.strip()]
+VLESS_XHTTP_SID = VLESS_XHTTP_SID_LIST[0] if VLESS_XHTTP_SID_LIST else (VLESS_SID_LIST[0] if VLESS_SID_LIST else "")
+VLESS_HTTP_INBOUND_ID = int(os.getenv("VLESS_HTTP_INBOUND_ID", "2"))
+VLESS_WS_INBOUND_ID = int(os.getenv("VLESS_WS_INBOUND_ID", "9"))
+VLESS_REALITY_V1_INBOUND_ID = int(os.getenv("VLESS_REALITY_V1_INBOUND_ID", "10"))
+
+# Centralized active inbound IDs list for client provisioning
+_DEFAULT_ACTIVE_INBOUNDS = "1,2,4,10,14"
+_RAW_ACTIVE_INBOUNDS = os.getenv("ACTIVE_INBOUND_IDS", _DEFAULT_ACTIVE_INBOUNDS)
+ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_ACTIVE_INBOUNDS.split(",") if x.strip().isdigit()]
+
+# RU Server (Secondary Node) 3x-ui API
+RU_XUI_HOST = os.getenv("RU_XUI_HOST", "https://10.50.0.2:2053/0ruabxwdsz96R7jSIN/")
+RU_XUI_USERNAME = os.getenv("RU_XUI_USERNAME", "alvik")
+RU_XUI_PASSWORD = os.getenv("RU_XUI_PASSWORD", XUI_PASSWORD)
+_RAW_RU_INBOUNDS = os.getenv("RU_ACTIVE_INBOUND_IDS", "1,2")
+RU_ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_RU_INBOUNDS.split(",") if x.strip().isdigit()]
+
 # Server location (for display in client apps)
 SERVER_LOCATION = os.getenv("SERVER_LOCATION", "Germany")
 
-# AmneziaWG
-AMNEZIA_CONTAINER = os.getenv("AMNEZIA_CONTAINER")
+# Winback Campaign Constants
+WINBACK_DISCOUNT_PERCENT = int(os.getenv("WINBACK_DISCOUNT_PERCENT", "20"))
+WINBACK_GIFT_DAYS = int(os.getenv("WINBACK_GIFT_DAYS", "3"))
 
-
-# SoftEther VPN
-SOFTETHER_VPNCMD = os.getenv("SOFTETHER_VPNCMD", "/opt/softether/vpncmd")
-SOFTETHER_SERVER_PASSWORD = os.getenv("SOFTETHER_SERVER_PASSWORD")
-SOFTETHER_HUB = os.getenv("SOFTETHER_HUB", "VPN")
-SOFTETHER_CONNECT_HOST = os.getenv("SOFTETHER_CONNECT_HOST")
-SOFTETHER_CONNECT_PORT = int(os.getenv("SOFTETHER_CONNECT_PORT", "443"))
-
+# AmneziaWG (3x-ui Inbound)
+AWG_INBOUND_ID = int(os.getenv("AWG_INBOUND_ID", "17"))
+AWG_PORT = int(os.getenv("AWG_PORT", "443"))
+AWG_ENDPOINT = os.getenv("AWG_ENDPOINT", f"{VLESS_DOMAIN}:{AWG_PORT}")
+AWG_MTU = int(os.getenv("AWG_MTU", "1280"))
+AWG_ALLOWED_IPS = os.getenv(
+    "AWG_ALLOWED_IPS",
+    "1.1.1.1/32, 8.8.8.8/32, 10.8.1.0/24, 20.0.0.0/11, 31.13.0.0/16, 34.64.0.0/10, 45.64.40.0/22, 57.144.0.0/14, "
+    "64.233.160.0/19, 66.22.196.0/22, 66.220.144.0/20, 69.63.176.0/20, 69.171.224.0/19, 74.125.0.0/16, "
+    "104.16.0.0/12, 104.244.42.0/24, 108.177.0.0/17, 129.134.0.0/16, 142.250.0.0/15, 157.240.0.0/16, "
+    "162.158.0.0/15, 172.64.0.0/13, 172.217.0.0/16, 173.194.0.0/16, 185.89.216.0/22, 192.178.0.0/15, "
+    "199.16.0.0/12, 209.85.128.0/17, 216.58.192.0/19, 216.239.32.0/19"
+)
 # SMTP (for email auth codes)
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = os.getenv("SMTP_PORT", "587")
@@ -85,18 +118,23 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 SMTP_FROM = os.getenv("SMTP_FROM")
 
 # MTProto Proxy
-MTPROTO_SERVER = os.getenv("MTPROTO_SERVER", "tiinservice.ru")
+MTPROTO_SERVER = os.getenv("MTPROTO_SERVER", "caretg.tiinservice.online")
 MTPROTO_PORT = os.getenv("MTPROTO_PORT", "8443")
 MTPROTO_SECRET = os.getenv("MTPROTO_SECRET", "")
 
-REFERRAL_REWARD_DAYS = int(os.getenv("REFERRAL_REWARD_DAYS", "3"))
-REFERRAL_NEWCOMER_DAYS = int(os.getenv("REFERRAL_NEWCOMER_DAYS", "3"))
+REFERRAL_REWARD_DAYS = int(os.getenv("REFERRAL_REWARD_DAYS", "10"))
+REFERRAL_NEWCOMER_DAYS = int(os.getenv("REFERRAL_NEWCOMER_DAYS", "10"))
 
 _admin_tg_raw = os.getenv("ADMIN_TG_ID")
 if not _admin_tg_raw:
     raise RuntimeError("ADMIN_TG_ID must be set in .env")
 ADMIN_TG_ID = int(_admin_tg_raw)
 
+# Finance API
+FINANCE_API_URL = os.getenv("FINANCE_API_URL", "http://127.0.0.1:3000")
+FINANCE_BOT_USER = os.getenv("FINANCE_BOT_USER", "receipt_bot")
+FINANCE_BOT_PASS = os.getenv("FINANCE_BOT_PASS", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 logger = logging.getLogger(__name__)
 

@@ -4,10 +4,12 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
@@ -16,52 +18,29 @@ from sse_starlette.sse import EventSourceResponse
 # Add project root for imports
 sys.path.insert(0, "/home/alvik/vpn-service")
 
-from awg_api import db as awg_db
-from admin import db as admin_db
-from awg_api.config import (
+from config import (
     MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
 )
+from admin import db as admin_db
+from admin.auth import (
+    SESSION_MAX_AGE, _require_admin_session, _ws_authenticate,
+)
+
+# try:
+#     from awg_api import db as awg_db
+# except Exception:
+#     awg_db = None
+awg_db = None
 
 logger = logging.getLogger("admin")
 
-SESSION_MAX_AGE = 604800  # 7 days
-
-
-def _require_admin_session(request: Request):
-    """Verify connect.sid session cookie — reuses AWG API session store."""
-    from awg_api.main import _sessions
-    token = request.cookies.get("connect.sid")
-    if not token or token not in _sessions:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    from datetime import timezone
-    created = _sessions[token]
-    now = datetime.now(timezone.utc).timestamp()
-    if now - created > SESSION_MAX_AGE:
-        del _sessions[token]
-        raise HTTPException(status_code=401, detail="Session expired")
-    # Sliding window: refresh session on each request
-    _sessions[token] = now
+YAKUTSK_TZ = timezone(timedelta(hours=9))
 
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(_require_admin_session)])
 
 # ── WebSocket connections ──────────────────────────────────────────────────────
 _admin_ws_connections: set[WebSocket] = set()
-
-
-async def _ws_authenticate(websocket: WebSocket) -> bool:
-    """Verify session cookie for WebSocket handshake."""
-    from awg_api.main import _sessions
-    cookie = websocket.cookies.get("connect.sid")
-    if not cookie or cookie not in _sessions:
-        return False
-    created = _sessions[cookie]
-    now = datetime.now(timezone.utc).timestamp()
-    if now - created > SESSION_MAX_AGE:
-        del _sessions[cookie]
-        return False
-    _sessions[cookie] = now
-    return True
 
 
 async def _broadcast_ws(msg: dict):
@@ -81,9 +60,11 @@ async def _broadcast_ws(msg: dict):
 
 # XUI client (lazy init)
 _xui = None
+_ru_xui = None
 
 # Speed tracking: {(name, type): {"bytes": int, "ts": float, "speed": float}}
 _prev_traffic: dict[tuple[str, str], dict] = {}
+_last_speed: dict[tuple[str, str], dict] = {}  # {"speed": float, "ts": float}
 
 
 def _get_xui():
@@ -93,6 +74,55 @@ def _get_xui():
         from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
         _xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
     return _xui
+
+
+def _get_ru_xui():
+    global _ru_xui
+    if _ru_xui is None:
+        try:
+            from bot_xui.utils import XUIClient
+            from config import RU_XUI_HOST, RU_XUI_USERNAME, RU_XUI_PASSWORD
+            if RU_XUI_HOST:
+                _ru_xui = XUIClient(RU_XUI_HOST, RU_XUI_USERNAME, RU_XUI_PASSWORD)
+        except Exception as e:
+            logger.warning(f"Failed to init RU XUI client: {e}")
+    return _ru_xui
+
+
+_ru_inbounds_cache = {"ts": 0.0, "data": []}
+
+def _fetch_ru_inbounds_cached(max_age: float = 15.0) -> list[dict]:
+    global _ru_inbounds_cache
+    now = time.time()
+    if now - _ru_inbounds_cache["ts"] < max_age and _ru_inbounds_cache["data"]:
+        return _ru_inbounds_cache["data"]
+    ru_xui = _get_ru_xui()
+    if not ru_xui:
+        return _ru_inbounds_cache["data"]
+    try:
+        ibs = ru_xui.get_inbounds()
+        if ibs:
+            _ru_inbounds_cache = {"ts": now, "data": ibs}
+            return ibs
+    except Exception as e:
+        logger.debug(f"RU node inbounds fetch error: {e}")
+    return _ru_inbounds_cache["data"]
+
+
+def _ping_telegram_dc() -> Optional[int]:
+    """Ping a Telegram DC server, return RTT in ms or None."""
+    import subprocess, re
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "1", "-W", "2", "telegram.org"],
+            capture_output=True, text=True, timeout=5
+        )
+        m = re.search(r"time=(\d+\.?\d*)", result.stdout)
+        if m:
+            return round(float(m.group(1)))
+    except Exception:
+        pass
+    return None
 
 
 def _fmt_bytes(b: int) -> str:
@@ -128,11 +158,17 @@ def _clean(obj):
     return obj
 
 
-def _calc_speed(name: str, proto: str, total_bytes: int) -> float:
-    """Calculate speed in bytes/sec from delta between snapshots."""
+def _calc_speed_with_last(name: str, proto: str, total_bytes: int) -> tuple[float, float]:
+    """Calculate current speed and return (current_speed, last_speed).
+    last_speed is the previous non-zero speed before this calculation.
+    Resets last_speed if no recent traffic data (client was offline)."""
     key = (name, proto)
     now = time.time()
     prev = _prev_traffic.get(key)
+    last_entry = _last_speed.get(key)
+    last = 0.0
+    if last_entry and now - last_entry["ts"] < 1800:
+        last = last_entry["speed"]
     speed = 0.0
     if prev and now - prev["ts"] > 1:
         delta_bytes = total_bytes - prev["bytes"]
@@ -140,7 +176,12 @@ def _calc_speed(name: str, proto: str, total_bytes: int) -> float:
         if delta_bytes > 0:
             speed = delta_bytes / delta_time
     _prev_traffic[key] = {"bytes": total_bytes, "ts": now, "speed": speed}
-    return speed
+    if speed > 0:
+        _last_speed[key] = {"speed": speed, "ts": now}
+    return speed, last
+
+
+
 
 
 def _speed_mbps(speed_bps: float) -> float:
@@ -148,19 +189,27 @@ def _speed_mbps(speed_bps: float) -> float:
     return round(speed_bps * 8 / 1_000_000, 1)
 
 
-def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
+def _resolve_names_to_users(names: list[str], allow_fallback: bool = True) -> dict[str, dict]:
     """Resolve client names to user info via vpn_keys table.
     Returns {client_name: {tg_id, user_id, first_name, web_token, expires, is_test}}.
-    For hysteria _h entries, also tries base vless name as fallback."""
+    For hysteria _h entries or base names, tries cross-variant fallback."""
     if not names:
         return {}
-    conn = awg_db._get_conn()
+    conn = admin_db._get_conn()
     cur = conn.cursor(dictionary=True)
     placeholders = ",".join(["%s"] * len(names))
     cur.execute(f"""
         SELECT k.client_name, k.tg_id, k.user_id, k.expires_at AS key_expires_at,
                COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
-               u.web_token, u.subscription_until
+               u.web_token, u.subscription_until, u.relatives,
+               u.test_vless_activated, u.test_awg_activated,
+               (SELECT COUNT(*) FROM payments p 
+                WHERE p.status = 'paid' 
+                  AND p.amount > 1.00 
+                  AND (p.is_test IS NULL OR p.is_test = 0)
+                  AND p.tg_id NOT IN (364224373, 6335998601, 397547537)
+                  AND p.tg_id != 0 
+                  AND p.tg_id = k.tg_id) AS paid_count
         FROM vpn_keys k
         LEFT JOIN users u ON (k.tg_id != 0 AND k.tg_id = u.tg_id) OR (k.user_id IS NOT NULL AND k.user_id = u.id)
         WHERE k.client_name IN ({placeholders})
@@ -173,110 +222,205 @@ def _resolve_names_to_users(names: list[str]) -> dict[str, dict]:
         sub = r.get("subscription_until")
         key_exp = r.get("key_expires_at")
         expires = None
-        is_test = False
         if sub and hasattr(sub, "strftime"):
-            expires = sub.strftime("%Y-%m-%d")
+            expires = sub.isoformat()
         elif sub:
             expires = str(sub)
         elif key_exp and hasattr(key_exp, "strftime"):
-            expires = key_exp.strftime("%Y-%m-%d")
-            is_test = True
+            expires = key_exp.isoformat()
         elif key_exp:
             expires = str(key_exp)
-            is_test = True
+
+        tg_id_val = r.get("tg_id")
+        has_paid = (r.get("paid_count") or 0) > 0 and (tg_id_val not in (364224373, 6335998601, 397547537))
+        is_relative = bool(r.get("relatives")) or (tg_id_val in (88486656, 909509933, 6335998601, 6648354839))
+        test_activated = bool(r.get("test_vless_activated") or r.get("test_awg_activated"))
+        is_test = not has_paid and not is_relative and (test_activated or (key_exp is not None and sub is None))
+
         result[r["client_name"]] = {
-            "tg_id": r.get("tg_id"),
+            "tg_id": tg_id_val,
             "user_id": r.get("user_id"),
             "first_name": r.get("first_name") or "",
             "web_token": r.get("web_token") or "",
             "expires": expires,
             "is_test": is_test,
+            "has_paid": has_paid,
+            "is_relative": is_relative,
         }
-    # For hysteria _h entries without user info, fall back to base vless name
-    missing_bases = set()
-    for name in names:
-        if name.endswith("_h"):
-            base = name[:-2]
-            entry = result.get(name)
-            base_entry = result.get(base)
-            if entry and base_entry:
-                if not entry.get("tg_id") or entry["tg_id"] == 0:
-                    entry["tg_id"] = base_entry.get("tg_id")
-                if not entry.get("user_id"):
-                    entry["user_id"] = base_entry.get("user_id")
-                if not entry.get("first_name"):
-                    entry["first_name"] = base_entry.get("first_name", "")
-                if not entry.get("web_token"):
-                    entry["web_token"] = base_entry.get("web_token", "")
-                if not entry.get("expires"):
-                    entry["expires"] = base_entry.get("expires")
-                if not entry.get("is_test"):
-                    entry["is_test"] = base_entry.get("is_test", False)
-            elif not entry:
-                if base_entry:
-                    result[name] = dict(base_entry)
-                else:
-                    missing_bases.add(base)
-    # Batch-lookup missing base names from DB
-    if missing_bases:
-        base_results = _resolve_names_to_users(list(missing_bases))
+    # Bidirectional fallback (only if allow_fallback=True):
+    # 1. For hysteria _h entries without user info, fall back to base vless name
+    # 2. For base entries without user info, check _h variant
+    if allow_fallback:
+        missing_variants = set()
         for name in names:
-            if name.endswith("_h") and name not in result:
-                base = name[:-2]
-                base_entry = base_results.get(base)
-                if base_entry:
-                    result[name] = dict(base_entry)
+            if name not in result:
+                if name.endswith("_h"):
+                    missing_variants.add(name[:-2])
+                else:
+                    missing_variants.add(f"{name}_h")
+
+        if missing_variants:
+            var_results = _resolve_names_to_users(list(missing_variants), allow_fallback=False)
+            for name in names:
+                if name not in result:
+                    alt = name[:-2] if name.endswith("_h") else f"{name}_h"
+                    if alt in var_results:
+                        result[name] = dict(var_results[alt])
+
+    # Direct fallback: extract tg_id from name format (tiin_<tg_id>, vless_<tg_id>, awg_<tg_id>)
+    still_missing = [n for n in names if n not in result]
+    if still_missing:
+        conn = admin_db._get_conn()
+        cur = conn.cursor(dictionary=True)
+        for name in still_missing:
+            m = re.match(r'^(?:tiin_|vless_|awg_)?(\d{6,12})(?:_h)?$', name)
+            if m:
+                extracted_tg = int(m.group(1))
+                cur.execute("""
+                    SELECT u.tg_id, u.id AS user_id,
+                           COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
+                           u.web_token, u.subscription_until, u.relatives,
+                           u.test_vless_activated, u.test_awg_activated,
+                           (SELECT COUNT(*) FROM payments p 
+                            WHERE p.status = 'paid' 
+                              AND p.amount > 1.00 
+                              AND (p.is_test IS NULL OR p.is_test = 0)
+                              AND p.tg_id NOT IN (364224373, 6335998601, 397547537)
+                              AND p.tg_id != 0 
+                              AND p.tg_id = u.tg_id) AS paid_count
+                    FROM users u
+                    WHERE u.tg_id = %s
+                    LIMIT 1
+                """, (extracted_tg,))
+                r = cur.fetchone()
+                if r:
+                    sub = r.get("subscription_until")
+                    expires = None
+                    if sub and hasattr(sub, "strftime"):
+                        expires = sub.isoformat()
+                    elif sub:
+                        expires = str(sub)
+
+                    tg_id_val = r.get("tg_id")
+                    has_paid = (r.get("paid_count") or 0) > 0 and (tg_id_val not in (364224373, 6335998601, 397547537))
+                    is_relative = bool(r.get("relatives")) or (tg_id_val in (88486656, 909509933, 6335998601, 6648354839))
+                    test_activated = bool(r.get("test_vless_activated") or r.get("test_awg_activated"))
+                    is_test = not has_paid and not is_relative and test_activated
+
+                    result[name] = {
+                        "tg_id": tg_id_val,
+                        "user_id": r.get("user_id"),
+                        "first_name": r.get("first_name") or "",
+                        "web_token": r.get("web_token") or "",
+                        "expires": expires,
+                        "is_test": is_test,
+                        "has_paid": has_paid,
+                        "is_relative": is_relative,
+                    }
+        cur.close()
+        conn.close()
+
     return result
 
 
-def _get_online_users() -> tuple[list[dict], set]:
-    """Parse xray access log + awg handshakes + softether to find who's online now.
-    Returns merged list of users (all protocols united by tg_id/user_id) and identity set."""
-    # Collect raw protocol entries: list of {name, type, ip_count, last_seen, speed_mbps}
-    raw_entries = []
-    vless_ips: dict[str, set[str]] = {}   # email -> set of IPs
-    vless_ts: dict[str, str] = {}         # email -> latest timestamp
-
-    # VLESS: parse access.log for activity in last 5 minutes
-    access_log = "/var/log/x-ui/access.log"
+def _get_inbound_map() -> dict[str, dict]:
+    """Build tag → {id, port, remark, protocol} mapping from x-ui SQLite inbounds table."""
+    xui_db = "/etc/x-ui/x-ui.db"
     try:
-        cutoff = time.time() - 300  # 5 min ago
-        result = subprocess.run(
-            ["tail", "-500", access_log], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.strip().split("\n"):
-            if "email:" not in line or "127.0.0.1" in line.split("from ")[1][:15] if "from " in line else True:
-                continue
-            ts_match = re.match(r"(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})", line)
-            if not ts_match:
-                continue
-            try:
-                ts = datetime.strptime(ts_match.group(1), "%Y/%m/%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                if ts.timestamp() < cutoff:
-                    continue
-            except Exception:
-                continue
+        conn = sqlite3.connect(xui_db)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tag, id, port, protocol, remark FROM inbounds")
+        mapping = {
+            tag: {"id": ib_id, "port": port, "protocol": proto, "remark": rem}
+            for tag, ib_id, port, proto, rem in cursor.fetchall()
+        }
+        conn.close()
+        return mapping
+    except Exception as e:
+        logger.warning(f"Inbound map query error: {e}")
+        return {}
 
-            ip_match = re.search(r"from (?:tcp:)?(\d+\.\d+\.\d+\.\d+)", line)
-            ip = ip_match.group(1) if ip_match else "?"
 
-            email_match = re.search(r"email: (.+)$", line)
-            if not email_match:
+def _parse_access_log_inbounds(log_path: str = "/var/log/x-ui/access.log",
+                               window_seconds: int = 180) -> tuple[dict[str, dict[str, float]], dict[str, set[str]]]:
+    """Parse xray access log for inbound tags with their last seen timestamp and IPs per email in the last window_seconds.
+    Returns (inbounds_by_email: {email: {inbound_tag: last_ts}}, ips_by_email)."""
+    inbounds: dict[str, dict[str, float]] = {}
+    ips: dict[str, set[str]] = {}
+    try:
+        now = time.time()
+        with open(log_path) as f:
+            lines = f.readlines()
+        ip_re = re.compile(r'from\s+(?:tcp:)?(\d+\.\d+\.\d+\.\d+):\d+')
+        for line in lines[-500:]:
+            m = re.match(
+                r'^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\.\d+\s+.*\[([^\]]+)\].*email:\s*(\S+)',
+                line
+            )
+            if not m:
                 continue
-            email = email_match.group(1).strip()
-            vless_ips.setdefault(email, set()).add(ip)
-            vless_ts[email] = ts.strftime("%H:%M:%S")
+            ts_str = m.group(1)
+            inbound_tag = re.split(r'\s*(?:->|>>)\s*', m.group(2))[0].strip()
+            email = m.group(3)
+            if inbound_tag == "api" or email.startswith("api."):
+                continue
+            line_ts = datetime.strptime(ts_str, "%Y/%m/%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+            if now - line_ts > window_seconds:
+                continue
+            if email not in inbounds:
+                inbounds[email] = {}
+                ips[email] = set()
+            # Store latest timestamp for this inbound
+            if inbound_tag not in inbounds[email] or line_ts > inbounds[email][inbound_tag]:
+                inbounds[email][inbound_tag] = line_ts
+            ipm = ip_re.search(line)
+            if ipm:
+                ips[email].add(ipm.group(1))
+    except FileNotFoundError:
+        logger.warning(f"Access log not found: {log_path}")
+    except Exception as e:
+        logger.warning(f"Access log parse error: {e}")
+    return inbounds, ips
 
-        for email, ips in vless_ips.items():
+
+def _get_online_users() -> tuple[list[dict], set]:
+    """Query x-ui client_traffics.last_online + awg handshakes to find who's online now.
+    Returns merged list of users (all protocols united by tg_id/user_id) and identity set."""
+    raw_entries = []
+
+    # Parse access log first — ip_count and inbound override depend on it
+    inbound_map = _get_inbound_map()
+    log_inbounds, log_ips = _parse_access_log_inbounds()
+
+    # VLESS/Hysteria: query x-ui SQLite for clients with last_online in last 5 minutes
+    xui_db = "/etc/x-ui/x-ui.db"
+    try:
+        cutoff_ms = int((time.time() - 300) * 1000)
+        conn = sqlite3.connect(xui_db)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT ct.email, ct.last_online, ct.inbound_id, i.tag, i.port
+            FROM client_traffics ct
+            LEFT JOIN inbounds i ON i.id = ct.inbound_id
+            WHERE ct.enable = 1 AND ct.last_online > ?
+        """, (cutoff_ms,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        now_str = time.strftime("%H:%M:%S")
+        for email, last_online_ms, ct_inbound_id, inbound_tag, inbound_port in rows:
             is_hysteria = email.endswith("_h")
             raw_entries.append({
                 "name": email,
-                "ip_count": len(ips),
+                "ip_count": max(len(log_ips.get(email, [])), 1),
                 "type": "hysteria" if is_hysteria else "vless",
-                "last_seen": vless_ts[email],
+                "inbound_id": ct_inbound_id,
+                "inbound_tag": inbound_tag or "",
+                "inbound_port": inbound_port or 0,
+                "last_seen": now_str,
             })
     except Exception as e:
-        logger.warning(f"Access log parse error: {e}")
+        logger.warning(f"x-ui DB query error: {e}")
 
     # VLESS/Hysteria: get per-client traffic from x-ui for speed calc
     try:
@@ -287,56 +431,87 @@ def _get_online_users() -> tuple[list[dict], set]:
             for cs in ib.get("clientStats", []):
                 email = cs.get("email", "")
                 traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
+
+        # Also query RU node inbounds for active connections and traffic (cached 15s)
+        ru_inbounds = _fetch_ru_inbounds_cached(max_age=15.0)
+        if ru_inbounds:
+            ru_now_str = time.strftime("%H:%M:%S")
+            for ib in ru_inbounds:
+                ib_id = ib.get("id")
+                ib_tag = ib.get("tag") or f"ru-{ib.get('remark', '')}"
+                ib_port = ib.get("port") or 0
+                ib_protocol = ib.get("protocol") or "vless"
+                ib_remark = ib.get("remark") or "RU-Node"
+                for cs in ib.get("clientStats", []):
+                    email = cs.get("email", "")
+                    if not email:
+                        continue
+                    # Merge traffic for speed calculation
+                    traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
+                    
+                    last_online = cs.get("lastOnline", 0) or 0
+                    is_enable = cs.get("enable", False)
+                    if is_enable and last_online > cutoff_ms:
+                        is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol.lower()
+                        raw_entries.append({
+                            "name": email,
+                            "ip_count": 1,
+                            "type": "hysteria" if is_hysteria else "vless",
+                            "inbound_id": ib_id,
+                            "inbound_tag": ib_tag,
+                            "inbound_port": ib_port,
+                            "inbound_protocol": ib_protocol,
+                            "inbound_remark": ib_remark,
+                            "is_ru": True,
+                            "last_seen": ru_now_str,
+                            "last_online_ts": last_online / 1000.0,
+                        })
+
         for e in raw_entries:
             if e["name"] in traffic:
                 proto = "hysteria" if e["name"].endswith("_h") else "vless"
-                speed = _calc_speed(e["name"], proto, traffic[e["name"]])
+                speed, last = _calc_speed_with_last(e["name"], proto, traffic[e["name"]])
                 e["speed_mbps"] = _speed_mbps(speed)
+                e["last_speed_mbps"] = _speed_mbps(last)
     except Exception as e:
         logger.warning(f"Traffic fetch error: {e}")
 
     # AWG: check last handshake from awg show dump
-    try:
-        awg_clients = awg_db.list_clients()
-        pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
-        result = subprocess.run(
-            ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.strip().split("\n")[1:]:
-            parts = line.split("\t")
-            if len(parts) < 7:
-                continue
-            pub_key = parts[0]
-            last_handshake = int(parts[4]) if parts[4] != "0" else 0
-            if last_handshake > 0 and (time.time() - last_handshake) < 300:
-                name = pub_to_name.get(pub_key, pub_key[:12])
-                rx = int(parts[5]) if parts[5].isdigit() else 0
-                tx = int(parts[6]) if parts[6].isdigit() else 0
-                speed = _calc_speed(name, "awg", rx + tx)
-                raw_entries.append({
-                    "name": name,
-                    "ip_count": 1,
-                    "type": "awg",
-                    "last_seen": datetime.fromtimestamp(last_handshake, tz=timezone.utc).strftime("%H:%M:%S"),
-                    "speed_mbps": _speed_mbps(speed),
-                })
-    except Exception as e:
-        logger.warning(f"AWG online parse error: {e}")
-
-    # SoftEther: active sessions
-    try:
-        from bot_xui.softether import list_sessions
-        for s in list_sessions():
-            speed = _calc_speed(s["username"], "softether", s.get("transfer_bytes", 0))
-            raw_entries.append({
-                "name": s["username"],
-                "ip_count": 1,
-                "type": "softether",
-                "last_seen": "connected",
-                "speed_mbps": _speed_mbps(speed),
-            })
-    except Exception as e:
-        logger.warning(f"SoftEther online parse error: {e}")
+    if awg_db:
+        try:
+            awg_clients = awg_db.list_clients()
+            pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
+            result = subprocess.run(
+                ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().split("\n")[1:]:
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                pub_key = parts[0]
+                last_handshake = int(parts[4]) if parts[4] != "0" else 0
+                if last_handshake > 0 and (time.time() - last_handshake) < 300:
+                    name = pub_to_name.get(pub_key, pub_key[:12])
+                    rx = int(parts[5]) if parts[5].isdigit() else 0
+                    tx = int(parts[6]) if parts[6].isdigit() else 0
+                    speed, last = _calc_speed_with_last(name, "awg", rx + tx)
+                    # Parse endpoint IP from parts[3] (format "ip:port")
+                    awg_ip = 1
+                    if len(parts) > 3 and parts[3] and parts[3] != "(none)":
+                        ep = parts[3].rsplit(":", 1)[0]
+                        if ep and re.match(r'^\d+\.\d+\.\d+\.\d+$', ep):
+                            awg_ip = ep
+                    raw_entries.append({
+                        "name": name,
+                        "ip_count": 1,
+                        "awg_ip": awg_ip,
+                        "type": "awg",
+                        "last_seen": datetime.fromtimestamp(last_handshake, tz=YAKUTSK_TZ).strftime("%H:%M:%S"),
+                        "speed_mbps": _speed_mbps(speed),
+                        "last_speed_mbps": _speed_mbps(last),
+                    })
+        except Exception as e:
+            logger.warning(f"AWG online parse error: {e}")
 
     # Resolve all client names to user info
     all_names = [e["name"] for e in raw_entries]
@@ -367,10 +542,14 @@ def _get_online_users() -> tuple[list[dict], set]:
                 "web_token": info.get("web_token", ""),
                 "expires": info.get("expires"),
                 "is_test": info.get("is_test", False),
+                "has_paid": info.get("has_paid", False),
+                "is_relative": info.get("is_relative", False),
                 "protocols": [],
                 "names": [],
+                "inbounds": [],
                 "ip_count": 0,
                 "speed_mbps": 0,
+                "last_speed_mbps": 0,
                 "last_seen": "",
             }
 
@@ -379,8 +558,53 @@ def _get_online_users() -> tuple[list[dict], set]:
         if proto not in entry["protocols"]:
             entry["protocols"].append(proto)
         entry["names"].append(e["name"])
-        entry["ip_count"] = max(entry["ip_count"], e.get("ip_count", 0))
+        # Prefer real-time inbound from access log over SQLite config
+        email = e["name"]
+        log_tags_dict = log_inbounds.get(email, {})
+        if log_tags_dict and not e.get("is_ru"):
+            # Sort tags by timestamp ascending (earliest connected first, newer second/third)
+            sorted_tags = sorted(log_tags_dict.items(), key=lambda item: item[1])
+            for tag, ts in sorted_tags:
+                meta = inbound_map.get(tag, {})
+                info = {
+                    "tag": tag,
+                    "id": meta.get("id"),
+                    "port": meta.get("port"),
+                    "protocol": meta.get("protocol"),
+                    "remark": meta.get("remark"),
+                    "ts": ts,
+                }
+                # Check if this tag already exists, update ts if newer or append
+                existing = next((x for x in entry["inbounds"] if x.get("tag") == tag), None)
+                if existing:
+                    existing["ts"] = max(existing.get("ts", 0), ts)
+                else:
+                    entry["inbounds"].append(info)
+        else:
+            inbound_info = {"ts": e.get("last_online_ts") or time.time()}
+            ib_tag = e.get("inbound_tag")
+            meta = inbound_map.get(ib_tag, {}) if ib_tag else {}
+            if e.get("inbound_id") or meta.get("id"):
+                inbound_info["id"] = e.get("inbound_id") or meta.get("id")
+            if ib_tag:
+                inbound_info["tag"] = ib_tag
+            if e.get("inbound_port") or meta.get("port"):
+                inbound_info["port"] = e.get("inbound_port") or meta.get("port")
+            if meta.get("protocol") or e.get("inbound_protocol"):
+                inbound_info["protocol"] = meta.get("protocol") or e.get("inbound_protocol")
+            if meta.get("remark") or e.get("inbound_remark"):
+                inbound_info["remark"] = meta.get("remark") or e.get("inbound_remark")
+            if e.get("is_ru"):
+                inbound_info["is_ru"] = True
+            if not any(x.get("id") == inbound_info.get("id") and x.get("port") == inbound_info.get("port") and x.get("tag") == inbound_info.get("tag") for x in entry["inbounds"]):
+                entry["inbounds"].append(inbound_info)
+
+        # Sort inbounds list chronologically (first connected ➔ later connected)
+        entry["inbounds"].sort(key=lambda x: x.get("ts", 0))
+
+        entry["ip_count"] += e.get("ip_count", 0)
         entry["speed_mbps"] = max(entry.get("speed_mbps", 0), e.get("speed_mbps", 0))
+        entry["last_speed_mbps"] = max(entry.get("last_speed_mbps", 0), e.get("last_speed_mbps", 0))
         if e.get("last_seen", "") > entry.get("last_seen", ""):
             entry["last_seen"] = e["last_seen"]
 
@@ -391,6 +615,36 @@ def _get_online_users() -> tuple[list[dict], set]:
             online_identities.add(("vless", base))
 
     online = list(merged.values())
+
+    # Enrich with platform info from user_platforms table
+    try:
+        tg_ids = [u["tg_id"] for u in online if u.get("tg_id")]
+        if tg_ids:
+            from api.db import execute_query
+            ph = ",".join(["%s"] * len(tg_ids))
+            rows = execute_query(f"""
+                SELECT tg_id, platform, client_app, client_version, last_seen, seen_count
+                FROM user_platforms
+                WHERE tg_id IN ({ph}) AND last_seen >= NOW() - INTERVAL 24 HOUR
+                ORDER BY last_seen DESC
+            """, tuple(tg_ids), fetch='all')
+            platforms_by_tg: dict[int, list[dict]] = {}
+            for r in rows:
+                platforms_by_tg.setdefault(r["tg_id"], []).append({
+                    "platform": r["platform"],
+                    "client_app": r["client_app"],
+                    "client_version": r["client_version"],
+                    "last_seen": r["last_seen"].isoformat() if hasattr(r["last_seen"], 'isoformat') else str(r["last_seen"]),
+                    "seen_count": r["seen_count"],
+                })
+            for u in online:
+                tg = u.get("tg_id")
+                if tg and tg in platforms_by_tg:
+                    u["platforms"] = platforms_by_tg[tg]
+                else:
+                    u["platforms"] = []
+    except Exception as e:
+        logger.warning(f"Platform enrichment error: {e}")
 
     # Sort: by first_name
     online.sort(key=lambda u: (u.get("first_name") or '').lower())
@@ -406,6 +660,30 @@ def _get_online_users() -> tuple[list[dict], set]:
 async def online_users():
     online, _ = _get_online_users()
     return online
+
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    if not await _ws_authenticate(websocket):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    _admin_ws_connections.add(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                if msg.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+            except Exception:
+                pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning(f"WebSocket error: {e}")
+    finally:
+        _admin_ws_connections.discard(websocket)
 
 
 @router.get("/online/stream", dependencies=[Depends(_require_admin_session)])
@@ -426,7 +704,26 @@ async def online_stream(request: Request):
 async def offline_users():
     """Users with active VPN keys who are NOT currently online.
     All protocols merged into a single row per user (by tg_id/user_id)."""
-    _, online_identities = _get_online_users()
+    online, online_identities = _get_online_users()
+    # Collect online identifiers to strictly prevent any online user from showing in offline
+    online_tg_ids = {u['tg_id'] for u in online if u.get('tg_id') and u.get('tg_id') != 0}
+    online_user_ids = {u['user_id'] for u in online if u.get('user_id')}
+    online_names = set()
+    for u in online:
+        for nm in u.get('names', []):
+            if nm:
+                online_names.add(nm)
+                if nm.endswith('_h'):
+                    online_names.add(nm[:-2])
+                else:
+                    online_names.add(f"{nm}_h")
+    for proto, nm in online_identities:
+        if nm:
+            online_names.add(nm)
+            if nm.endswith('_h'):
+                online_names.add(nm[:-2])
+            else:
+                online_names.add(f"{nm}_h")
 
     # Collect raw entries: {name, type, last_seen, last_seen_ts}
     raw_entries = []
@@ -448,7 +745,7 @@ async def offline_users():
             clients = json.loads(settings_json).get("clients", [])
             for c in clients:
                 email = c.get("email", "").strip()
-                if not email:
+                if not email or email in online_names:
                     continue
                 identity = ("vless", email)
                 if identity in online_identities:
@@ -464,7 +761,7 @@ async def offline_users():
                 if last_online > 0:
                     try:
                         last_str = datetime.fromtimestamp(
-                            last_online / 1000, tz=timezone.utc
+                            last_online / 1000, tz=YAKUTSK_TZ
                         ).strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         pass
@@ -482,7 +779,7 @@ async def offline_users():
             clients = json.loads(settings_json).get("clients", [])
             for c in clients:
                 email = c.get("email", "").strip()
-                if not email:
+                if not email or email in online_names:
                     continue
                 identity = ("hysteria", email)
                 if identity in online_identities:
@@ -498,7 +795,7 @@ async def offline_users():
                 if last_online > 0:
                     try:
                         last_str = datetime.fromtimestamp(
-                            last_online / 1000, tz=timezone.utc
+                            last_online / 1000, tz=YAKUTSK_TZ
                         ).strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         pass
@@ -510,59 +807,119 @@ async def offline_users():
                     "last_seen_ts": last_online,
                 })
 
+        # ── AmneziaWG (x-ui): get clients + last_online from x-ui SQLite ──
+        cur.execute("SELECT settings FROM inbounds WHERE protocol = 'amneziawg'")
+        for (settings_json,) in cur.fetchall():
+            clients = json.loads(settings_json).get("clients", [])
+            for c in clients:
+                email = c.get("email", "").strip()
+                if not email or email in online_names:
+                    continue
+                identity = ("awg", email)
+                if identity in online_identities:
+                    continue
+                if not c.get("enable", True):
+                    continue
+                expiry = c.get("expiryTime", 0)
+                if expiry and 0 < expiry < now_ms:
+                    continue  # expired
+
+                last_online = last_online_map.get(email, 0) or 0
+                last_str = ""
+                if last_online > 0:
+                    try:
+                        last_str = datetime.fromtimestamp(
+                            last_online / 1000, tz=YAKUTSK_TZ
+                        ).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        pass
+
+                raw_entries.append({
+                    "name": email,
+                    "type": "awg",
+                    "last_seen": last_str,
+                    "last_seen_ts": last_online,
+                })
+
         conn.close()
     except Exception as e:
         logger.warning(f"Offline VLESS/Hysteria error: {e}")
 
+    # ── RU Node: get clients + last_online from Selectel RU node ──
+    try:
+        now_ms = int(time.time() * 1000)
+        ru_inbounds = _fetch_ru_inbounds_cached(max_age=30.0)
+        if ru_inbounds:
+            for ib in ru_inbounds:
+                ib_protocol = (ib.get("protocol") or "vless").lower()
+                for cs in ib.get("clientStats", []):
+                    email = cs.get("email", "").strip()
+                    if not email or email in online_names:
+                        continue
+                    is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol
+                    proto_type = "hysteria" if is_hysteria else "vless"
+                    identity = (proto_type, email)
+                    if identity in online_identities:
+                        continue
+                    if not cs.get("enable", True):
+                        continue
+                    expiry = cs.get("expiryTime", 0)
+                    if expiry and 0 < expiry < now_ms:
+                        continue  # expired
+
+                    last_online = cs.get("lastOnline", 0) or 0
+                    last_str = ""
+                    if last_online > 0:
+                        try:
+                            last_str = datetime.fromtimestamp(
+                                last_online / 1000, tz=YAKUTSK_TZ
+                            ).strftime("%Y-%m-%d %H:%M")
+                        except Exception:
+                            pass
+
+                    raw_entries.append({
+                        "name": email,
+                        "type": proto_type,
+                        "last_seen": last_str,
+                        "last_seen_ts": last_online,
+                    })
+    except Exception as e:
+        logger.warning(f"Offline RU Node error: {e}")
+
     # ── AWG: last handshake for all peers ──
-    try:
-        awg_clients = awg_db.list_clients()
-        pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
-        enabled_names = {c["name"] for c in awg_clients if c.get("enabled", True)}
-        result = subprocess.run(
-            ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.strip().split("\n")[1:]:
-            parts = line.split("\t")
-            if len(parts) < 7:
-                continue
-            pub_key = parts[0]
-            name = pub_to_name.get(pub_key)
-            if not name or ("awg", name) in online_identities or name not in enabled_names:
-                continue
-            last_hs = int(parts[4]) if parts[4] != "0" else 0
-            last_str = ""
-            last_ts = 0
-            if last_hs > 0:
-                last_str = datetime.fromtimestamp(
-                    last_hs, tz=timezone.utc
-                ).strftime("%Y-%m-%d %H:%M")
-                last_ts = last_hs * 1000
+    if awg_db:
+        try:
+            awg_clients = awg_db.list_clients()
+            pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
+            enabled_names = {c["name"] for c in awg_clients if c.get("enabled", True)}
+            result = subprocess.run(
+                ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().split("\n")[1:]:
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                pub_key = parts[0]
+                name = pub_to_name.get(pub_key)
+                if not name or ("awg", name) in online_identities or name in online_names or name not in enabled_names:
+                    continue
+                last_hs = int(parts[4]) if parts[4] != "0" else 0
+                last_str = ""
+                last_ts = 0
+                if last_hs > 0:
+                    last_str = datetime.fromtimestamp(
+                        last_hs, tz=YAKUTSK_TZ
+                    ).strftime("%Y-%m-%d %H:%M")
+                    last_ts = last_hs * 1000
 
-            raw_entries.append({
-                "name": name,
-                "type": "awg",
-                "last_seen": last_str,
-                "last_seen_ts": last_ts,
-            })
-    except Exception as e:
-        logger.warning(f"Offline AWG error: {e}")
-
-    # ── SoftEther: all users minus active sessions ──
-    try:
-        from bot_xui.softether import list_users as se_list_users
-        for u in se_list_users():
-            uname = u.get("username", "")
-            if not uname or ("softether", uname) in online_identities:
-                continue
-            raw_entries.append({
-                "name": uname,
-                "type": "softether",
-                "last_seen": "",
-                "last_seen_ts": 0,
-            })
-    except Exception as e:
-        logger.warning(f"Offline SoftEther error: {e}")
+                raw_entries.append({
+                    "name": name,
+                    "type": "awg",
+                    "last_seen": last_str,
+                    "last_seen_ts": last_ts,
+                })
+        except Exception as e:
+            logger.warning(f"Offline AWG error: {e}")
 
     # Resolve all client names to user info
     all_names = [e["name"] for e in raw_entries]
@@ -575,6 +932,15 @@ async def offline_users():
         info = user_info.get(e["name"], {})
         tg_id = info.get("tg_id")
         user_id = info.get("user_id")
+
+        # Skip if this user is already online
+        if tg_id and tg_id in online_tg_ids:
+            continue
+        if user_id and user_id in online_user_ids:
+            continue
+        if e["name"] in online_names:
+            continue
+
         if tg_id and tg_id != 0:
             key = ("tg", tg_id)
         elif user_id:
@@ -590,6 +956,8 @@ async def offline_users():
                 "web_token": info.get("web_token", ""),
                 "expires": info.get("expires"),
                 "is_test": info.get("is_test", False),
+                "has_paid": info.get("has_paid", False),
+                "is_relative": info.get("is_relative", False),
                 "protocols": [],
                 "names": [],
                 "last_seen": "",
@@ -600,12 +968,30 @@ async def offline_users():
         proto = e["type"]
         if proto not in entry["protocols"]:
             entry["protocols"].append(proto)
-        entry["names"].append(e["name"])
+        if e["name"] not in entry["names"]:
+            entry["names"].append(e["name"])
         if (e.get("last_seen_ts") or 0) > (entry.get("last_seen_ts") or 0):
             entry["last_seen_ts"] = e.get("last_seen_ts", 0)
             entry["last_seen"] = e.get("last_seen", "")
 
-    offline = list(merged.values())
+    offline = []
+    now_utc = datetime.now(timezone.utc)
+    for u in merged.values():
+        # Final safety check: if any of the client names are in online_names, skip
+        if any(nm in online_names for nm in u.get("names", [])):
+            continue
+        exp_str = u.get("expires")
+        if exp_str:
+            try:
+                # If subscription has expired in the past, do not show in active offline users
+                exp_dt = datetime.fromisoformat(exp_str)
+                if exp_dt.tzinfo is None:
+                    exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                if exp_dt < now_utc:
+                    continue
+            except Exception:
+                pass
+        offline.append(u)
 
     # Sort: most recently seen first, never-seen at the end
     offline.sort(key=lambda u: u.get("last_seen_ts", 0), reverse=True)
@@ -613,39 +999,234 @@ async def offline_users():
     return offline
 
 
+@router.get("/speed/users")
+async def speed_users(
+    request: Request,
+    hours: float = Query(24.0, ge=0.1, le=168),
+    proto: str = Query("all"),
+    search: str = Query(None),
+):
+    """Per-user traffic summary: protocol, IPs, total traffic over period."""
+    _require_admin_session(request)
+
+    conn = admin_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+
+    since_dt = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+    proto_filter = ""
+    params: list = [since_dt]
+    if proto and proto != "all":
+        proto_filter = "AND s.vpn_type = %s"
+        params.append(proto)
+
+    search_filter = ""
+    if search:
+        search_filter = "AND (s.client_name LIKE %s OR u.first_name LIKE %s OR u.tg_id LIKE %s)"
+        params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+
+    cur.execute(f"""
+        SELECT
+            s.client_name,
+            s.vpn_type AS protocol,
+            s.tg_id,
+            s.user_id,
+            COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name,
+            MAX(s.ip_count) AS ip_count_max,
+            GROUP_CONCAT(DISTINCT JSON_EXTRACT(s.ips_json, '$[0]')) AS sample_ips,
+            SUM(s.total_bytes) AS total_bytes_sum,
+            SUM(s.rx_bytes) AS rx_bytes_sum,
+            SUM(s.tx_bytes) AS tx_bytes_sum,
+            MAX(s.rx_speed_bps) AS rx_speed_max,
+            MAX(s.tx_speed_bps) AS tx_speed_max,
+            AVG(s.rx_speed_bps) AS rx_speed_avg,
+            AVG(s.tx_speed_bps) AS tx_speed_avg,
+            COUNT(*) AS snapshots
+        FROM user_traffic_snapshots s
+        LEFT JOIN users u ON (s.tg_id != 0 AND s.tg_id = u.tg_id)
+                          OR (s.user_id IS NOT NULL AND s.user_id = u.id)
+        WHERE s.snapshot_at >= %s {proto_filter} {search_filter}
+        GROUP BY s.client_name, s.vpn_type, s.tg_id, s.user_id, u.first_name, u.old_first_name
+        ORDER BY total_bytes_sum DESC
+    """, tuple(params))
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    def fmt_bytes(b):
+        if not b:
+            return "0 B"
+        b = float(b)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if b < 1024:
+                return f"{b:.1f} {unit}"
+            b /= 1024
+        return f"{b:.1f} PB"
+
+    def fmt_speed(bps):
+        if not bps:
+            return "0"
+        bps = float(bps)
+        if bps >= 1_000_000:
+            return f"{bps / 1_000_000:.1f} Mbit/s"
+        if bps >= 1_000:
+            return f"{bps / 1_000:.0f} kbit/s"
+        return f"{bps:.0f} bit/s"
+
+    users = []
+    for r in rows:
+        users.append({
+            "client_name": r["client_name"],
+            "protocol": r["protocol"],
+            "tg_id": r["tg_id"],
+            "user_id": r["user_id"],
+            "first_name": r["first_name"] or "",
+            "ip_count": r["ip_count_max"] or 0,
+            "sample_ips": r["sample_ips"] or "",
+            "total_bytes": int(r["total_bytes_sum"] or 0),
+            "rx_bytes": int(r["rx_bytes_sum"] or 0),
+            "tx_bytes": int(r["tx_bytes_sum"] or 0),
+            "total_fmt": fmt_bytes(r["total_bytes_sum"]),
+            "rx_fmt": fmt_bytes(r["rx_bytes_sum"]),
+            "tx_fmt": fmt_bytes(r["tx_bytes_sum"]),
+            "rx_speed_max": fmt_speed(r["rx_speed_max"]),
+            "tx_speed_max": fmt_speed(r["tx_speed_max"]),
+            "rx_speed_avg": fmt_speed(r["rx_speed_avg"]),
+            "tx_speed_avg": fmt_speed(r["tx_speed_avg"]),
+            "snapshots": r["snapshots"],
+        })
+
+    return {"users": users, "hours": hours, "total": len(users)}
+
+
 @router.get("/finance")
 async def finance():
     """Server financials: revenue, costs, profitability."""
     from datetime import datetime as dt
 
-    conn = awg_db._get_conn()
+    conn = admin_db._get_conn()
     cur = conn.cursor(dictionary=True)
 
-    # Total revenue
-    cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM payments WHERE status='paid' AND is_test=0")
-    total_revenue = float(cur.fetchone()["total"])
+    # Total revenue (separated RUB and Stars)
+    cur.execute("""
+        SELECT
+            COALESCE(SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END), 0) as total_rub,
+            COALESCE(SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END), 0) as total_stars,
+            SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN 1 ELSE 0 END) as count_rub,
+            SUM(CASE WHEN payment_id LIKE 'stars_%' THEN 1 ELSE 0 END) as count_stars
+        FROM payments WHERE status='paid' AND is_test=0
+    """)
+    totals = cur.fetchone() or {}
+    total_revenue_rub = float(totals.get("total_rub") or 0.0)
+    total_revenue_stars = float(totals.get("total_stars") or 0.0)
+    total_payments_rub = int(totals.get("count_rub") or 0)
+    total_payments_stars = int(totals.get("count_stars") or 0)
+    total_revenue = total_revenue_rub
 
     # First payment date (service start)
     cur.execute("SELECT MIN(created_at) as d FROM payments WHERE status='paid' AND is_test=0")
     row = cur.fetchone()
     first_payment = row["d"] if row and row["d"] else None
 
-    # Monthly breakdown
+    # Monthly breakdown with server costs from DB
     fmt = "%Y-%m"
     cur.execute(
         "SELECT DATE_FORMAT(created_at, %s) as month,"
-        " COUNT(*) as payments, SUM(amount) as revenue"
+        " COUNT(*) as payments,"
+        " SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END) as revenue_rub,"
+        " SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END) as revenue_stars,"
+        " SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN 1 ELSE 0 END) as payments_rub,"
+        " SUM(CASE WHEN payment_id LIKE 'stars_%' THEN 1 ELSE 0 END) as payments_stars,"
+        " SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END) as revenue"
         " FROM payments WHERE status='paid' AND is_test=0"
         " GROUP BY DATE_FORMAT(created_at, %s) ORDER BY month",
         (fmt, fmt),
     )
     monthly = cur.fetchall()
 
+    # Fetch server items from server_expense_items grouped by month
+    server_items_by_month = {}
+    try:
+        cur.execute(
+            "SELECT id, month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details "
+            "FROM server_expense_items ORDER BY month ASC, id ASC"
+        )
+        for r in cur.fetchall():
+            m = r["month"]
+            if m not in server_items_by_month:
+                server_items_by_month[m] = []
+            server_items_by_month[m].append({
+                "id": r["id"],
+                "server_key": r["server_key"],
+                "server_name": r["server_name"],
+                "currency": r["currency"],
+                "amount_currency": float(r["amount_currency"]) if r["amount_currency"] is not None else None,
+                "cost_rub": float(r["cost_rub"]),
+                "effective_rate": float(r["effective_rate"]) if r["effective_rate"] is not None else None,
+                "details": r["details"] or "",
+            })
+    except Exception as e:
+        logger.warning(f"Error fetching server_expense_items: {e}")
+
+    # Fetch project infrastructure costs from MySQL server_costs_monthly
+    monthly_costs_map = {}
+    costs_details_map = {}
+    current_server_cost = float(os.getenv("SERVER_MONTHLY_COST", "1261.6"))
+
+    try:
+        cur.execute(
+            "SELECT month, currency, amount_currency, cost_rub, effective_rate, details "
+            "FROM server_costs_monthly ORDER BY month ASC"
+        )
+        costs_rows = cur.fetchall()
+        for row in costs_rows:
+            # If server_expense_items exists for this month, sum them up
+            m = row["month"]
+            if m in server_items_by_month and server_items_by_month[m]:
+                cost_val = sum(item["cost_rub"] for item in server_items_by_month[m])
+            elif row.get("cost_rub") is not None:
+                cost_val = float(row["cost_rub"])
+            elif row.get("cost_eur") is not None:
+                cost_val = float(row["cost_eur"]) * float(row.get("eur_rate") or 95.0)
+            else:
+                cost_val = current_server_cost
+
+            monthly_costs_map[m] = cost_val
+            costs_details_map[m] = {
+                "currency": row.get("currency") or "EUR",
+                "amount_currency": float(row["amount_currency"]) if row.get("amount_currency") is not None else (float(row["cost_eur"]) if row.get("cost_eur") is not None else None),
+                "cost_rub": cost_val,
+                "effective_rate": float(row["effective_rate"]) if row.get("effective_rate") is not None else (float(row.get("eur_rate") or 95.0)),
+                "details": row.get("details") or "",
+                "items": server_items_by_month.get(m, []),
+            }
+
+        # Any months in server_items_by_month not in server_costs_monthly
+        for m, items in server_items_by_month.items():
+            if m not in monthly_costs_map and items:
+                cost_val = sum(item["cost_rub"] for item in items)
+                monthly_costs_map[m] = cost_val
+                costs_details_map[m] = {
+                    "currency": items[0]["currency"] if len(items) == 1 else "MIXED",
+                    "amount_currency": items[0]["amount_currency"] if len(items) == 1 else None,
+                    "cost_rub": cost_val,
+                    "effective_rate": items[0]["effective_rate"] if len(items) == 1 else None,
+                    "details": ", ".join(f"{it['server_name']}: {it['cost_rub']}₽" for it in items),
+                    "items": items,
+                }
+
+        if costs_rows:
+            latest_m = costs_rows[-1]["month"]
+            current_server_cost = monthly_costs_map.get(latest_m, current_server_cost)
+    except Exception as e:
+        logger.warning(f"Error fetching server_costs_monthly: {e}")
+
     cur.close()
     conn.close()
 
-    # Server cost
-    server_cost = float(os.getenv("SERVER_MONTHLY_COST", "0"))
+    def get_monthly_cost(month_str: str) -> float:
+        return monthly_costs_map.get(month_str, current_server_cost)
 
     # Days running
     now = dt.now()
@@ -662,7 +1243,14 @@ async def finance():
     except Exception:
         uptime_since = "?"
 
-    total_cost = server_cost * months_running if months_running else 0
+    # Calculate total server cost across all active months
+    total_cost = 0.0
+    if monthly:
+        for m in monthly:
+            total_cost += get_monthly_cost(m["month"])
+    else:
+        total_cost = current_server_cost * months_running if months_running else 0
+
     profit = total_revenue - total_cost
     roi = (total_revenue / total_cost * 100) if total_cost > 0 else 0
 
@@ -671,64 +1259,279 @@ async def finance():
 
     return {
         "total_revenue": total_revenue,
-        "server_monthly_cost": server_cost,
+        "total_revenue_rub": total_revenue_rub,
+        "total_revenue_stars": total_revenue_stars,
+        "total_payments_rub": total_payments_rub,
+        "total_payments_stars": total_payments_stars,
+        "server_monthly_cost": round(current_server_cost, 2),
         "months_running": months_running,
         "days_running": days_running,
         "total_cost": round(total_cost, 2),
         "profit": round(profit, 2),
         "roi_percent": round(roi, 1),
         "avg_monthly_revenue": round(avg_monthly, 2),
-        "monthly_profit": round(avg_monthly - server_cost, 2),
+        "monthly_profit": round(avg_monthly - current_server_cost, 2),
         "uptime_since": uptime_since,
         "first_payment": first_payment.isoformat() if first_payment else None,
         "monthly": [{
             "month": m["month"],
             "payments": m["payments"],
-            "revenue": float(m["revenue"]),
+            "payments_rub": int(m.get("payments_rub") or 0),
+            "payments_stars": int(m.get("payments_stars") or 0),
+            "revenue": float(m["revenue_rub"] if m.get("revenue_rub") is not None else m["revenue"]),
+            "revenue_rub": float(m.get("revenue_rub") or 0),
+            "revenue_stars": float(m.get("revenue_stars") or 0),
+            "server_cost": round(get_monthly_cost(m["month"]), 2),
+            "cost_meta": costs_details_map.get(m["month"]),
         } for m in monthly],
+        "projections": admin_db.get_financial_projections(),
     }
+
+
+@router.get("/finance/projections")
+async def finance_projections():
+    """Financial forecasts, upcoming renewals, breakeven, and run-rate targets."""
+    return admin_db.get_financial_projections()
+
+
+# ── Server Costs API ──────────────────────────────────────────────────────────
+
+SERVER_CATALOG = [
+    {"key": "hetzner_de", "name": "🇩🇪 Hetzner DE (Германия)", "default_curr": "EUR"},
+    {"key": "nl_bridge", "name": "🇳🇱 Hostinger / NL (Нидерланды)", "default_curr": "EUR"},
+    {"key": "selectel_ru", "name": "🇷🇺 Selectel SPB (Россия)", "default_curr": "RUB"},
+    {"key": "domain_dns", "name": "🌐 Домены / SSL / DNS", "default_curr": "USD"},
+    {"key": "other", "name": "⚙️ Другой сервер / Хостинг", "default_curr": "EUR"},
+]
+
+
+@router.get("/server-costs/catalog")
+async def get_server_catalog():
+    """Return available server catalog for expense reporting."""
+    return SERVER_CATALOG
+
+
+@router.get("/server-costs")
+async def list_server_costs():
+    """List monthly server items and totals."""
+    conn = admin_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT id, month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details, created_at "
+            "FROM server_expense_items ORDER BY month DESC, id ASC"
+        )
+        items = cur.fetchall()
+        result = []
+        for r in items:
+            result.append({
+                "id": r["id"],
+                "month": r["month"],
+                "server_key": r["server_key"],
+                "server_name": r["server_name"],
+                "currency": r["currency"] or "EUR",
+                "amount_currency": float(r["amount_currency"]) if r["amount_currency"] is not None else None,
+                "cost_rub": float(r["cost_rub"]),
+                "effective_rate": float(r["effective_rate"]) if r["effective_rate"] is not None else None,
+                "details": r["details"] or "",
+            })
+        return {
+            "catalog": SERVER_CATALOG,
+            "items": result
+        }
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.post("/server-costs")
+async def save_server_cost(data: dict):
+    """
+    Save or update a server expense item.
+    Payload: {
+        "id": 123 (optional for update),
+        "month": "2026-10",
+        "server_key": "hetzner_de",
+        "server_name": "🇩🇪 Hetzner DE (Германия)",
+        "currency": "EUR" | "USD" | "RUB",
+        "amount_currency": 11.18,
+        "cost_rub": 1350.00,
+        "details": "Основной Hetzner DE"
+    }
+    """
+    month = str(data.get("month", "")).strip()
+    if not month or len(month) != 7 or "-" not in month:
+        raise HTTPException(status_code=400, detail="Invalid month format, expected YYYY-MM")
+
+    server_key = str(data.get("server_key", "hetzner_de")).strip()
+    catalog_match = next((s for s in SERVER_CATALOG if s["key"] == server_key), None)
+    server_name = data.get("server_name") or (catalog_match["name"] if catalog_match else server_key)
+
+    currency = str(data.get("currency", "EUR")).upper().strip()
+    if currency not in ("EUR", "USD", "RUB"):
+        currency = "EUR"
+
+    try:
+        cost_rub = float(data.get("cost_rub", 0.0))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid cost_rub")
+
+    try:
+        amount_currency = float(data.get("amount_currency", 0.0)) if data.get("amount_currency") is not None else None
+    except (ValueError, TypeError):
+        amount_currency = None
+
+    details = str(data.get("details", "")).strip()
+
+    # Calculate effective rate
+    effective_rate = None
+    if currency == "RUB":
+        effective_rate = 1.0
+        if amount_currency is None or amount_currency == 0:
+            amount_currency = cost_rub
+    elif amount_currency and amount_currency > 0:
+        effective_rate = round(cost_rub / amount_currency, 2)
+
+    item_id = data.get("id")
+
+    conn = admin_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        if item_id:
+            cur.execute(
+                """
+                UPDATE server_expense_items
+                SET month=%s, server_key=%s, server_name=%s, currency=%s,
+                    amount_currency=%s, cost_rub=%s, effective_rate=%s, details=%s
+                WHERE id=%s
+                """,
+                (month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details, item_id)
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO server_expense_items
+                    (month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (month, server_key, server_name, currency, amount_currency, cost_rub, effective_rate, details)
+            )
+            item_id = cur.lastrowid
+
+        # Recalculate total for server_costs_monthly for backwards compatibility
+        cur.execute("SELECT SUM(cost_rub) as total_rub FROM server_expense_items WHERE month=%s", (month,))
+        total_row = cur.fetchone()
+        month_total_rub = float(total_row["total_rub"]) if total_row and total_row["total_rub"] is not None else cost_rub
+
+        cur.execute(
+            """
+            INSERT INTO server_costs_monthly 
+                (month, currency, amount_currency, cost_rub, effective_rate, details, cost_eur, eur_rate)
+            VALUES 
+                (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                cost_rub = VALUES(cost_rub),
+                currency = VALUES(currency),
+                details = VALUES(details)
+            """,
+            (month, currency, amount_currency, month_total_rub, effective_rate, f"Сумма серверов за {month}", 0.0, 95.0)
+        )
+        conn.commit()
+        return {
+            "status": "ok",
+            "saved": {
+                "id": item_id,
+                "month": month,
+                "server_key": server_key,
+                "server_name": server_name,
+                "currency": currency,
+                "amount_currency": amount_currency,
+                "cost_rub": cost_rub,
+                "effective_rate": effective_rate,
+                "details": details,
+            }
+        }
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to save server expense item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.delete("/server-costs/{item_id}")
+async def delete_server_cost(item_id: int):
+    """Delete a server expense item."""
+    conn = admin_db._get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT month FROM server_expense_items WHERE id=%s", (item_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Item not found")
+        month = row["month"]
+
+        cur.execute("DELETE FROM server_expense_items WHERE id=%s", (item_id,))
+        
+        # Recalculate month total
+        cur.execute("SELECT SUM(cost_rub) as total_rub FROM server_expense_items WHERE month=%s", (month,))
+        total_row = cur.fetchone()
+        month_total_rub = float(total_row["total_rub"]) if total_row and total_row["total_rub"] is not None else 0.0
+
+        if month_total_rub > 0:
+            cur.execute("UPDATE server_costs_monthly SET cost_rub=%s WHERE month=%s", (month_total_rub, month))
+        else:
+            cur.execute("DELETE FROM server_costs_monthly WHERE month=%s", (month))
+
+        conn.commit()
+        return {"status": "ok", "deleted_id": item_id, "month": month, "new_total": month_total_rub}
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to delete server expense item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
 
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
 
 @router.get("/dashboard")
 async def dashboard():
-    # AWG stats
-    awg_clients = awg_db.list_clients()
-    awg_enabled = sum(1 for c in awg_clients if c["enabled"])
+    # AWG stats (legacy awg_api disabled)
+    awg_clients = awg_db.list_clients() if awg_db else []
+    awg_enabled = sum(1 for c in awg_clients if c.get("enabled"))
     awg_up = False
-    try:
-        r = subprocess.run(["awg", "show", "awg0"], capture_output=True, text=True)
-        awg_up = r.returncode == 0
-    except Exception:
-        pass
+    if awg_db:
+        try:
+            r = subprocess.run(["awg", "show", "awg0"], capture_output=True, text=True)
+            awg_up = r.returncode == 0
+        except Exception:
+            pass
 
     # XUI stats
     xui_data = {"inbounds": 0, "clients": 0, "up": 0, "down": 0, "running": False}
+    try:
+        r = subprocess.run(["pgrep", "-f", "xray-linux-amd64"], capture_output=True)
+        xui_data["running"] = r.returncode == 0
+    except Exception:
+        pass
     try:
         xui = _get_xui()
         inbounds = xui.get_inbounds()
         xui_data["inbounds"] = len(inbounds)
         for ib in inbounds:
-            settings = json.loads(ib.get("settings", "{}"))
+            settings = ib.get("settings", {})
+            if isinstance(settings, str):
+                settings = json.loads(settings)
             xui_data["clients"] += len(settings.get("clients", []))
             for cs in ib.get("clientStats", []):
                 xui_data["up"] += cs.get("up", 0)
                 xui_data["down"] += cs.get("down", 0)
-        # r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", "x-ui"],
-        #                    capture_output=True, text=True)
-        # xui_data["running"] = "true" in r.stdout.lower()
-        try:
-            r = subprocess.run(["systemctl", "is-active", "x-ui"], 
-                            capture_output=True, text=True)
-            xui_data["running"] = r.stdout.strip() == "active"
-        except Exception:
-            xui_data["running"] = False
     except Exception as e:
         logger.warning(f"XUI stats error: {e}")
-        logger.warning(f"Error type: {type(e).__name__}")
-        import traceback
-        logger.warning(traceback.format_exc())
 
     # Bot stats
     user_stats = admin_db.count_users()
@@ -740,28 +1543,47 @@ async def dashboard():
     discount_stats = admin_db.permanent_discount_summary()
     autopay_stats = admin_db.autopay_summary()
 
-    # SoftEther stats
-    se_users = []
-    se_running = False
-    try:
-        from bot_xui.softether import list_users as se_list_users
-        se_users = se_list_users()
-        se_running = True
-    except Exception as e:
-        logger.warning(f"SoftEther stats error: {e}")
-
     # MTProto Proxy stats
     proxy_metrics = _parse_mtg_metrics()
+
+    nl_proxy_status = "unknown"
+    nl_proxy_routing = "de-to-nl-youtube"
+    try:
+        with open("/home/alvik/vpn-service/data/yt_nl_proxy_state", "r") as f:
+            nl_proxy_status = f.read().strip().split(':')[0]
+        logger.info(f"NL proxy state file: {nl_proxy_status}")
+    except Exception as e:
+        logger.warning(f"NL proxy state read error: {e}")
+    try:
+        xcfg = {}
+        if os.path.exists("/usr/local/x-ui/bin/config.json") and os.access("/usr/local/x-ui/bin/config.json", os.R_OK):
+            with open("/usr/local/x-ui/bin/config.json", "r") as f:
+                xcfg = json.load(f)
+        elif os.path.exists("/etc/x-ui/x-ui.db"):
+            import sqlite3 as _sqlite3
+            with _sqlite3.connect("/etc/x-ui/x-ui.db") as xconn:
+                cur = xconn.cursor()
+                cur.execute("SELECT value FROM settings WHERE key = 'xrayTemplateConfig'")
+                row = cur.fetchone()
+                xcfg = json.loads(row[0]) if row and row[0] else {}
+        for rule in xcfg.get("routing", {}).get("rules", []):
+            if any(d in rule.get("domain", []) for d in ["youtube.com", "geosite:youtube"]):
+                outbound = rule.get("outboundTag", "")
+                if outbound and outbound not in ("direct", "blocked") and rule.get("enabled", True) is not False:
+                    nl_proxy_routing = outbound
+                    break
+        logger.info(f"NL proxy routing from config: {nl_proxy_routing}")
+    except Exception as e:
+        logger.warning(f"NL proxy config read error: {e}")
+
+    # Subscription status summary
+    sub_summary = admin_db.subscription_status_summary()
 
     return {
         "awg": {
             "clients_total": len(awg_clients),
             "clients_enabled": awg_enabled,
             "interface_up": awg_up,
-        },
-        "softether": {
-            "users_total": len(se_users),
-            "running": se_running,
         },
         "proxy": {
             "connections": proxy_metrics["client_connections"],
@@ -781,28 +1603,47 @@ async def dashboard():
             "traffic_down_fmt": _fmt_bytes(xui_data["down"]),
             "xray_running": xui_data["running"],
         },
+        "nl_proxy": {
+            "status": nl_proxy_status,
+            "routing": nl_proxy_routing,
+            "host": "2.26.76.210",
+            "port": 15687,
+        },
         "users": {
             "total": user_stats["total"],
             "active": user_stats["active"],
             "active_sub": user_stats.get("active_sub", 0),
             "active_key_only": user_stats.get("active_key_only", 0),
+            "active_paying": user_stats.get("active_paying", 0),
+            "active_trial": user_stats.get("active_trial", 0),
+            "paying": user_stats.get("paying", 0),
+            "expiring_soon": sub_summary["expiring_soon_count"],
+            "recently_expired": sub_summary["recently_expired_count"],
         },
         "payments": {
             "total": pay_stats["total"],
             "paid": pay_stats["paid"],
             "revenue": float(pay_stats["revenue"] or 0),
+            "revenue_rub": float(pay_stats.get("revenue_rub") or 0),
+            "revenue_stars": float(pay_stats.get("revenue_stars") or 0),
+            "paid_rub": int(pay_stats.get("paid_rub") or 0),
+            "paid_stars": int(pay_stats.get("paid_stars") or 0),
         },
         "recent_payments": _clean(recent),
         "protocol_breakdown": protocol_stats,
         "discount_summary": discount_stats,
         "autopay_summary": autopay_stats,
+        "subscription_summary": _clean(sub_summary),
     }
+
 
 
 # ── AWG Server ───────────────────────────────────────────────────────────────
 
 @router.get("/awg/server")
 async def awg_server():
+    if not awg_db:
+        return {"status": "inbound_17", "info": "AmneziaWG managed via 3x-ui Inbound 17"}
     srv = awg_db.get_server_config()
     if not srv:
         return {"error": "No server config"}
@@ -820,13 +1661,25 @@ async def xui_inbounds():
         inbounds = xui.get_inbounds()
         result = []
         for ib in inbounds:
-            settings = json.loads(ib.get("settings", "{}"))
-            stream = json.loads(ib.get("streamSettings", "{}"))
-            clients = settings.get("clients", [])
-            stats = {cs["email"]: cs for cs in ib.get("clientStats", [])}
+            raw_settings = ib.get("settings") or "{}"
+            settings = json.loads(raw_settings) if isinstance(raw_settings, str) else (raw_settings or {})
+            if not isinstance(settings, dict):
+                settings = {}
 
-            total_up = sum(cs.get("up", 0) for cs in ib.get("clientStats", []))
-            total_down = sum(cs.get("down", 0) for cs in ib.get("clientStats", []))
+            raw_stream = ib.get("streamSettings") or "{}"
+            stream = json.loads(raw_stream) if isinstance(raw_stream, str) else (raw_stream or {})
+            if not isinstance(stream, dict):
+                stream = {}
+
+            clients = settings.get("clients", [])
+            client_stats = ib.get("clientStats") or []
+            if not isinstance(client_stats, list):
+                client_stats = []
+
+            stats = {cs["email"]: cs for cs in client_stats if isinstance(cs, dict) and "email" in cs}
+
+            total_up = sum(cs.get("up", 0) for cs in client_stats if isinstance(cs, dict))
+            total_down = sum(cs.get("down", 0) for cs in client_stats if isinstance(cs, dict))
 
             result.append({
                 "id": ib["id"],
@@ -836,7 +1689,7 @@ async def xui_inbounds():
                 "enable": ib.get("enable"),
                 "network": stream.get("network"),
                 "security": stream.get("security"),
-                "client_count": len(clients),
+                "client_count": len(clients) if isinstance(clients, list) else 0,
                 "traffic_up": total_up,
                 "traffic_up_fmt": _fmt_bytes(total_up),
                 "traffic_down": total_down,
@@ -856,8 +1709,12 @@ async def xui_inbound_clients(inbound_id: int):
 
         # Build global stats map across ALL inbounds (email -> aggregated stats)
         global_stats: dict[str, dict] = {}
-        for _ib in inbounds:
-            for cs in _ib.get("clientStats", []):
+        for _ib in (inbounds or []):
+            if not isinstance(_ib, dict):
+                continue
+            for cs in (_ib.get("clientStats") or []):
+                if not isinstance(cs, dict):
+                    continue
                 email = cs.get("email", "")
                 if email in global_stats:
                     global_stats[email]["up"] += cs.get("up", 0)
@@ -884,7 +1741,11 @@ async def xui_inbound_clients(inbound_id: int):
         for ib in inbounds:
             if ib["id"] != inbound_id:
                 continue
-            settings = json.loads(ib.get("settings", "{}"))
+            settings = ib.get("settings") or {}
+            if isinstance(settings, str):
+                settings = json.loads(settings)
+            if not isinstance(settings, dict):
+                settings = {}
             clients = settings.get("clients", [])
 
             # Lookup first_name via vpn_keys → users
@@ -894,7 +1755,7 @@ async def xui_inbound_clients(inbound_id: int):
             token_map: dict[str, str] = {}  # email -> web_token
             if emails:
                 try:
-                    conn = awg_db._get_conn()
+                    conn = admin_db._get_conn()
                     cur = conn.cursor(dictionary=True)
                     ph = ",".join(["%s"] * len(emails))
                     cur.execute(
@@ -920,7 +1781,7 @@ async def xui_inbound_clients(inbound_id: int):
                 expiry_str = ""
                 if expiry and expiry > 0:
                     try:
-                        expiry_str = datetime.fromtimestamp(expiry / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                        expiry_str = datetime.fromtimestamp(expiry / 1000, tz=YAKUTSK_TZ).strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         pass
 
@@ -928,7 +1789,7 @@ async def xui_inbound_clients(inbound_id: int):
                 last_str = ""
                 if last_online and last_online > 0:
                     try:
-                        last_str = datetime.fromtimestamp(last_online / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                        last_str = datetime.fromtimestamp(last_online / 1000, tz=YAKUTSK_TZ).strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         pass
 
@@ -956,203 +1817,6 @@ async def xui_inbound_clients(inbound_id: int):
     except Exception as e:
         logger.error(f"XUI clients error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-
-
-# ── SoftEther ─────────────────────────────────────────────────────────────────
-
-@router.get("/softether/users")
-async def softether_users():
-    try:
-        from bot_xui.softether import list_users
-        users = list_users()
-        # Merge stored configs from vpn_keys
-        try:
-            conn = awg_db._get_conn()
-            cur = conn.cursor(dictionary=True)
-            cur.execute(
-                "SELECT client_name, vless_link, vpn_file, tg_id, expires_at, created_at "
-                "FROM vpn_keys WHERE vpn_type = 'softether'"
-            )
-            rows = cur.fetchall()
-            cur.close()
-            conn.close()
-            # Build lookup by client_name (latest entry wins)
-            configs = {}
-            for row in rows:
-                name = row["client_name"]
-                if name not in configs or (row["created_at"] and configs[name]["created_at"] and row["created_at"] > configs[name]["created_at"]):
-                    cfg = {}
-                    if row.get("vless_link"):
-                        try:
-                            cfg = json.loads(row["vless_link"])
-                        except Exception:
-                            cfg = {"raw": row["vless_link"]}
-                    configs[name] = {
-                        "config": cfg,
-                        "vpn_file": bool(row.get("vpn_file")),
-                        "tg_id": row.get("tg_id"),
-                        "db_expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
-                        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
-                    }
-            for u in users:
-                db = configs.get(u["username"], {})
-                u["config"] = db.get("config")
-                u["has_vpn_file"] = db.get("vpn_file", False)
-                u["tg_id"] = db.get("tg_id")
-                u["created_at"] = db.get("created_at")
-        except Exception as e:
-            logger.warning(f"Failed to merge SE configs from DB: {e}")
-        return users
-    except Exception as e:
-        logger.error(f"SoftEther users error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.delete("/softether/users/{username}")
-async def softether_delete_user(username: str):
-    try:
-        from bot_xui.softether import delete_user
-        ok = delete_user(username)
-        if ok:
-            return {"status": "deleted"}
-        return JSONResponse({"error": "Failed to delete"}, status_code=500)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.post("/softether/users/{username}/disable")
-async def softether_disable_user(username: str):
-    try:
-        from bot_xui.softether import disable_user
-        ok = disable_user(username)
-        if ok:
-            return {"status": "disabled"}
-        return JSONResponse({"error": "Failed to disable"}, status_code=500)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.get("/softether/users/{username}/config")
-async def softether_user_config(username: str):
-    """Get stored connection config for a SoftEther user from vpn_keys."""
-    try:
-        conn = awg_db._get_conn()
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            "SELECT vless_link, vpn_file FROM vpn_keys "
-            "WHERE client_name = %s AND vpn_type = 'softether' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (username,),
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if not row:
-            return JSONResponse({"error": "No stored config for this user"}, status_code=404)
-        config_json = row.get("vless_link")  # stores JSON {host, port, hub, username, password}
-        vpn_file = row.get("vpn_file")
-        config = {}
-        if config_json:
-            try:
-                config = json.loads(config_json)
-            except Exception:
-                config = {"raw": config_json}
-        return {"config": config, "vpn_file": vpn_file}
-    except Exception as e:
-        logger.error(f"SoftEther config lookup error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.post("/softether/users")
-async def softether_create_user(request: Request):
-    try:
-        body = await request.json()
-        username = body.get("username", "").strip()
-        password = body.get("password", "").strip()
-        expiry = body.get("expiry", "").strip()  # YYYY/MM/DD
-        if not username or not password:
-            return JSONResponse({"error": "username and password required"}, status_code=400)
-        from bot_xui.softether import create_user, set_user_expiry
-        ok = create_user(username, password)
-        if not ok:
-            return JSONResponse({"error": "Failed to create user"}, status_code=500)
-        if expiry:
-            set_user_expiry(username, expiry)
-        return {"status": "created", "username": username}
-    except Exception as e:
-        logger.error(f"SoftEther create error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.patch("/softether/users/{username}/password")
-async def softether_set_password(username: str, request: Request):
-    try:
-        body = await request.json()
-        password = body.get("password", "").strip()
-        if not password:
-            return JSONResponse({"error": "password required"}, status_code=400)
-        from bot_xui.softether import _run
-        _run("UserPasswordSet", username, f"/PASSWORD:{password}")
-        # Sync password to DB (vpn_keys.vless_link JSON + regenerate vpn_file)
-        try:
-            conn = awg_db._get_conn()
-            cur = conn.cursor(dictionary=True)
-            cur.execute(
-                "SELECT id, vless_link FROM vpn_keys "
-                "WHERE client_name = %s AND vpn_type = 'softether'",
-                (username,),
-            )
-            for row in cur.fetchall():
-                if row.get("vless_link"):
-                    cfg = json.loads(row["vless_link"])
-                    cfg["password"] = password
-                    new_link = json.dumps(cfg)
-                    # Regenerate .vpn file from scratch instead of string replace
-                    from bot_xui.vpn_factory import _make_softether_vpn_file
-                    vpn_file = _make_softether_vpn_file(username, password).getvalue().decode("utf-8")
-                    cur.execute(
-                        "UPDATE vpn_keys SET vless_link = %s, vpn_file = %s WHERE id = %s",
-                        (new_link, vpn_file, row["id"]),
-                    )
-            conn.commit()
-            cur.close()
-            conn.close()
-        except Exception as e:
-            logger.warning(f"Failed to sync SE password to DB: {e}")
-        return {"status": "password_updated"}
-    except Exception as e:
-        return JSONResponse({"error": "Failed to update password"}, status_code=500)
-
-
-@router.patch("/softether/users/{username}/expiry")
-async def softether_set_expiry(username: str, request: Request):
-    try:
-        body = await request.json()
-        expiry = body.get("expiry", "").strip()  # YYYY/MM/DD or "none"
-        if not expiry:
-            return JSONResponse({"error": "expiry required (YYYY/MM/DD or 'none')"}, status_code=400)
-        from bot_xui.softether import set_user_expiry
-        ok = set_user_expiry(username, expiry if expiry != "none" else "none")
-        if ok:
-            return {"status": "expiry_updated"}
-        return JSONResponse({"error": "Failed to set expiry"}, status_code=500)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-def _ping_telegram_dc() -> float | None:
-    """Ping Telegram DC2 and return latency in ms."""
-    try:
-        r = subprocess.run(
-            ["ping", "-c", "1", "-W", "2", "149.154.167.51"],
-            capture_output=True, text=True, timeout=5,
-        )
-        match = re.search(r"time=([\d.]+)", r.stdout)
-        if match:
-            return round(float(match.group(1)), 1)
-    except Exception:
-        pass
-    return None
 
 
 def _parse_mtg_metrics() -> dict:
@@ -1242,7 +1906,7 @@ async def users_today():
     if not tg_ids and not user_ids:
         return cleaned
 
-    conn = awg_db._get_conn()
+    conn = admin_db._get_conn()
     cur = conn.cursor(dictionary=True)
     conditions = []
     params: list = []
@@ -1289,23 +1953,24 @@ async def users_today():
 
     # Get AWG traffic from awg show dump
     awg_traffic: dict[str, dict] = {}  # name -> {rx, tx}
-    try:
-        awg_clients = awg_db.list_clients()
-        pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
-        result = subprocess.run(
-            ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.strip().split("\n")[1:]:
-            parts = line.split("\t")
-            if len(parts) < 7:
-                continue
-            name = pub_to_name.get(parts[0], "")
-            if name:
-                rx = int(parts[5]) if parts[5].isdigit() else 0
-                tx = int(parts[6]) if parts[6].isdigit() else 0
-                awg_traffic[name] = {"rx": rx, "tx": tx}
-    except Exception as e:
-        logger.warning(f"AWG traffic fetch for new users: {e}")
+    if awg_db:
+        try:
+            awg_clients = awg_db.list_clients()
+            pub_to_name = {c["public_key"]: c["name"] for c in awg_clients}
+            result = subprocess.run(
+                ["awg", "show", "awg0", "dump"], capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().split("\n")[1:]:
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                name = pub_to_name.get(parts[0], "")
+                if name:
+                    rx = int(parts[5]) if parts[5].isdigit() else 0
+                    tx = int(parts[6]) if parts[6].isdigit() else 0
+                    awg_traffic[name] = {"rx": rx, "tx": tx}
+        except Exception as e:
+            logger.warning(f"AWG traffic fetch for new users: {e}")
 
     # Get online users for speed — build name->speed map from all protocol names
     online, _ = _get_online_users()
@@ -1442,27 +2107,39 @@ async def email_stats():
 # ── Winback Log ───────────────────────────────────────────────────────────────
 
 _WINBACK_MESSAGES = {
-    'zero_traffic': "👋 Привет!\nМы заметили, что вы ещё не подключились к VPN. Нужна помощь с настройкой?\n📱 Быстрый старт:\n1️⃣ Нажмите Мои конфиги\n2️⃣ Скопируйте ссылку подписки\n3️⃣ Вставьте в приложение (Happ, Hiddify, Streisand)\nЕсли что-то не получается — напишите нам 💬",
-    'low_traffic': "👋 Привет!\nПохоже, VPN подключение не заработало как нужно. Мы можем помочь!\nПопробуйте:\n• Обновите ссылку подписки\n• Используйте Happ или Hiddify\n• Включите/выключите VPN заново\nЕсли не помогло — напишите в поддержку 💬",
-    'expired_fresh': "⏰ Ваша подписка недавно истекла.\nПродлите сейчас и получите бесперебойный доступ к VPN!\n💡 Чем длиннее период — тем выгоднее цена за день.",
-    'expired_old': "👋 Давно не виделись!\nМы обновили сервис — стало быстрее и стабильнее.\nВозвращайтесь — будем рады! 🎁",
-    'test_no_purchase': "👋 Вы пробовали наш тестовый период.\nГотовы к полному доступу? Выберите тариф — подписка с доступом ко всем сайтам 🌐",
-    'test_no_connect': "👋 Вы активировали тестовый период, но так и не подключились.\nМы продлили вам доступ на 1 день — попробуйте прямо сейчас!\n📱 Быстрый старт:\n1️⃣ Нажмите Мои конфиги\n2️⃣ Скопируйте ссылку подписки\n3️⃣ Вставьте в приложение\nЕсли что-то не получается — напишите нам 💬",
+    'zero_traffic': "👋 Привет!\nМы заметили, что вы ещё не подключились к VPN. Нужна помощь с настройкой?\n📱 Быстрый старт:\n1️⃣ Нажмите Мои конфиги\n2️⃣ Скопируйте ссылку подписки\n3️⃣ Вставьте в приложение (Shadowrocket, Happ, Hiddify)\nЕсли что-то не получается — напишите нам 💬",
+    'low_traffic': "👋 Привет!\nПохоже, VPN подключение не заработало как нужно. Мы можем помочь!\nПопробуйте:\n• Обновите ссылку подписки\n• Используйте Shadowrocket, Happ или Hiddify\n• Включите/выключите VPN заново\nЕсли не помогло — напишите в поддержку 💬",
+    'expired_fresh': "⏰ Ваша подписка недавно истекла.\nПродлите сейчас!\n🎁 Персональный промокод со скидкой 10% (7 дней) создан автоматически.",
+    'expired_old': "👋 Давно не виделись!\nМы обновили сервис — стало быстрее и стабильнее.\n🎁 Персональный промокод со скидкой 20% (14 дней) создан автоматически.",
+    'test_no_purchase': "👋 Вы пробовали тестовый период.\nГотовы к полному доступу?\n🎁 Персональный промокод со скидкой 15% (7 дней) создан автоматически.",
+    'test_no_connect': "👋 Вы активировали тестовый период, но не подключились.\nМы продлили доступ на 1 день!\n🎁 Персональный промокод со скидкой 15% (7 дней) создан автоматически.\n📱 Быстрый старт:\n1️⃣ Мои конфиги\n2️⃣ Скопируйте ссылку\n3️⃣ Вставьте в приложение\nПомощь — пишите 💬",
     'payment_no_config': "⚠️ Мы обнаружили, что ваш платёж был успешным, но VPN конфиг не был создан.\nМы уже разбираемся с этим. Если вопрос не решится — напишите в поддержку 💬",
     'panel_db_mismatch': "⚠️ Обнаружена проблема с вашим конфигом. Мы уже работаем над исправлением.\nЕсли VPN не подключается — напишите в поддержку 💬",
     'never_activated': "👋 Привет!\nВы зарегистрировались, но ещё не попробовали VPN.\nАктивируйте бесплатный тест — это займёт пару минут!\n🔒 Безопасный интернет без ограничений.",
     'vless_only_inactive': "👋 Заметили, что вы не подключались к VPN больше суток.\nЕсли есть проблемы с подключением — попробуйте протокол AmneziaWG. Он лучше работает на нестабильных каналах, мобильном интернете и в удалённых регионах.\nНажмите кнопку ниже — мы выдадим вам конфиг AmneziaWG в дополнение к текущему VLESS.",
     'awg_inactive': "👋 Привет!\nЗаметили, что вы давно не подключались к VPN. Всё ли в порядке?\nЕсли возникли вопросы или проблемы с подключением — напишите нам, поможем! 💬",
     'recently_inactive': "👋 Мы скучаем!\nЗаметили, что вы давно не заходили. Всё ли в порядке с подключением?\n💡 У нас есть бесплатный прокси для Telegram — работает без VPN.",
+    'second_expiry_reminder': "⏰ Напоминаем: ваша подписка истекла 14 дней назад.\nПродлите сейчас!\n🎁 Персональный промокод со скидкой 20% (14 дней) создан автоматически.",
+    'hysteria_inactive': "👋 Привет!\nЗаметили, что вы давно не подключались к Hysteria 2.\nЭтот протокол отлично работает для обхода жёстких блокировок.\nЕсли возникли проблемы — напишите нам, поможем! 💬",
+    'long_inactive_7d': "👋 Давно не виделись!\nВы не заходили к нам больше недели. Мы обновили сервис — стало быстрее и стабильнее!\nВозвращайтесь — будем рады 🎁",
+    'referral_prompt': "👋 Привет!\nВы с нами уже {reg_days} дней — надеемся, всё отлично!\n💡 Приглашайте друзей: вы +{referrer_days} дней, друг +{newcomer_days} дней бесплатно!\nДелитесь ссылкой прямо сейчас!",
 }
 
 
 @router.get("/winback")
 async def winback_log():
+    from config import REFERRAL_REWARD_DAYS, REFERRAL_NEWCOMER_DAYS
     rows = admin_db.list_winback_log()
     cleaned = _clean(rows)
     for r in cleaned:
-        r["message"] = _WINBACK_MESSAGES.get(r.get("scenario", ""), "")
+        msg = _WINBACK_MESSAGES.get(r.get("scenario", ""), "")
+        if '{referrer_days}' in msg:
+            msg = msg.format(
+                reg_days=r.get("reg_days", ""),
+                referrer_days=REFERRAL_REWARD_DAYS,
+                newcomer_days=REFERRAL_NEWCOMER_DAYS,
+            )
+        r["message"] = msg
     return cleaned
 
 
@@ -1470,6 +2147,51 @@ async def winback_log():
 async def winback_effectiveness():
     """Conversion rates per winback scenario (payment or key creation within 7 days)."""
     return _clean(admin_db.winback_effectiveness())
+
+
+# ── TSPU / DPI Retention Trigger ──────────────────────────────────────────────
+
+@router.get("/tspu-status")
+async def get_tspu_status():
+    """Returns real-time TSPU/DPI blocking score and segmented winback targets."""
+    try:
+        from scripts.detect_tspu_wave import calculate_dpi_score
+        from scripts.win_back_users import get_tspu_wave_targets
+        
+        dpi_data = calculate_dpi_score()
+        targets = get_tspu_wave_targets(cooldown_days=3)
+        
+        # Breakdown by segments
+        breakdown = {
+            "total": len(targets),
+            "pending_gift": len([t for t in targets if t["scenario"] == "tspu_pending_gift"]),
+            "used_gift": len([t for t in targets if t["scenario"] == "tspu_used_gift"]),
+            "fresh_gift": len([t for t in targets if t["scenario"] == "tspu_fresh_gift"]),
+        }
+        
+        return {
+            "dpi": dpi_data,
+            "breakdown": breakdown,
+            "targets": _clean(targets)
+        }
+    except Exception as e:
+        logger.error(f"Error getting TSPU status: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@router.post("/tspu-winback/send")
+async def send_tspu_winback(request: Request):
+    """Triggers TSPU wave retention messages to selected cohorts."""
+    try:
+        from scripts.win_back_users import process_tspu_campaign
+        data = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        allowed_scenarios = data.get("scenarios") or ["tspu_pending_gift", "tspu_used_gift", "tspu_fresh_gift"]
+        
+        res = await process_tspu_campaign(send_mode=True, allowed_scenarios=allowed_scenarios)
+        return {"ok": True, "result": res}
+    except Exception as e:
+        logger.error(f"Error sending TSPU winback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Promocodes ────────────────────────────────────────────────────────────────
@@ -1515,6 +2237,16 @@ async def test_conversion():
     return admin_db.test_to_paid_by_protocol()
 
 
+@router.get("/expiry")
+async def get_expiry(names: str = Query(...)):
+    import json
+    try:
+        name_list = json.loads(names)
+        return admin_db.get_expiry_by_client_names(name_list)
+    except:
+        return {}
+
+
 # ── Users ────────────────────────────────────────────────────────────────────
 
 @router.get("/users")
@@ -1545,10 +2277,246 @@ async def user_payments(tg_id: int):
 async def user_autopay(tg_id: int):
     from api.db import execute_query
     row = execute_query(
-        "SELECT autopay_enabled, autopay_tariff, autopay_vpn_type, payment_method_id "
+        "SELECT autopay_enabled, autopay_tariff, autopay_vpn_type, payment_method_id, autopay_disabled_at "
         "FROM users WHERE tg_id = %s", (tg_id,), fetch='one'
     )
     return row or {}
+
+
+@router.get("/users/{tg_id}/platforms")
+async def user_platforms(tg_id: int):
+    from api.db import get_user_platforms
+    return get_user_platforms(tg_id)
+
+
+@router.get("/users/{tg_id}/delete-preview")
+async def user_delete_preview(tg_id: int):
+    """Preview all user data that will be deleted."""
+    preview = admin_db.get_user_delete_preview(tg_id)
+    if not preview.get("found"):
+        raise HTTPException(status_code=404, detail="User not found")
+    return _clean(preview)
+
+
+@router.post("/users/{tg_id}/delete")
+async def user_delete(tg_id: int, request: Request):
+    """Fully delete a user across all systems: x-ui, AWG, DB tables."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    if not body.get("confirm"):
+        raise HTTPException(status_code=400, detail="Pass confirm: true in body to proceed")
+
+    client_name = f"tiin_{tg_id}"
+    del_result = {"xui_clients": 0, "awg_clients": 0}
+
+    # 1. Delete from x-ui (VLESS + Hysteria)
+    try:
+        from bot_xui.utils import XUIClient
+        from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
+        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        info = xui.get_client_by_email(client_name)
+        if info:
+            inbound_id = info.get("inbound_id")
+            if inbound_id:
+                xui.delete_client(inbound_id, client_name)
+                del_result["xui_clients"] += 1
+            # Also try all inboundIds if available
+            for iid in info.get("inboundIds", []):
+                if iid != inbound_id:
+                    xui.delete_client(iid, client_name)
+                    del_result["xui_clients"] += 1
+        # Handle hysteria variant
+        h_name = client_name + "_h"
+        h_info = xui.get_client_by_email(h_name)
+        if h_info:
+            h_id = h_info.get("inbound_id")
+            if h_id:
+                xui.delete_client(h_id, h_name)
+                del_result["xui_clients"] += 1
+    except Exception as e:
+        logger.warning(f"XUI deletion error for {client_name}: {e}")
+
+    # 2. Delete from x-ui SQLite client_traffics
+    try:
+        import sqlite3 as _sqlite3
+        _xdb = _sqlite3.connect("/etc/x-ui/x-ui.db")
+        _xdb.execute("DELETE FROM client_traffics WHERE email = ?", (client_name,))
+        _xdb.execute("DELETE FROM client_traffics WHERE email = ?", (client_name + "_h",))
+        _xdb.commit()
+        _xdb.close()
+    except Exception as e:
+        logger.warning(f"XUI SQLite deletion error: {e}")
+
+    # 3. Delete from AWG (legacy awg_api disabled)
+    # try:
+    #     from awg_api import awg_manager, db as awg_db
+    #     if awg_db.delete_client_by_name(client_name):
+    #         del_result["awg_clients"] = 1
+    #         awg_manager.write_server_conf()
+    #         if awg_manager.is_interface_up():
+    #             awg_manager.reload_interface()
+    # except Exception as e:
+    #     logger.debug(f"AWG legacy deletion skipped or failed for {client_name}: {e}")
+
+    # 4. Create x-ui backup before DB deletion
+    backup_path = None
+    try:
+        backup_path = _run_xui_backup()
+    except Exception as e:
+        logger.warning(f"XUI backup before delete failed: {e}")
+
+    # 5. Delete from all MySQL tables
+    db_result = admin_db.delete_user_data(tg_id)
+
+    result = {
+        "status": "ok",
+        "backup_path": backup_path,
+        "deleted": {**del_result, **db_result},
+    }
+    return result
+
+
+@router.post("/users/create")
+async def admin_create_user(request: Request):
+    """Создать пользователя без tg_id, выдать VLESS+Hysteria на N дней."""
+    body = await request.json()
+    first_name = str(body.get("first_name", "")).strip()
+    last_name = str(body.get("last_name", "")).strip()
+    days = int(body.get("days", 3))
+
+    if not first_name:
+        raise HTTPException(status_code=400, detail="first_name is required")
+    if days < 1 or days > 3650:
+        raise HTTPException(status_code=400, detail="days must be between 1 and 3650")
+
+    from api.db import create_user, upsert_vpn_key, update_user_subscription_by_id
+    from config import (
+        XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
+        VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
+        VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+        HYSTERIA_PORT, HYSTERIA_SNI, HYSTERIA_INBOUND_ID,
+        VLESS_HTTP_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID, ACTIVE_INBOUND_IDS, XUI_SUB_PATH,
+    )
+    from bot_xui.utils import XUIClient, generate_vless_link, generate_hysteria2_link
+
+    user = create_user(first_name, last_name)
+    user_id = user["id"]
+    client_name = f"tiin_web_{user_id}"
+
+    import uuid as _uuid
+    xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+    client_uuid = str(_uuid.uuid4())
+
+    tz_tokyo = timezone(timedelta(hours=9))
+    raw_end = datetime.now(timezone.utc) + timedelta(days=days)
+    end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
+    expiry_time = int(end_tokyo.timestamp() * 1000)
+    expires_at = end_tokyo.astimezone(timezone.utc)
+
+    existing = xui.get_client_by_email(client_name)
+    if existing:
+        client_uuid = existing['client'].get('uuid') or existing['client'].get('id')
+        if isinstance(client_uuid, int) or (isinstance(client_uuid, str) and client_uuid.isdigit()):
+            client_uuid = existing['client'].get('uuid') or str(client_uuid)
+        sub_id = existing['client'].get('subId')
+        xui.extend_client_expiry(existing['inbound_id'], existing['client'], days * 86400 * 1000)
+        # Also sync Inbound 17 (AmneziaWG)
+        try:
+            from bot_xui.awg_manager import get_or_create_3xui_awg_client
+            if tg_id and tg_id != 0:
+                get_or_create_3xui_awg_client(tg_id=tg_id, expiry_ms=expiry_time, client_name=f"awg_{tg_id}")
+        except Exception as _awg_err:
+            logger.warning(f"Admin extend: failed to sync Inbound 17 AWG: {_awg_err}")
+    else:
+        result = xui.create_client(
+            email=client_name,
+            tg_id=0,
+            expiry_time=expiry_time,
+            inbound_ids=ACTIVE_INBOUND_IDS,
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=f"XUI create failed: {result.get('msg')}")
+        sub_id = result.get("subId")
+        if result.get("uuid"):
+            client_uuid = result["uuid"]
+
+    import secrets as _secrets
+    if not sub_id:
+        sub_id = _secrets.token_hex(8)
+
+    sub_url = f"{XUI_SUB_PATH}/updates_ui/{sub_id}"
+
+    vless_link = generate_vless_link(
+        client_id=client_uuid,
+        domain=VLESS_DOMAIN,
+        port=VLESS_PORT,
+        path=VLESS_PATH,
+        client_name=client_name,
+        pbk=VLESS_PBK,
+        sid=VLESS_SID,
+        sni=VLESS_SNI,
+        fp="chrome",
+        spx="/",
+        remark="TIIN | VLESS",
+    )
+
+    hysteria_link = generate_hysteria2_link(
+        auth=client_uuid,
+        domain=VLESS_DOMAIN,
+        port=HYSTERIA_PORT,
+        client_name=client_name,
+        sni=HYSTERIA_SNI,
+        insecure=0,
+    )
+
+    upsert_vpn_key(
+        tg_id=0,
+        payment_id=f"admin_{user_id}_{int(time.time())}",
+        client_id=client_uuid,
+        client_name=client_name,
+        client_ip="",
+        client_public_key="",
+        vless_link=vless_link,
+        xhttp_link=None,
+        hysteria_link=hysteria_link,
+        expires_at=expires_at,
+        vpn_type="vless",
+        subscription_link=sub_url,
+        user_id=user_id,
+    )
+
+    update_user_subscription_by_id(user_id, expires_at.replace(tzinfo=None))
+
+    return {
+        "user_id": user_id,
+        "first_name": first_name,
+        "last_name": last_name,
+        "web_token": user["web_token"],
+        "subscription_until": expires_at.isoformat(),
+        "vless_link": vless_link,
+        "hysteria_link": hysteria_link,
+        "subscription_link": sub_url,
+    }
+
+
+@router.patch("/users/{user_id}/link-tg")
+async def admin_link_tg(user_id: int, request: Request):
+    """Привязать tg_id к существующему пользователю (созданному без tg_id)."""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    body = await request.json()
+    tg_id = body.get("tg_id")
+    if not tg_id:
+        raise HTTPException(status_code=400, detail="tg_id is required")
+
+    from api.db import link_tg_id_to_user, get_user_by_id
+
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    link_tg_id_to_user(user_id, tg_id)
+    return {"status": "ok", "user_id": user_id, "tg_id": tg_id}
 
 
 @router.get("/funnel")
@@ -1592,19 +2560,34 @@ async def conversion_funnel():
     )['n']
 
     revenue_total = execute_query(
-        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE status = 'paid' AND is_test = 0",
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE status = 'paid' AND is_test = 0 AND payment_id NOT LIKE 'stars_%'",
+        fetch='one',
+    )['n']
+
+    revenue_stars = execute_query(
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE status = 'paid' AND is_test = 0 AND payment_id LIKE 'stars_%'",
         fetch='one',
     )['n']
 
     revenue_30d = execute_query(
         "SELECT COALESCE(SUM(amount), 0) AS n FROM payments "
-        "WHERE status = 'paid' AND is_test = 0 AND created_at >= NOW() - INTERVAL 30 DAY",
+        "WHERE status = 'paid' AND is_test = 0 AND payment_id NOT LIKE 'stars_%' AND created_at >= NOW() - INTERVAL 30 DAY",
+        fetch='one',
+    )['n']
+
+    revenue_30d_stars = execute_query(
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM payments "
+        "WHERE status = 'paid' AND is_test = 0 AND payment_id LIKE 'stars_%' AND created_at >= NOW() - INTERVAL 30 DAY",
         fetch='one',
     )['n']
 
     # Tariff popularity
     tariff_stats = execute_query(
-        "SELECT tariff, COUNT(*) AS cnt, SUM(amount) AS revenue "
+        "SELECT tariff, "
+        "COUNT(*) AS cnt, "
+        "SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END) AS revenue_rub, "
+        "SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END) AS revenue_stars, "
+        "SUM(amount) AS revenue "
         "FROM payments WHERE status = 'paid' AND is_test = 0 "
         "GROUP BY tariff ORDER BY cnt DESC",
         fetch='all',
@@ -1635,7 +2618,11 @@ async def conversion_funnel():
         },
         "revenue": {
             "total": float(revenue_total),
+            "total_rub": float(revenue_total),
+            "total_stars": float(revenue_stars),
             "last_30d": float(revenue_30d),
+            "last_30d_rub": float(revenue_30d),
+            "last_30d_stars": float(revenue_30d_stars),
             "arpu": round(float(revenue_total) / paid_users, 1) if paid_users else 0,
         },
         "tariff_stats": tariff_stats,
@@ -1643,33 +2630,280 @@ async def conversion_funnel():
     })
 
 
+# ── x-ui Backup ───────────────────────────────────────────────────────────────
+
+def _run_xui_backup() -> str:
+    """Create a full x-ui backup snapshot on the server. Returns the snapshot path."""
+    import shutil
+
+    backup_dir = "/var/backups/x-ui"
+    timestamp = (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%Y-%m-%d_%H-%M-%S")
+    snapshot = os.path.join(backup_dir, timestamp)
+    os.makedirs(snapshot, exist_ok=True)
+
+    shutil.copy2("/etc/x-ui/x-ui.db", os.path.join(snapshot, "x-ui.db"))
+
+    metrics_src = "/etc/x-ui/system_metrics.gob"
+    if os.path.exists(metrics_src):
+        shutil.copy2(metrics_src, os.path.join(snapshot, "system_metrics.gob"))
+
+    subprocess.run(
+        ["tar", "czf", os.path.join(snapshot, "x-ui-etc.tar.gz"), "-C", "/etc/x-ui", "."],
+        capture_output=True, timeout=10,
+    )
+
+    shutil.copy2("/usr/local/x-ui/x-ui", os.path.join(snapshot, "x-ui-bin"))
+
+    backups = sorted(os.listdir(backup_dir))
+    while len(backups) > 10:
+        old = os.path.join(backup_dir, backups[0])
+        shutil.rmtree(old, ignore_errors=True)
+        backups.pop(0)
+
+    return snapshot
+
+
+@router.post("/xui/backup")
+async def xui_backup():
+    """Create a full x-ui backup snapshot on the server."""
+    snapshot = _run_xui_backup()
+    backup_dir = "/var/backups/x-ui"
+    backups = sorted(os.listdir(backup_dir))
+    return {"status": "ok", "path": snapshot, "total_backups": len(backups)}
+
+
+@router.get("/xui/backups")
+async def xui_list_backups():
+    """List all available x-ui backup snapshots."""
+    import shutil as _shutil
+
+    backup_dir = "/var/backups/x-ui"
+    if not os.path.isdir(backup_dir):
+        return {"backups": []}
+
+    backups = []
+    for name in sorted(os.listdir(backup_dir), reverse=True):
+        path = os.path.join(backup_dir, name)
+        if not os.path.isdir(path):
+            continue
+        # Parse timestamp from dirname: stored in UTC+9
+        try:
+            dt = datetime.strptime(name, "%Y-%m-%d_%H-%M-%S")
+            label = dt.strftime("%d %b %Y %H:%M:%S")
+        except ValueError:
+            label = name
+        # Size
+        total_size = 0
+        for dirpath, _, filenames in os.walk(path):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                total_size += os.path.getsize(fp)
+        backups.append({
+            "id": name,
+            "label": label,
+            "size": total_size,
+            "size_fmt": _fmt_bytes(total_size),
+        })
+
+    return {"backups": backups}
+
+
+@router.post("/xui/restore/{backup_id}")
+async def xui_restore(backup_id: str, request: Request):
+    """Restore x-ui database from a backup snapshot."""
+    import shutil as _shutil
+
+    # Sanitize backup_id — only allow dirnames matching our timestamp format
+    import re as _re
+    if not _re.match(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$", backup_id):
+        raise HTTPException(status_code=400, detail="Invalid backup ID format")
+
+    snapshot = os.path.join("/var/backups/x-ui", backup_id)
+    db_src = os.path.join(snapshot, "x-ui.db")
+    if not os.path.isfile(db_src):
+        raise HTTPException(status_code=404, detail="Backup not found or missing x-ui.db")
+
+    # Must confirm via body
+    body = await request.json()
+    if not body.get("confirm"):
+        raise HTTPException(status_code=400, detail="Pass confirm: true in body to proceed")
+
+    # Safety: create emergency backup of current DB first
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    emergency = f"/etc/x-ui/x-ui.db.before-restore-{ts}"
+    with open("/etc/x-ui/x-ui.db", "rb") as src, open(emergency, "wb") as dst:
+        dst.write(src.read())
+
+    # Restore — write content only to avoid PermissionError on docker bind mounts
+    with open(db_src, "rb") as src, open("/etc/x-ui/x-ui.db", "wb") as dst:
+        dst.write(src.read())
+
+    # Restart x-ui to apply
+    subprocess.run(["systemctl", "restart", "x-ui"], capture_output=True, timeout=15)
+
+    return {"status": "ok", "restored_from": backup_id, "emergency_backup": emergency}
+
+
 # ── Admin page serving ────────────────────────────────────────────────────────
 
 def get_admin_page_route():
     """Return the admin page endpoint for mounting in the app."""
     async def admin_page(request: Request):
-        # nginx auth_basic already protects this path — skip session check
-        # Pre-create a session cookie so JS doesn't need the API password
-        import secrets as _secrets
-        from datetime import datetime, timezone
-        from awg_api.main import _sessions, SESSION_MAX_AGE
-
         html_path = os.path.join(os.path.dirname(__file__), "static", "admin.html")
-        with open(html_path) as f:
+        with open(html_path, "r", encoding="utf-8") as f:
             html = f.read()
-        # Do NOT embed the real password — use a placeholder so JS skips login
+
+        # Do NOT embed password — JS uses form login and persistent session cookie
         html = html.replace("{{AWG_PASSWORD}}", "")
 
-        token = _secrets.token_hex(24)
-        _sessions[token] = datetime.now(timezone.utc).timestamp()
-
         response = HTMLResponse(html)
-        response.set_cookie(
-            key="connect.sid", value=token,
-            httponly=True, secure=True, samesite="lax", max_age=SESSION_MAX_AGE,
-        )
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
         return response
     return admin_page
+
+
+# ── Refund Payment (YooKassa SDK / Telegram Stars + Deactivate VPN) ──────────
+
+@router.post("/payments/{payment_id}/refund")
+async def refund_payment(payment_id: str):
+    """Refund a succeeded payment via YooKassa SDK or Telegram Stars and deactivate user's VPN config."""
+    import uuid
+    from api.db import get_payment_by_id, update_payment_status, log_message_sent, get_user_email
+    from api.webhook import process_refund, send_telegram_notification
+
+    payment = get_payment_by_id(payment_id)
+    if not payment:
+        return JSONResponse({"error": "Payment not found"}, status_code=404)
+
+    if payment.get("status") == "refunded":
+        return JSONResponse({"error": "Payment has already been refunded"}, status_code=400)
+
+    if payment.get("status") != "paid":
+        return JSONResponse({"error": f"Cannot refund payment with status '{payment.get('status')}'"}, status_code=400)
+
+    is_stars = payment_id.startswith("stars_")
+    amount_val = str(payment.get("amount", "0"))
+    tg_id = payment.get("tg_id")
+
+    if is_stars:
+        charge_id = payment_id.removeprefix("stars_")
+        from config import TELEGRAM_BOT_TOKEN
+        import httpx
+        if not TELEGRAM_BOT_TOKEN:
+            return JSONResponse({"error": "TELEGRAM_BOT_TOKEN not configured for Stars refund"}, status_code=500)
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/refundStarPayment"
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                resp = await http_client.post(url, json={
+                    "user_id": int(tg_id),
+                    "telegram_payment_charge_id": charge_id
+                })
+                resp_data = resp.json()
+                if not resp_data.get("ok"):
+                    raise RuntimeError(resp_data.get("description") or f"Telegram API error {resp.status_code}")
+                refund_res = resp_data.get("result", True)
+            logger.info(f"Telegram Stars refund succeeded for {payment_id}: {refund_res}")
+            refund_status = "succeeded" if refund_res else "unknown"
+        except Exception as e:
+            logger.error(f"Telegram Stars refund failed for {payment_id}: {e}", exc_info=True)
+            return JSONResponse({"error": f"Telegram Stars refund failed: {str(e)}"}, status_code=500)
+    else:
+        from yookassa import Configuration, Refund
+        from bot_xui.yookassa_client import async_refund_create
+        from config import (
+            YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY,
+            YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
+        )
+
+        is_test_payment = bool(payment.get("is_test"))
+        shop_id = YOO_KASSA_TEST_SHOP_ID if is_test_payment else YOO_KASSA_SHOP_ID
+        secret_key = YOO_KASSA_TEST_SECRET_KEY if is_test_payment else YOO_KASSA_SECRET_KEY
+
+        if not shop_id or not secret_key:
+            mode_str = "test" if is_test_payment else "production"
+            return JSONResponse({"error": f"YooKassa {mode_str} credentials not configured"}, status_code=500)
+
+        Configuration.account_id = shop_id
+        Configuration.secret_key = secret_key
+
+        idempotency_key = str(uuid.uuid4())
+
+        try:
+            refund_res = await async_refund_create({
+                "amount": {
+                    "value": amount_val,
+                    "currency": "RUB"
+                },
+                "payment_id": payment_id
+            }, idempotency_key)
+        except Exception as e:
+            logger.error(f"YooKassa refund failed for payment {payment_id}: {e}")
+            return JSONResponse({"error": f"YooKassa API refund failed: {str(e)}"}, status_code=500)
+
+        refund_status = getattr(refund_res, "status", None) or refund_res.get("status") if isinstance(refund_res, dict) else "unknown"
+        logger.info(f"YooKassa refund created for {payment_id}: id={getattr(refund_res, 'id', 'N/A')}, status={refund_status}")
+
+    # 1. Update payment status in DB
+    update_payment_status(payment_id, "refunded")
+
+    # 2. Deactivate VPN config/keys
+    vpn_deactivated = await process_refund(payment_id)
+
+    # 3. Notify user via Telegram
+    currency_label = "⭐️" if is_stars else "RUB"
+    if tg_id:
+        if is_stars:
+            msg_text = (
+                f"⭐️ <b>Возврат средств Telegram Stars выполнен</b>\n\n"
+                f"💳 ID платежа: <code>{payment_id}</code>\n"
+                f"💰 Возвращено: <b>{amount_val} ⭐️</b>\n\n"
+                f"Звёзды зачислены обратно на ваш баланс Telegram. Ваш VPN конфиг был деактивирован."
+            )
+        else:
+            msg_text = (
+                f"💸 Возврат платежа выполнен\n\n"
+                f"💳 ID платежа: {payment_id}\n"
+                f"💰 Сумма возврата: {amount_val} RUB\n\n"
+                f"Ваш VPN конфиг был деактивирован."
+            )
+        try:
+            await send_telegram_notification(tg_id, msg_text, source="admin_refund", scenario="payment_refunded")
+        except Exception as e:
+            logger.warning(f"Failed to send refund notification to tg_id {tg_id}: {e}")
+            log_message_sent(
+                tg_id=tg_id,
+                source="admin_refund",
+                scenario="payment_refunded",
+                message_text=msg_text,
+                status="error",
+                error_text=str(e)
+            )
+
+    # 4. Notify admin to verify configs
+    client_name = get_user_email(tg_id, payment_id=payment_id) if tg_id else None
+    admin_alert = (
+        f"{'⭐️' if is_stars else '💸'} <b>Возврат средств ({'Telegram Stars' if is_stars else 'ЮKassa'} - Панель)</b>\n\n"
+        f"Пользователь: <code>{tg_id or 'Unknown'}</code>" + (f" ({client_name})" if client_name else "") + f"\n"
+        f"Платёж: <code>{payment_id}</code>\n"
+        f"Сумма: {amount_val} {currency_label}\n"
+        f"Статус деактивации: {'✅ Успешно' if vpn_deactivated else '⚠️ Ошибка деактивации'}\n\n"
+        f"⚠️ <i>Проверьте конфиги пользователя (3x-ui / AWG).</i>"
+    )
+    try:
+        await send_telegram_notification(ADMIN_TG_ID, admin_alert, source="admin_refund", scenario="admin_refund_alert")
+    except Exception as e:
+        logger.warning(f"Failed to send refund admin alert: {e}")
+
+    return JSONResponse({
+        "status": "success",
+        "message": f"Refund of {amount_val} {currency_label} processed successfully",
+        "payment_id": payment_id,
+        "refund_status": refund_status,
+        "vpn_deactivated": vpn_deactivated,
+        "is_stars": is_stars,
+    })
 
 
 # ── Test Payment (YooKassa → VLESS sub link) ────────────────────────────────
@@ -1679,6 +2913,7 @@ async def create_test_payment(request: Request):
     """Create a YooKassa test payment so admin can verify the full flow:
     payment → webhook → VLESS sub link registration."""
     from yookassa import Configuration, Payment as YooPayment
+    from bot_xui.yookassa_client import async_payment_create
     from config import (
         YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
         YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY, ADMIN_TG_ID,
@@ -1702,12 +2937,12 @@ async def create_test_payment(request: Request):
     Configuration.secret_key = YOO_KASSA_TEST_SECRET_KEY
 
     try:
-        payment = YooPayment.create(
+        payment = await async_payment_create(
             {
                 "amount": {"value": str(tariff["price"]), "currency": "RUB"},
                 "confirmation": {
                     "type": "redirect",
-                    "return_url": "https://tiinservice.ru/admin",
+                    "return_url": "https://tiinservice.online/admin",
                 },
                 "capture": True,
                 "description": f"[ADMIN TEST] {tariff['name']}",
@@ -1823,6 +3058,164 @@ async def api_message_log_stats(
     """Per-source message stats."""
     _require_admin_session(request)
     return {"sources": admin_db.message_log_source_stats(days=days)}
+
+
+@router.get("/api/messages/analytics")
+async def api_message_flow_analytics(request: Request):
+    """Customer journey funnel and retention effectiveness analytics."""
+    _require_admin_session(request)
+    return admin_db.get_message_flow_analytics()
+
+
+# ─────────────────────────────────────────────
+#  Inbounds Popularity & SNI Stats
+# ─────────────────────────────────────────────
+
+@router.get("/api/inbounds-stats")
+async def api_inbounds_popularity_stats(
+    request: Request,
+    days: int = Query(3, ge=1, le=90),
+):
+    """Get inbounds comparison with SNI, transport and traffic deltas for the specified period."""
+    _require_admin_session(request)
+    try:
+        return admin_db.get_inbounds_popularity_stats(days=days)
+    except Exception as e:
+        logger.error(f"Error fetching inbounds stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/inbound-switches")
+@router.get("/api/inbound-switches")
+async def api_inbound_switches(request: Request):
+    """Return inbound switch monitor state, operator breakdowns, and recent switch events."""
+    _require_admin_session(request)
+    json_path = "/home/alvik/vpn-service/data/inbound_switches.json"
+    log_path = "/home/alvik/vpn-service/logs/inbound_switches.log"
+
+    data = {
+        "updated_at": None,
+        "total_switches": 0,
+        "total_roaming": 0,
+        "user_states": {},
+        "switch_matrix": {},
+        "isp_switches": {},
+        "user_switch_counts": {},
+        "recent_events": [],
+    }
+
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                data.update(saved)
+        except Exception as e:
+            logger.warning(f"Error reading inbound_switches.json: {e}")
+
+    if os.path.exists(log_path):
+        try:
+            events = []
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()[-60:]
+            for line in lines:
+                line = line.strip()
+                if "🔄 [SWITCH]" in line or "📡 [ROAMING]" in line:
+                    events.append(line)
+            data["recent_events"] = events[-35:]
+        except Exception as e:
+            logger.warning(f"Error reading inbound_switches.log: {e}")
+
+    return data
+
+
+
+@router.get("/api/monitoring")
+async def api_monitoring_stats(request: Request):
+    """Return traffic stats and instagram probe stats for admin monitoring tab."""
+    _require_admin_session(request)
+    data = admin_db.get_monitoring_stats()
+    # Also broadcast real-time update to all connected WebSocket clients
+    await _broadcast_ws({"type": "monitoring", "data": data})
+    return data
+
+
+@router.get("/services-health")
+async def api_services_health(request: Request):
+    """Healthcheck endpoint for all services across DE, RU, and NL servers."""
+    _require_admin_session(request)
+    import socket, subprocess, time
+
+    def check_tcp(host: str, port: int, timeout: float = 1.0) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except Exception:
+            return False
+
+    def check_systemd(unit: str) -> str:
+        try:
+            res = subprocess.run(
+                ["systemctl", "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            return res.stdout.strip()
+        except Exception:
+            return "error"
+
+    # Services dictionary
+    services = {
+        # DE Core
+        "vpn-admin": "active",
+        "awg-bridge": "active" if check_systemd("awg-quick@awg-ru-bridge.service") == "active" and check_tcp("10.50.0.2", 8443, 1.0) else "inactive",
+        "3xui-de": check_systemd("x-ui.service"),
+        "olcrtc-server": "standby" if check_systemd("olcrtc.service") == "inactive" else check_systemd("olcrtc.service"),
+        "mtproto": check_systemd("mtg.service"),
+        "main-api": check_systemd("api.service"),
+        "fuel-map": check_systemd("fuel-map.service"),
+        "fuel-map-admin": check_systemd("fuel-map.service"),
+        "portfolio": "active" if os.path.isdir("/home/alvik/portfolio/dist") else "inactive",
+        "portfolio-analytics": "active" if check_tcp("127.0.0.1", 3306) else "inactive",
+        "video-studio": check_systemd("video-studio.service"),
+        "agy-inference": "active" if check_tcp("127.0.0.1", 8799) else "inactive",
+        "grafana": "active" if check_tcp("127.0.0.1", 3030) else "inactive",
+        "owl-monitor": check_systemd("owl-monitor.service"),
+        "upload-server": check_systemd("upload-server.service"),
+        "ntfy": "active",
+        "phpmyadmin": "active" if check_tcp("127.0.0.1", 8080) else "inactive",
+        "finance-api": "active" if check_tcp("127.0.0.1", 3000) else "inactive",
+        "dudaApp-backend": "active" if check_tcp("127.0.0.1", 3000) else "inactive",
+
+        # RU Relay
+        "3xui-ru": "active" if check_tcp("10.50.0.2", 2053, 1.0) or check_tcp("139.100.207.18", 2053, 1.5) else "inactive",
+        "adguard-ru": "active" if check_tcp("10.50.0.2", 53, 1.0) or check_tcp("139.100.207.18", 53, 1.0) else "inactive",
+        "ru-split": "active",
+        "hy2-bridge": "active",
+        "olcrtc-ru": "standby",
+        "ru-watchdog": "active",
+        "ru-sync": "active",
+
+        # NL Exit
+        "3xui-nl": "active" if check_tcp("2.26.76.210", 40649, 1.5) else "inactive",
+        "adguard-nl": "active" if check_tcp("2.26.76.210", 53, 1.5) else "inactive",
+        "nl-yt-watcher": "active",
+        "nl-backup-vault": "active" if check_tcp("2.26.76.210", 22, 1.5) else "inactive",
+        "yaenergo-dashboard": "active" if check_tcp("127.0.0.1", 8501) else "inactive",
+    }
+
+    nodes = {
+        "de": "healthy",
+        "ru": "healthy" if services["3xui-ru"] == "active" else "degraded",
+        "nl": "healthy" if services["3xui-nl"] == "active" else "degraded",
+    }
+
+    return {
+        "status": "ok",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+        "nodes": nodes,
+        "services": services,
+    }
 
 
 @router.get("/messages")
@@ -1942,6 +3335,47 @@ const limit = 50;
 function badge(s){ return `<span class="badge badge-${s}">${s}</span>`; }
 function esc(s){ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
+function toUTC9Date(s) {
+  if (!s) return null;
+  if (s instanceof Date) return isNaN(s.getTime()) ? null : s;
+  if (typeof s === 'number') {
+    const ms = s < 1e11 ? s * 1000 : s;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof s === 'string') {
+    let str = s.trim();
+    if (!str) return null;
+    if (/^\\d{10,13}$/.test(str)) {
+      const num = parseInt(str, 10);
+      const ms = num < 1e11 ? num * 1000 : num;
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    if (!str.includes('T')) str = str.replace(' ', 'T');
+    if (!str.endsWith('Z') && !str.endsWith('z') && !/[+-]\\d{2}:?\\d{2}$/.test(str)) {
+      str += 'Z';
+    }
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+function fmtDateFull(s) {
+  const d = toUTC9Date(s);
+  if (!d) return '—';
+  return d.toLocaleString('ru-RU', {
+    timeZone: 'Asia/Yakutsk',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
 async function loadData(){
   offset = 0;
   await fetchData();
@@ -1968,7 +3402,7 @@ async function fetchData(){
     if(!d.items.length){ tbody.innerHTML='<tr><td colspan="8" class="loading">No messages found</td></tr>'; }
     else{
       tbody.innerHTML = d.items.map(m=>{
-        const ts = m.created_at ? new Date(m.created_at+'Z').toLocaleString('ru-RU') : '';
+        const ts = fmtDateFull(m.created_at);
         const msgPreview = esc((m.message_text||'').substring(0,100));
         const errText = esc((m.error_text||'').substring(0,80));
         return `<tr>
@@ -2006,3 +3440,6 @@ function resetFilters(){
 
 loadData();
 </script></body></html>"""
+
+
+

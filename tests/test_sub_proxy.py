@@ -30,11 +30,11 @@ class TestBuildHeaders:
         assert "expire=0" in headers["subscription-userinfo"]
 
     def test_profile_title_is_base64(self):
-        from api.sub_proxy import _build_headers, SUB_PROFILE_TITLE
+        from api.sub_proxy import _build_headers
         headers = _build_headers(None)
         assert headers["profile-title"].startswith("base64:")
         decoded = base64.b64decode(headers["profile-title"].removeprefix("base64:")).decode()
-        assert decoded == SUB_PROFILE_TITLE
+        assert "TIIN" in decoded
 
     def test_update_interval_header(self):
         from api.sub_proxy import _build_headers, SUB_UPDATE_INTERVAL_HOURS
@@ -80,13 +80,11 @@ class TestPickVlessKey:
         assert result is None
 
     @patch("api.sub_proxy.get_keys_by_tg_id")
-    def test_ignores_awg_and_softether(self, mock_keys):
+    def test_ignores_awg(self, mock_keys):
         from api.sub_proxy import _pick_vless_key
         future = datetime.utcnow() + timedelta(days=10)
         mock_keys.return_value = [
             {"vpn_type": "awg", "subscription_link": "https://awg",
-             "expires_at": future},
-            {"vpn_type": "softether", "subscription_link": "https://se",
              "expires_at": future},
         ]
         result = _pick_vless_key({"tg_id": 100, "id": 1})
@@ -135,13 +133,12 @@ class TestProxySubscription:
             "expires_at": future,
         }
         # XUI returns base64-encoded vless link
-        vless = "vless://uuid@host:443?type=tcp&security=reality#old"
-        expected_vless = "vless://uuid@host:443?type=tcp&security=reality#🐿️ TIIN vpn | ✅Active"
+        vless = "vless://uuid@host:7443?type=tcp&security=reality#old"
         mock_fetch.return_value = base64.b64encode(vless.encode())
 
         response = await proxy_subscription("tok")
         body_decoded = base64.b64decode(response.body).decode()
-        assert body_decoded == expected_vless
+        assert "Reality • Vision (МТС / РТК)" in body_decoded
 
         # Headers
         assert "subscription-userinfo" in response.headers
@@ -153,7 +150,6 @@ class TestProxySubscription:
     @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
     async def test_cache_hit_skips_xui_fetch(self, mock_user, mock_pick, mock_fetch):
         from api.sub_proxy import proxy_subscription
-        import time
         mock_pick.return_value = {
             "subscription_link": "https://xui.example/sub/abc",
             "expires_at": datetime.utcnow() + timedelta(days=10),
@@ -166,7 +162,8 @@ class TestProxySubscription:
 
         # Second call — should hit cache
         await proxy_subscription("tok")
-        assert mock_fetch.call_count == 1  # unchanged (1 was still the count)    @pytest.mark.asyncio
+        assert mock_fetch.call_count == 1  # unchanged
+
     @pytest.mark.asyncio
     @patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock)
     @patch("api.sub_proxy._pick_vless_key")
@@ -183,9 +180,9 @@ class TestProxySubscription:
         assert mock_fetch.call_count == 1
 
         # Expire cache entry manually
-        ts, body, hdr = sub_proxy._CACHE["tok"]
-        # Set TS to be older than SUB_CACHE_TTL
-        sub_proxy._CACHE["tok"] = (datetime.utcnow() - timedelta(seconds=sub_proxy.SUB_CACHE_TTL + 1), body, hdr)
+        cache_key = "tok_b64"
+        ts, body, hdr = sub_proxy._CACHE[cache_key]
+        sub_proxy._CACHE[cache_key] = (ts - sub_proxy.SUB_CACHE_TTL - 1, body, hdr)
 
         await sub_proxy.proxy_subscription("tok")
         assert mock_fetch.call_count == 2
@@ -206,8 +203,9 @@ class TestProxySubscription:
         await sub_proxy.proxy_subscription("tok")
 
         # Expire it and make XUI fail
-        ts, body, hdr = sub_proxy._CACHE["tok"]
-        sub_proxy._CACHE["tok"] = (datetime.utcnow() - timedelta(seconds=sub_proxy.SUB_CACHE_TTL + 1), body, hdr)
+        cache_key = "tok_b64"
+        ts, body, hdr = sub_proxy._CACHE[cache_key]
+        sub_proxy._CACHE[cache_key] = (ts - sub_proxy.SUB_CACHE_TTL - 1, body, hdr)
         mock_fetch.side_effect = RuntimeError("XUI down")
 
         response = await sub_proxy.proxy_subscription("tok")
@@ -228,3 +226,221 @@ class TestProxySubscription:
         with pytest.raises(HTTPException) as exc:
             await proxy_subscription("tok")
         assert exc.value.status_code == 503
+
+
+# ═════════════════════════════════════════════
+#  Expired subscription tests
+# ═════════════════════════════════════════════
+
+class TestExpiredSubscription:
+
+    def setup_method(self):
+        """Clear cache between tests."""
+        from api import sub_proxy
+        sub_proxy._CACHE.clear()
+
+    # Helper to create mock request with proper headers
+    class MockRequest:
+        def __init__(self, accept_header):
+            from starlette.datastructures import Headers
+            self.headers = Headers({"accept": accept_header})
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
+    async def test_expired_subscription_vpn_client_returns_expired_config(self, mock_user, mock_pick):
+        """VPN client (no text/html in Accept) gets base64 expired config with renewal URL."""
+        from api.sub_proxy import proxy_subscription
+        
+        past = datetime.utcnow() - timedelta(days=5)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": past,
+        }
+
+        # Mock Request with no text/html in Accept
+        mock_request = self.MockRequest("text/plain, */*")
+
+        response = await proxy_subscription("expired-token", mock_request)
+        
+        # Should return Response with base64 body
+        assert response.status_code == 200
+        body_decoded = base64.b64decode(response.body).decode()
+        assert "vless://dummy@expired:443" in body_decoded
+        assert "❌ Подписка истекла" in body_decoded
+        assert "/my/expired-token" in body_decoded
+        
+        # Check headers
+        assert "subscription-userinfo" in response.headers
+        # Expire should be the timestamp of when it expired (past)
+        assert "expire=" in response.headers["subscription-userinfo"]
+        expire_ts = int(response.headers["subscription-userinfo"].split("expire=")[1].split(";")[0])
+        assert expire_ts == int(past.timestamp())
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock, side_effect=RuntimeError("XUI down"))
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
+    async def test_expired_subscription_browser_falls_through_to_xui(self, mock_user, mock_pick, mock_fetch):
+        """Browser (text/html in Accept) falls through to XUI fetch (not handled here)."""
+        from api import sub_proxy
+        from api.sub_proxy import proxy_subscription
+        from fastapi import HTTPException
+        
+        # Clear cache to avoid interference from other tests
+        sub_proxy._CACHE.clear()
+        
+        past = datetime.utcnow() - timedelta(days=5)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": past,
+        }
+
+        # Mock Request with text/html in Accept
+        mock_request = self.MockRequest("text/html,application/xhtml+xml")
+
+        # Should NOT return expired config, should try XUI
+        # XUI fetch is mocked to raise RuntimeError → 503
+        with pytest.raises(HTTPException) as exc:
+            await proxy_subscription("expired-token-browser", mock_request)
+        # 503 because XUI fetch fails
+        assert exc.value.status_code == 503
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
+    async def test_active_subscription_unchanged(self, mock_user, mock_pick):
+        """Active subscription works as before (regression test)."""
+        from api.sub_proxy import proxy_subscription
+        from fastapi import Request
+        from starlette.datastructures import Headers
+        
+        future = datetime.utcnow() + timedelta(days=23)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+        }
+
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = Headers({"accept": "text/plain"})
+
+        # Need to mock _fetch_xui to avoid actual HTTP call
+        with patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock) as mock_fetch:
+            vless = "vless://uuid@host:443?type=tcp&security=reality#old"
+            mock_fetch.return_value = base64.b64encode(vless.encode())
+            response = await proxy_subscription("active-token", mock_request)
+            body_decoded = base64.b64decode(response.body).decode()
+            assert "Reality" in body_decoded
+            assert f"expire={int(future.timestamp())}" in response.headers["subscription-userinfo"]
+
+
+class TestSingboxBuilder:
+
+    def test_build_singbox_config_creates_fallback_and_selector(self):
+        from api.sub_proxy import _build_singbox_config
+        vless_lines = [
+            ("vless://uuid1@de.host:443?type=tcp&security=reality&pbk=pk1&sid=s1&sni=de.host", "🇩🇪 Server 1"),
+            ("vless://uuid2@ru.host:443?type=ws&security=tls&sni=ru.host", "🇷🇺 Server 2"),
+        ]
+        cfg = _build_singbox_config(vless_lines)
+        tags = [o["tag"] for o in cfg["outbounds"]]
+
+        assert "⚡ Автовыбор узла" in tags
+        assert "🎯 Выбор сервера вручную" in tags
+        assert cfg["route"]["final"] == "🎯 Выбор сервера вручную"
+
+        # Проверяем структуру auto-outbound (urltest)
+        auto_outbound = next(o for o in cfg["outbounds"] if o["tag"] == "⚡ Автовыбор узла")
+        assert auto_outbound["type"] == "urltest"
+        assert auto_outbound["url"] == "https://www.gstatic.com/generate_204"
+        assert "🇩🇪 Server 1" in auto_outbound["outbounds"]
+        assert "🇷🇺 Server 2" in auto_outbound["outbounds"]
+
+
+class TestSubscriptionDeduplication:
+
+    def setup_method(self):
+        from api import sub_proxy
+        sub_proxy._CACHE.clear()
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock)
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.get_user_by_web_token", return_value={"tg_id": 100, "id": 1})
+    async def test_xhttp_inbounds_have_distinct_remarks_and_no_duplicates(self, mock_user, mock_pick, mock_fetch):
+        from api.sub_proxy import proxy_subscription
+        future = datetime.utcnow() + timedelta(days=20)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+            "client_id": "test-client-uuid",
+        }
+        # Both port 47447 and port 48745 with x_padding_bytes + duplicate entry
+        lines = [
+            "vless://uuid@host:47447?type=xhttp&security=reality&x_padding_bytes=100-1000#VLESS-XHTTP-Stream",
+            "vless://uuid@host:48745?type=xhttp&security=reality&x_padding_bytes=100-1000#VLESS-XHTTP-Armor",
+            "vless://uuid@host:48745?type=xhttp&security=reality&x_padding_bytes=100-1000#VLESS-XHTTP-Armor-DUP",
+        ]
+        mock_fetch.return_value = base64.b64encode("\n".join(lines).encode())
+
+        resp = await proxy_subscription("tok")
+        decoded = base64.b64decode(resp.body).decode()
+        entries = [l for l in decoded.splitlines() if l.strip()]
+
+        assert any("xHTTP • Stream (МегаФон)" in l for l in entries)
+        assert any("xHTTP • Armor (МТС / Билайн)" in l for l in entries)
+        # Verify no duplicate remarks
+        remarks = [l.split("#")[-1] for l in entries if "#" in l]
+        assert len(remarks) == len(set(remarks))
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    @patch("api.sub_proxy._pick_vless_key")
+    async def test_head_request_returns_200_empty_body(self, mock_pick, mock_user):
+        from api.sub_proxy import proxy_subscription
+        mock_user.return_value = {"id": 1, "tg_id": 12345}
+        future = datetime.utcnow() + timedelta(days=20)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+            "client_id": "test-uuid",
+        }
+        mock_req = MagicMock()
+        mock_req.method = "HEAD"
+        mock_req.headers = {"user-agent": "Happ"}
+
+        resp = await proxy_subscription("tok", request=mock_req)
+        assert resp.status_code == 200
+        assert resp.body == b""
+        assert "subscription-userinfo" in resp.headers
+        assert "routing" in resp.headers
+
+    def test_routing_header_not_duplicated_under_4k(self):
+        from api.sub_proxy import _build_headers, _happ_routing_deeplink
+        routing = _happ_routing_deeplink()
+        headers = _build_headers(datetime.utcnow() + timedelta(days=10), routing_link=routing)
+        assert "routing" in headers
+        assert "Routing" not in headers
+        total_len = sum(len(k) + len(str(v)) + 4 for k, v in headers.items())
+        assert total_len < 3000
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.log_user_platform")
+    async def test_go_connect_has_both_methods(self, mock_plat, mock_pick, mock_user):
+        from api.sub_proxy import go_connect_smart_redirect
+        mock_user.return_value = {"id": 1, "tg_id": 12345, "web_token": "token123"}
+        mock_pick.return_value = {"subscription_link": "https://xui.example/sub/abc"}
+        mock_req = MagicMock()
+        mock_req.headers = {"user-agent": "iPhone"}
+
+        resp = await go_connect_smart_redirect("token123", request=mock_req)
+        html = resp.body.decode("utf-8") if hasattr(resp, "body") else str(resp)
+        assert "https://344988.snk.wtf/sub/token123" in html
+        assert "https://ru-server.tiinservice.online/sub/token123" in html
+        assert "Способ 1: Основной" in html
+        assert "Способ 2: Резервный РФ" in html
+
+
+

@@ -18,7 +18,8 @@ from config import (
     TELEGRAM_BOT_TOKEN, VLESS_SID, VLESS_PBK, VLESS_SNI,
     AMNEZIA_WG_API_URL, AMNEZIA_WG_API_PASSWORD,
     SERVER_LOCATION, VLESS_INBOUND_ID,
-    HYSTERIA_PORT, HYSTERIA_SNI,
+    HYSTERIA_PORT, HYSTERIA_SNI, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID,
+    ACTIVE_INBOUND_IDS, ADMIN_TG_ID, PORTAL_BASE_URL,
 )
 from api.subscriptions import activate_subscription
 from api.db import (
@@ -28,19 +29,40 @@ from api.db import (
     get_payment_status,
     get_payment_by_id,
     get_or_create_user,
+    create_payment,
     create_vpn_key,
     upsert_vpn_key,
+    mark_vpn_issued,
     get_subscription_until,
     get_user_email,
     deactivate_key_by_payment,
     get_user_by_web_token,
     sync_expiry,
+    get_user_by_tg_id,
+    get_user_paid_payments_count,
+    grant_grace_period,
 )
-from api.wireguard import AmneziaWGClient
 from bot_xui.tariffs import TARIFFS
 from bot_xui.utils import XUIClient, generate_hysteria2_link
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+YOOKASSA_REASONS_RU = {
+    "payment_method_restricted": "Ограничение банка/карты (лимиты, запрет интернет-оплат)",
+    "insufficient_funds": "Недостаточно средств на счёте/карте",
+    "expired_on_confirmation": "Истёк срок подтверждения 3D-Secure/SMS",
+    "3d_secure_failed": "Ошибка 3D-Secure аутентификации",
+    "call_issuer": "Отклонено банком (обратитесь в банк)",
+    "card_expired": "Истёк срок действия карты",
+    "fraud_suspected": "Отклонено антифрод-системой",
+    "general_decline": "Отклонено банком-эмитентом",
+    "canceled_by_merchant": "Отменено магазином",
+    "invalid_card_number": "Неверный номер карты",
+    "invalid_csc": "Неверный код CVC/CVV",
+    "payment_timeout": "Таймаут проведения платежа",
+}
 
 # ─────────────────────────────────────────────
 #  IP rate limiter (in-memory, per-endpoint)
@@ -52,13 +74,16 @@ _rate_lock = threading.Lock()
 _rate_buckets: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
 
 RATE_LIMITS = {
-    "/api/auth/send-code": (5, 300),      # 5 requests per 5 min
-    "/api/auth/verify": (10, 300),        # 10 per 5 min — prevent brute-force on 6-digit codes
-    "/api/web/order/send-code": (5, 300),
-    "/api/web/activate-test": (3, 3600),   # 3 per hour
-    "/api/web/support/send-code": (5, 300),
-    "/api/web/order": (10, 300),           # 10 per 5 min
-    "/api/web/event": (30, 60),           # 30 per minute — prevent DB flooding
+    "/api/auth/send-code": (3, 300),        # 3 requests per 5 min
+    "/api/auth/verify": (5, 300),          # 5 per 5 min — prevent brute-force on 6-digit codes
+    "/api/web/order/send-code": (3, 300),  # 3 per 5 min
+
+    "/api/web/test/activate": (2, 3600),   # 2 per hour — protect free trial from abuse
+    "/api/web/activate-test": (2, 3600),   # legacy route
+    "/api/web/test": (5, 300),             # 5 per 5 min — prevent path scanning / probing
+    "/api/web/support/send-code": (3, 300),
+    "/api/web/order": (5, 300),            # 5 per 5 min
+    "/api/web/event": (30, 60),            # 30 per minute — prevent DB flooding
 }
 
 
@@ -128,10 +153,16 @@ from api.web_portal import web_router
 from api.web_api import web_api_router
 from api.web_auth import auth_router
 from api.sub_proxy import sub_router
+from admin.routes import router as admin_router
+from api.canary import canary_router
+from api.handshake import handshake_router
+app.include_router(canary_router)
+app.include_router(handshake_router)
 app.include_router(web_router)
 app.include_router(web_api_router)
 app.include_router(auth_router)
 app.include_router(sub_router)
+app.include_router(admin_router)
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
@@ -191,42 +222,47 @@ def verify_yookassa_ip(request: Request):
     #     raise HTTPException(status_code=403, detail="Forbidden IP")
 
 
-async def amnezia_login(client: httpx.AsyncClient):
-    r = await client.post(
-        f"{AMNEZIA_WG_API_URL}/api/session",
-        json={"password": AMNEZIA_WG_API_PASSWORD},
-        timeout=10
-    )
-    r.raise_for_status()
-
-async def amnezia_create_client(client: httpx.AsyncClient, name: str):
-    r = await client.post(
-        f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
-        json={"name": name},
-        timeout=10
-    )
-    r.raise_for_status()
-
-async def amnezia_get_client_id(client: httpx.AsyncClient, name: str) -> str:
-    r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client", timeout=10)
-    r.raise_for_status()
-
-    for c in r.json():
-        if c.get("name") == name:
-            return c["id"]
-
-    raise RuntimeError("Client not found after creation")
-
-async def amnezia_get_config(client: httpx.AsyncClient, client_id: str) -> str:
-    r = await client.get(
-        f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration",
-        timeout=10
-    )
-    r.raise_for_status()
-    return r.text
+# --- Legacy systemd AmneziaWG HTTP methods (disabled) ---
+# async def amnezia_login(client: httpx.AsyncClient):
+#     r = await client.post(
+#         f"{AMNEZIA_WG_API_URL}/api/session",
+#         json={"password": AMNEZIA_WG_API_PASSWORD},
+#         timeout=10
+#     )
+#     r.raise_for_status()
+# 
+# async def amnezia_create_client(client: httpx.AsyncClient, name: str):
+#     r = await client.post(
+#         f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
+#         json={"name": name},
+#         timeout=10
+#     )
+#     r.raise_for_status()
+# 
+# async def amnezia_get_client_id(client: httpx.AsyncClient, name: str) -> str:
+#     r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client", timeout=10)
+#     r.raise_for_status()
+#     for c in r.json():
+#         if c.get("name") == name:
+#             return c["id"]
+#     raise RuntimeError("Client not found after creation")
+# 
+# async def amnezia_get_config(client: httpx.AsyncClient, client_id: str) -> str:
+#     r = await client.get(
+#         f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration",
+#         timeout=10
+#     )
+#     r.raise_for_status()
+#     return r.text
 
 def deactivate_xui_client(client_name: str) -> bool:
-    """Деактивирует клиента в 3x-ui по email (client_name)."""
+    """Деактивирует клиента в 3x-ui по email (client_name) на основном сервере и на RU-ноде."""
+    try:
+        from bot_xui.multi_node import deactivate_ru_client
+        deactivate_ru_client(client_name)
+    except Exception as e:
+        logger.warning(f"Failed to deactivate client on RU node: {e}")
+
     try:
         xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
         info = xui.get_client_by_email(client_name)
@@ -240,21 +276,46 @@ def deactivate_xui_client(client_name: str) -> bool:
 
 
 def get_subid_from_xui_db(client_email: str) -> str | None:
-    """Получает subId клиента из базы данных 3x-ui."""
+    """Получает subId клиента из базы данных 3x-ui (inbounds.settings) или vpn_keys."""
     db_path = "/etc/x-ui/x-ui.db"
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        cur.execute("SELECT subId FROM client_traffics WHERE email = ?", (client_email,))
-        row = cur.fetchone()
+        cur.execute("SELECT settings FROM inbounds")
+        for (settings_str,) in cur.fetchall():
+            if not settings_str:
+                continue
+            try:
+                settings = json.loads(settings_str)
+                for client in settings.get("clients", []):
+                    if client.get("email") == client_email and client.get("subId"):
+                        conn.close()
+                        return client.get("subId")
+            except Exception:
+                continue
         conn.close()
-        return row[0] if row else None
     except Exception as e:
-        logger.error(f"Failed to get subId from DB: {e}")
-        return None
+        logger.error(f"Failed to get subId from x-ui DB: {e}")
+
+    # Fallback to MySQL vpn_keys if client already had an issued subscription
+    try:
+        from api.db import execute_query
+        row = execute_query(
+            "SELECT subscription_link FROM vpn_keys WHERE client_name = %s AND subscription_link IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (client_email,),
+            fetch="one"
+        )
+        if row and row.get("subscription_link"):
+            parts = row["subscription_link"].rstrip("/").split("/")
+            if parts:
+                return parts[-1]
+    except Exception as e:
+        logger.error(f"Failed to get subId from vpn_keys: {e}")
+
+    return None
 
 async def process_refund(payment_id: str) -> bool:
-    """Деактивирует VPN конфиг при возврате платежа"""
+    """Деактивирует VPN конфиг (3x-ui + AWG) при возврате платежа"""
     try:
         payment_data = get_payment_by_id(payment_id)
         if not payment_data:
@@ -268,13 +329,36 @@ async def process_refund(payment_id: str) -> bool:
             logger.error(f"No client_name for refund: {payment_id}")
             return False
 
-        # Деактивируем в XUI
+        # 1. Деактивируем в 3x-ui (Main + RU node)
         xui_success = deactivate_xui_client(client_name)
         if not xui_success:
             logger.error(f"Failed to deactivate XUI client: {client_name}")
             return False
 
-        # Деактивируем в БД
+        # 2. Деактивируем AWG (legacy systemd awg_api disabled)
+        # try:
+        #     from awg_api import db as awg_db
+        #     from awg_api import awg_manager
+        #     awg_keys = execute_query(
+        #         "SELECT client_id, client_name FROM vpn_keys WHERE (tg_id = %s OR payment_id = %s) AND vpn_type = 'awg'",
+        #         (tg_id, payment_id),
+        #         fetch="all",
+        #     ) or []
+        #     awg_changed = False
+        #     for k in awg_keys:
+        #         c_id = k.get("client_id")
+        #         if c_id:
+        #             awg_db.update_client_enabled(c_id, False)
+        #             logger.info(f"🔴 AWG disabled on refund: {k.get('client_name')} ({c_id})")
+        #             awg_changed = True
+        #     if awg_changed:
+        #         awg_manager.write_server_conf()
+        #         if awg_manager.is_interface_up():
+        #             awg_manager.reload_interface()
+        # except Exception as e:
+        #     logger.error(f"Failed to deactivate AWG on refund: {e}")
+
+        # 3. Деактивируем в БД
         deactivate_key_by_payment(payment_id)
 
         logger.info(f"Refund processed: {payment_id}, client: {client_name}")
@@ -309,21 +393,25 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         tariff_key: str = payment_data.get("tariff", "default")
 
         # ===== 1. Получение / создание пользователя =====
-        web_user_id = payment_data.get("_web_user_id")
+        web_user_id = payment_data.get("_web_user_id") or payment_data.get("web_user_id")
         if tg_id and tg_id != 0:
             user_id = get_or_create_user(tg_id)
         elif web_user_id:
             user_id = web_user_id
         else:
-            user_id = None
+            # Fallback: гарантируем существование пользователя в users
+            from api.db import create_web_user
+            web_token = payment_data.get("web_token")
+            web_email = payment_data.get("email")
+            user_id = create_web_user(email=web_email, web_token=web_token) if (web_token or web_email) else None
 
         # ===== 4. Формирование имени VPN клиента =====
         if tg_id and tg_id != 0:
             client_name = f"tiin_{tg_id}"
-        elif web_user_id:
-            client_name = f"tiin_web_{web_user_id}"
+        elif user_id:
+            client_name = f"tiin_web_{user_id}"
         else:
-            client_name = f"tiin_{payment_id[:8]}"
+            client_name = f"tiin_web_guest_{payment_id[:8]}"
 
         client_id = None
         client_ip = None
@@ -331,7 +419,6 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         bio = None
         sub_url = None
         user_sub_url = None
-        se_data = {}
         hysteria_link = None
 
         # ===== 5. Создание конфига в зависимости от типа VPN =====
@@ -356,138 +443,76 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             hysteria_inbound_id = xui.get_hysteria_inbound_id()
             
             # Время истечения — 23:59:59 Tokyo последнего дня
-            duration_days = TARIFFS[tariff_key].get('days', 30)
+            duration_days = TARIFFS.get(tariff_key, {}).get('days', 30) if isinstance(TARIFFS.get(tariff_key), dict) else 30
             tz_tokyo = timezone(timedelta(hours=9))
             raw_end = datetime.now(timezone.utc) + timedelta(days=duration_days)
             end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
             expiry_time = int(end_tokyo.timestamp() * 1000)
             
-            # ===== Создаем/продлеваем клиента в 3x-ui (VLESS) =====
+            # ===== Создаем/продлеваем клиента в 3x-ui (VLESS + Hysteria) =====
             sub_id = None
-            if tg_id and tg_id != 0:
-                existing = xui.get_client_by_tg_id(tg_id)
-                if existing:
-                    client_id = existing['client']['id']
-                    sub_id = existing['client'].get('subId')
-                    logger.info(f"Existing client found, reusing uuid: {client_id}")
+            existing = None
 
+            # Сначала ищем по email среди активных инбаундов VLESS/Hysteria
+            candidate_emails = [c for c in [client_name, f"tiin_{tg_id}" if tg_id else None, f"tiin_web_{user_id}" if user_id else None] if c]
+            for candidate_email in candidate_emails:
+                cand = xui.get_client_by_email(candidate_email)
+                if cand and cand.get('inbound_id') in ACTIVE_INBOUND_IDS:
+                    existing = cand
+                    break
+
+            # Если не найден по email, ищем по tg_id строго среди ACTIVE_INBOUND_IDS (исключая Inbound 17 AmneziaWG)
+            if not existing and tg_id and tg_id != 0:
+                cand = xui.get_client_by_tg_id(tg_id)
+                if cand and cand.get('inbound_id') in ACTIVE_INBOUND_IDS:
+                    existing = cand
+
+            if existing:
+                client_id = existing['client'].get('uuid') or existing['client'].get('id')
+                if isinstance(client_id, int) or (isinstance(client_id, str) and client_id.isdigit()):
+                    client_id = existing['client'].get('uuid') or str(client_id)
+                sub_id = existing['client'].get('subId')
+                logger.info(f"Existing client found, reusing uuid: {client_id}")
                 import time as _time
                 now_ms = int(_time.time() * 1000)
                 duration_ms = duration_days * 86400 * 1000
-                extend_ms = duration_ms if existing else None
-                res_vless = xui.add_or_extend_client(
-                    inbound_id=inbound_id,
+                ext_success = bool(xui.extend_client_expiry(
+                    existing['inbound_id'],
+                    existing['client'],
+                    duration_ms,
+                ))
+                if not ext_success:
+                    logger.warning(f"extend_client_expiry failed for {client_name}, deleting old client and creating new one")
+                    try:
+                        xui.delete_client(existing['inbound_id'], existing['client']['email'])
+                    except Exception:
+                        pass
+                    existing = None
+                    # Fall through to create new client below
+
+            if not existing:
+                logger.info(f"Creating new client {client_name} in inbounds {inbound_id}, {hysteria_inbound_id}")
+                result = xui.create_client(
                     email=client_name,
-                    tg_id=tg_id,
-                    uuid=client_id,
+                    tg_id=tg_id if tg_id else 0,
                     expiry_time=expiry_time,
-                    total_gb=0,
                     limit_ip=TARIFFS[tariff_key].get('device_limit', 10),
-                    extend_ms=extend_ms,
+                    inbound_ids=ACTIVE_INBOUND_IDS,
                 )
-                # add_or_extend returns expiryTime on success or bool
-                success = bool(res_vless)
-                if not sub_id:
-                    # After add, try to find sub_id
-                    updated = xui.get_client_by_tg_id(tg_id)
-                    sub_id = updated['client'].get('subId') if updated else None
-            else:
-                # Web user without tg_id — check for existing client by email
-                existing_web = xui.get_client_by_email(client_name)
-                if existing_web:
-                    client_id = existing_web['client']['id']
-                    sub_id = existing_web['client'].get('subId')
-                    logger.info(f"Existing web client found, reusing uuid: {client_id}")
-                    import time as _time
-                    now_ms = int(_time.time() * 1000)
-                    duration_ms = expiry_time - now_ms
-                    success = bool(xui.extend_client_expiry(
-                        existing_web['inbound_id'],
-                        existing_web['client'],
-                        duration_ms,
-                    ))
-                else:
-                    logger.info(f"Web user (no tg_id), creating new VLESS client")
-                    res_add = xui.add_client(
-                        inbound_id=inbound_id,
-                        email=client_name,
-                        tg_id=0,
-                        uuid=client_id,
-                        expiry_time=expiry_time,
-                        total_gb=0,
-                        limit_ip=TARIFFS[tariff_key].get('device_limit', 10)
-                    )
-                    success = res_add.get("success")
-                    sub_id = res_add.get("subId")
-            
-            if not success:
-                raise RuntimeError("Failed to create/extend VLESS client")
+                if not result.get("success"):
+                    raise RuntimeError(f"create_client failed: {result.get('msg')}")
+                sub_id = result.get("subId")
+                if result.get("uuid"):
+                    client_id = result["uuid"]
 
-            # ===== Создаем/продлеваем клиента в 3x-ui (Hysteria) =====
-            # Мы используем тот же client_id (UUID) и sub_id
-            # Используем суффикс _h для уникальности email
-            hysteria_email = f"{client_name}_h"
-            existing_hysteria = xui.get_client_by_email(hysteria_email)
-            
-            hysteria_ok = False
-            if existing_hysteria and existing_hysteria['inbound_id'] == hysteria_inbound_id:
-                import time as _time
-                now_ms = int(_time.time() * 1000)
-                duration_ms = duration_days * 86400 * 1000
-                hyst_result = xui.extend_client_expiry(
-                    hysteria_inbound_id,
-                    existing_hysteria['client'],
-                    duration_ms
-                )
-                if not hyst_result:
-                    logger.critical(f"⚠️ Failed to extend Hysteria client {hysteria_email} — payment {payment_id} will proceed with VLESS only")
-                    try:
-                        from config import ADMIN_TG_ID
-                        await send_telegram_notification(
-                            ADMIN_TG_ID,
-                            f"⚠️ <b>Hysteria extend failed</b>\n\n"
-                            f"Email: {hysteria_email}\n"
-                            f"Payment: {payment_id}\n"
-                            f"tg_id: {tg_id}\n"
-                            f"User gets VLESS only.",
-                            source="webhook", scenario="hysteria_extend_failed",
-                        )
-                    except Exception:
-                        pass
-                else:
-                    logger.info(f"Hysteria client {hysteria_email} extended to {hyst_result}")
-                    hysteria_ok = True
-            else:
-                hyst_add = xui.add_client(
-                    inbound_id=hysteria_inbound_id,
-                    email=hysteria_email,
-                    tg_id=tg_id,
-                    uuid=client_id,
-                    expiry_time=expiry_time,
-                    sub_id=sub_id
-                )
-                if not hyst_add.get("success"):
-                    logger.critical(f"⚠️ Failed to create Hysteria client {hysteria_email} — payment {payment_id} will proceed with VLESS only")
-                    try:
-                        from config import ADMIN_TG_ID
-                        await send_telegram_notification(
-                            ADMIN_TG_ID,
-                            f"⚠️ <b>Hysteria create failed</b>\n\n"
-                            f"Email: {hysteria_email}\n"
-                            f"Payment: {payment_id}\n"
-                            f"tg_id: {tg_id}\n"
-                            f"User gets VLESS only.",
-                            source="webhook", scenario="hysteria_create_failed",
-                        )
-                    except Exception:
-                        pass
-                else:
-                    logger.info(f"Hysteria client {hysteria_email} created in inbound {hysteria_inbound_id}")
-                    hysteria_ok = True
+            hysteria_ok = True
 
             if hysteria_ok:
+                hy2_auth = (existing['client'].get('auth') or existing['client'].get('password')) if existing and isinstance(existing.get('client'), dict) else None
+                if not hy2_auth and client_id:
+                    hy2_auth = str(client_id).replace("-", "")
                 hysteria_link = generate_hysteria2_link(
-                    auth=client_id,
+                    auth=hy2_auth or client_id,
                     domain=VLESS_DOMAIN,
                     port=HYSTERIA_PORT,
                     client_name=client_name,
@@ -499,17 +524,33 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
             # ===== ПОЛУЧАЕМ / ГЕНЕРИРУЕМ subId ДЛЯ ПОДПИСКИ (Fallback) =====
             if not sub_id:
-                sub_id = get_subid_from_xui_db(client_name)
+                for cand_email in filter(None, [client_name, f"tiin_{tg_id}" if tg_id else None, f"tiin_web_{user_id}" if user_id else None]):
+                    sub_id = get_subid_from_xui_db(cand_email)
+                    if sub_id:
+                        break
+
+            # Дополнительный поиск в vpn_keys по tg_id / user_id
+            if not sub_id:
+                try:
+                    from api.db import execute_query
+                    k_row = execute_query(
+                        "SELECT subscription_link FROM vpn_keys WHERE (tg_id = %s OR user_id = %s) AND vpn_type = 'vless' AND subscription_link IS NOT NULL ORDER BY id DESC LIMIT 1",
+                        (tg_id, user_id),
+                        fetch="one"
+                    )
+                    if k_row and k_row.get("subscription_link"):
+                        sub_id = k_row["subscription_link"].rstrip("/").split("/")[-1]
+                except Exception as e:
+                    logger.warning(f"Failed to lookup sub_id from vpn_keys: {e}")
             
             if not sub_id:
                 import secrets
                 sub_id = secrets.token_hex(8)
                 logger.warning(f"subId still missing for {client_name}, using random fallback: {sub_id}")
 
-            # Формируем правильную ссылку для пользователя (через Nginx, без порта)
-            user_sub_url = f"{XUI_SUB_PATH}/sub/{sub_id}"
-            sub_url = user_sub_url
-            
+            # Формируем прямую ссылку XUI для сохранения в vpn_keys (источник для прокси)
+            sub_url = f"{XUI_SUB_PATH}/updates_ui/{sub_id}"
+
             # Генерируем VLESS ссылку
             client_config = generate_vless_link(
                 client_id=client_id,
@@ -524,21 +565,15 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 spx="/",
                 remark=f"🐿 TIIN | VLESS",
             )
-            
-            # Получаем subscription URL (XUI) — храним в БД как источник для прокси
-            # if tg_id and tg_id != 0:
-            #     sub_url = xui.get_client_subscription_url(tg_id)
-            # else:
-            #     sub_url = xui.get_subscription_url_by_uuid(client_id)
 
-            # Пользователю показываем прокси-URL, который переписывает remark
-            # from api.db import get_web_token
-            # if tg_id and tg_id != 0:
-            #     _wt = get_web_token(tg_id)
-            #     user_sub_url = f"https://344988.snk.wtf/sub/{_wt}" if _wt else sub_url
-            # else:
-                # для веб-заказов web_token добавим позже при отдаче email-писем
-                # user_sub_url = sub_url
+            # Пользователю показываем прокси-URL с web_token, который переписывает remark
+            from api.db import get_web_token, get_user_by_id
+            _wt = get_web_token(tg_id) if tg_id and tg_id != 0 else None
+            if not _wt and web_user_id:
+                _u = get_user_by_id(web_user_id)
+                _wt = _u.get('web_token') if _u else None
+
+            user_sub_url = f"{PORTAL_BASE_URL}/sub/{_wt}" if _wt else sub_url
 
             # Создаем QR код из прокси-URL
             qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -550,84 +585,39 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             img.save(bio, 'PNG')
             bio.seek(0)            
             
-        elif vpn_type == "softether":
-            # ========== SoftEther ==========
-            logger.info("🖥 Creating SoftEther config")
-            from bot_xui.vpn_factory import create_softether_config
-            se_data = create_softether_config(tg_id, days=TARIFFS[tariff_key].get('days', 30))
-            client_id = se_data["username"]
-            client_name = se_data["username"]
-            client_config = se_data["config"]
-            sub_url = None
-            user_sub_url = None
-            bio = None
-
         else:
-            # ========== AmneziaWG ==========
-            logger.info("🔵 Creating AmneziaWG config")
-            
-            async with httpx.AsyncClient(timeout=15) as client:
-                # 5.1 Login
-                r = await client.post(
-                    f"{AMNEZIA_WG_API_URL}/api/session",
-                    json={"password": AMNEZIA_WG_API_PASSWORD},
-                )
-                r.raise_for_status()
+            # ========== AmneziaWG (3x-ui Inbound 17) ==========
+            logger.info("🔵 Creating AmneziaWG config via 3x-ui Inbound 17")
+            from bot_xui.awg_manager import get_or_create_3xui_awg_client
 
-                # 5.2 Delete existing client with same name (dedup on retry)
-                r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
-                r.raise_for_status()
-                for c in r.json():
-                    if c.get("name") == client_name:
-                        old_id = c.get("id")
-                        logger.info(f"Deleting old AWG client {old_id} ({client_name})")
-                        await client.delete(
-                            f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{old_id}",
-                        )
-                        break
+            duration_days = TARIFFS.get(tariff_key, {}).get('days', 30) if isinstance(TARIFFS.get(tariff_key), dict) else 30
+            tz_tokyo = timezone(timedelta(hours=9))
+            raw_end = datetime.now(timezone.utc) + timedelta(days=duration_days)
+            end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
+            expiry_time = int(end_tokyo.timestamp() * 1000)
 
-                # 5.3 Create client
-                r = await client.post(
-                    f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
-                    json={"name": client_name},
-                )
-                r.raise_for_status()
-
-                # 5.4 Получение client_id
-                r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
-                r.raise_for_status()
-
-                for c in r.json():
-                    if c.get("name") == client_name:
-                        client_id = c.get("id")
-                        client_ip = c.get("address")
-                        client_public_key = c.get("publicKey")
-                        break
-
-                if not client_id:
-                    raise RuntimeError("Client ID not found after creation")
-
-                logger.info(f"✅ VPN client created: client_id={client_id}, ip={client_ip}")
-
-                # 5.4 Получение конфигурации
-                r = await client.get(
-                    f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration"
-                )
-                r.raise_for_status()
-
-                client_config = r.text
-                if not client_config:
-                    raise RuntimeError("Empty client configuration")
+            awg_res = get_or_create_3xui_awg_client(
+                tg_id=tg_id,
+                expiry_ms=expiry_time,
+                client_name=client_name
+            )
+            client_id = awg_res["client_id"]
+            client_ip = awg_res["client_ip"]
+            client_public_key = awg_res.get("public_key")
+            client_config = awg_res["config"]
 
 
         # ===== 6. Активация подписки (после успешного создания VPN) =====
-        activate_subscription(payment_id, user_id=web_user_id)
-        subscription_until = get_subscription_until(tg_id) if tg_id else None
-        if not subscription_until and web_user_id:
-            from api.db import get_user_by_id
-            _u = get_user_by_id(web_user_id)
-            subscription_until = _u.get('subscription_until') if _u else None
-        logger.info("✅ Subscription activated")
+        subscription_until = activate_subscription(payment_id, user_id=web_user_id)
+        if not subscription_until:
+            if tg_id and tg_id != 0:
+                subscription_until = get_subscription_until(tg_id)
+            elif web_user_id:
+                from api.db import get_user_by_id
+                _u = get_user_by_id(web_user_id)
+                subscription_until = _u.get('subscription_until') if _u else None
+        logger.info(f"✅ Subscription activated: {subscription_until}")
+
 
         # ===== 6.1. Mark test period as activated =====
         tariff_info = TARIFFS.get(tariff_key, {})
@@ -646,23 +636,59 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         # single source of truth and re-sync 3x-ui.
         if vpn_type == "vless" and subscription_until and tg_id and tg_id != 0:
             sub_until_ms = int(subscription_until.replace(tzinfo=timezone.utc).timestamp() * 1000) if subscription_until.tzinfo is None else int(subscription_until.timestamp() * 1000)
-            existing_xui = xui.get_client_by_tg_id(tg_id)
+            existing_xui = existing
+            if not existing_xui or existing_xui.get('inbound_id') not in ACTIVE_INBOUND_IDS:
+                for candidate_email in filter(None, [client_name, f"tiin_{tg_id}"]):
+                    cand = xui.get_client_by_email(candidate_email)
+                    if cand and cand.get('inbound_id') in ACTIVE_INBOUND_IDS:
+                        existing_xui = cand
+                        break
+            if not existing_xui or existing_xui.get('inbound_id') not in ACTIVE_INBOUND_IDS:
+                cand = xui.get_client_by_tg_id(tg_id)
+                if cand and cand.get('inbound_id') in ACTIVE_INBOUND_IDS:
+                    existing_xui = cand
             if existing_xui:
-                updated_client = {**existing_xui['client'], 'expiryTime': sub_until_ms}
-                if not updated_client.get('flow'):
-                    updated_client['flow'] = 'xtls-rprx-vision'
-                import json as _json
-                payload = {
-                    "id": existing_xui['inbound_id'],
-                    "settings": _json.dumps({"clients": [updated_client]})
-                }
-                xui._request(
-                    "POST",
-                    f"{xui.host}/XhU5cXVfMCyHzAXlrT/api/inbounds/updateClient/{existing_xui['client']['id']}",
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
-                )
-                logger.info(f"Re-synced 3x-ui expiry to {subscription_until}")
+                email = existing_xui['client'].get('email')
+                if email:
+                    payload = {
+                        "email": email,
+                        "totalGB": existing_xui['client'].get('totalGB', 0),
+                        "expiryTime": sub_until_ms,
+                        "tgId": existing_xui['client'].get('tgId', 0),
+                        "enable": True,
+                        "limitIp": existing_xui['client'].get('limitIp', 0),
+                        "reset": existing_xui['client'].get('reset', 0),
+                        "flow": existing_xui['client'].get('flow') or 'xtls-rprx-vision',
+                    }
+                    xui._request(
+                        "POST",
+                        f"{xui.host}/panel/api/clients/update/{email}",
+                        json=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    logger.info(f"Re-synced 3x-ui expiry to {subscription_until}")
+
+                    # Sync to RU Node as well
+                    try:
+                        from bot_xui.multi_node import sync_client_to_ru_node
+                        sync_client_to_ru_node(
+                            email=email,
+                            expiry_ms=sub_until_ms,
+                            enable=True,
+                            tg_id=tg_id,
+                            uuid_str=client_id,
+                            auth=existing_xui['client'].get('auth') or existing_xui['client'].get('password'),
+                            sub_id=sub_id or existing_xui['client'].get('subId'),
+                        )
+                    except Exception as ru_err:
+                        logger.warning(f"Failed to sync client to RU node during payment: {ru_err}")
+
+                    # Sync to Inbound 17 (AmneziaWG) as well
+                    try:
+                        from bot_xui.awg_manager import get_or_create_3xui_awg_client
+                        get_or_create_3xui_awg_client(tg_id=tg_id, expiry_ms=sub_until_ms, client_name=f"awg_{tg_id}")
+                    except Exception as awg_err:
+                        logger.warning(f"Failed to sync client to Inbound 17 (AWG): {awg_err}")
 
         # ===== 7. Сохранение в БД (UPSERT: обновляем существующий ключ или создаём новый) =====
         upsert_vpn_key(
@@ -673,21 +699,23 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
             client_ip=client_ip,
             client_public_key=client_public_key,
             vless_link=client_config,
+            xhttp_link=None,
             hysteria_link=hysteria_link,
             expires_at=subscription_until,
             vpn_type=vpn_type,
             subscription_link=sub_url,
-            vpn_file=se_data.get("vpn_file") if vpn_type == "softether" else None,
+            vpn_file=None,
             user_id=web_user_id,
         )
 
         # Sync expiry to vpn_keys for existing keys too
-        sub_utc = subscription_until if subscription_until.tzinfo else subscription_until.replace(tzinfo=timezone.utc)
-        if subscription_until and tg_id and tg_id != 0:
-            sync_expiry(tg_id, sub_utc)
-        elif subscription_until and web_user_id:
-            from api.db import sync_expiry_by_user_id
-            sync_expiry_by_user_id(web_user_id, sub_utc)
+        if subscription_until:
+            sub_utc = subscription_until if subscription_until.tzinfo else subscription_until.replace(tzinfo=timezone.utc)
+            if tg_id and tg_id != 0:
+                sync_expiry(tg_id, sub_utc)
+            elif web_user_id:
+                from api.db import sync_expiry_by_user_id
+                sync_expiry_by_user_id(web_user_id, sub_utc)
 
         logger.info("💾 VPN config saved to DB")
 
@@ -703,20 +731,21 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                 from api.notifications import send_payment_success_email
                 _web_u = get_user_by_id(web_user_id)
                 if _web_u and _web_u.get('email'):
-                    portal_url = f"https://344988.snk.wtf/my/{_web_u.get('web_token', '')}"
+                    portal_url = f"{PORTAL_BASE_URL}/my/{_web_u.get('web_token', '')}"
                     send_payment_success_email(
                         to=_web_u['email'],
                         tariff_name=tariff_name,
                         period=tariff_info.get('period', ''),
                         portal_url=portal_url,
                     )
+            mark_vpn_issued(payment_id)
             return True
 
         try:
             # Build portal URL for wizard link
             from api.db import get_web_token
             _wt = get_web_token(tg_id)
-            portal_url = f"https://344988.snk.wtf/my/{_wt}" if _wt else None
+            portal_url = f"{PORTAL_BASE_URL}/my/{_wt}" if _wt else None
 
             if vpn_type == "vless":
                 # Отправляем VLESS как QR + краткая информация
@@ -730,35 +759,23 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
                     source="webhook", scenario="payment_success_qr",
                 )
 
-                # Ссылка на подписку + кнопки
+                # Приветственное сообщение без голых ссылок
                 message = (
-                    f"❗ <b>Скопируйте вашу ссылку:</b>\n\n"
-                    f"➡️➡️➡️ <code>{user_sub_url or sub_url}</code> ⬅️\n\n"
-                    f"📱 И вставьте в приложение ⬇️"
+                    f"🎉 <b>Подписка успешно активирована!</b>\n\n"
+                    f"🚀 <b>Быстрое подключение:</b>\n"
+                    f"Нажмите кнопку ниже, чтобы открыть <b>Мастер подключения</b>. Он автоматически определит ваше устройство "
+                    f"(iOS, Android, Windows, Mac) и настроит VPN в 1 клик с уже включённой умной маршрутизацией.\n\n"
+                    f"🛡 <i>Российские банки, Госуслуги и доставка работают напрямую, YouTube и заблокированные сайты — через защищённый скоростной туннель.</i>"
                 )
                 buttons = []
                 if portal_url:
-                    buttons.append([{"text": "🪄 Гид по подключению", "url": portal_url}])
-                buttons.append([{"text": "📲 Happ: настроить маршрутизацию", "url": "https://344988.snk.wtf/happ-routing"}])
+                    buttons.append([{"text": "🪄 Личный кабинет и мастер настройки", "url": portal_url}])
+                    buttons.append([{"text": "⚡ Подключить в 1 клик", "url": f"{PORTAL_BASE_URL}/go-connect/{_wt}"}])
+                buttons.append([{"text": "📲 Happ: маршрутизация", "url": f"{PORTAL_BASE_URL}/happ-routing"}])
                 buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
                 await send_telegram_notification(tg_id, message, buttons,
                     source="webhook", scenario="payment_success_vless")
 
-
-            elif vpn_type == "softether":
-                # Отправляем SoftEther как текст с данными подключения
-                from bot_xui.vpn_factory import _softether_credentials_text
-                message = (
-                    f"✅ <b>Оплата прошла успешно!</b>\n\n"
-                    f"⏱ <b>{tariff_name}</b> · {TARIFFS[tariff_key].get('period', '30 дней')}\n\n"
-                    + _softether_credentials_text(se_data["username"], se_data["password"])
-                )
-                se_buttons = []
-                if portal_url:
-                    se_buttons.append([{"text": "🪄 Гид по подключению", "url": portal_url}])
-                se_buttons.append([{"text": "◀️ В меню", "callback_data": "back_to_menu"}])
-                await send_telegram_notification(tg_id, message, se_buttons,
-                    source="webhook", scenario="payment_success_softether")
 
             else:
                 # Отправляем AmneziaWG как файл
@@ -798,6 +815,7 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
         except Exception:
             logger.exception("⚠️ Failed to send config to Telegram")
 
+        mark_vpn_issued(payment_id)
         return True
 
     except Exception:
@@ -863,6 +881,10 @@ async def send_telegram_notification(tg_id: int, message: str, buttons: list = N
                                  error_text=str(e)[:255])
             except Exception:
                 pass
+
+
+from api.payment_failure import handle_failed_payment
+
 
 async def send_telegram_document(tg_id: int, file_bytes: bytes, filename: str, caption: str = "",
                                     source: str = "webhook", scenario: str = None):
@@ -1003,15 +1025,56 @@ async def yookassa_webhook(request: Request):
     tg_id = metadata.get("tg_id")
     tariff = metadata.get("tariff", "default")
     vpn_type = metadata.get("vpn_type")
-    is_web_order = metadata.get("source") == "web"
+    is_web_order = metadata.get("source") in ("web", "web_test")
     web_email = metadata.get("email", "")
     web_token = metadata.get("web_token", "")
-    
     if not payment_id:
         logger.warning("⚠️ No payment_id in webhook")
         return Response(status_code=200)
-    
-    logger.info(f"📋 Payment ID: {payment_id}, Status: {status_raw}, Event: {event}")
+
+    amount_obj = obj.get("amount", {})
+    amount = amount_obj.get("value", 0)
+    currency = amount_obj.get("currency", "RUB")
+
+    cancellation = obj.get("cancellation_details") or {}
+    reason = cancellation.get("reason", "")
+    party = cancellation.get("party", "")
+    reason_ru = YOOKASSA_REASONS_RU.get(reason, reason or "Не указана")
+
+    tariff_info = TARIFFS.get(tariff, {})
+    tariff_name = tariff_info.get("name", tariff or "Не указан")
+    is_autopay = metadata.get("is_autopayment") in ("true", True, "1", 1) or metadata.get("is_renew") in ("true", True, "1", 1)
+    payment_type = "Автопродление" if is_autopay else ("Веб-сайт" if is_web_order else "Telegram-бот")
+
+    user_repr = "Web/Unknown"
+    if tg_id and str(tg_id).isdigit():
+        try:
+            u_data = get_user_by_tg_id(int(tg_id))
+            if u_data:
+                full_name = f"{u_data.get('first_name') or ''} {u_data.get('last_name') or ''}".strip()
+                user_repr = f"{full_name} (tg:{tg_id})" if full_name else f"tg:{tg_id}"
+            else:
+                user_repr = f"tg:{tg_id}"
+        except Exception:
+            user_repr = f"tg:{tg_id}"
+    elif web_email:
+        user_repr = f"email:{web_email}"
+
+    is_test_account = False
+    if tg_id and str(tg_id) in ("12345", "123456", "999999999"):
+        is_test_account = True
+    if web_email and any(dom in str(web_email).lower() for dom in ("@example.com", "@test.com", "@example.org")):
+        is_test_account = True
+    if metadata and (metadata.get("test_mode") in ("true", True, "1", 1) or metadata.get("is_test") in ("true", True, "1", 1)):
+        is_test_account = True
+
+    log_tag = "[TEST_YOOKASSA_WEBHOOK]" if is_test_account else "[YOOKASSA_WEBHOOK]"
+
+    logger.info(
+        f"{log_tag} event={event} | status={status_raw} | amount={amount} {currency} | "
+        f"tariff={tariff_name} ({tariff}) | user={user_repr} | type={payment_type} | "
+        f"reason={reason} | reason_ru={reason_ru} | party={party} | payment_id={payment_id}"
+    )
 
 
     # ===== 3.5 ОБРАБОТКА ВОЗВРАТА =====
@@ -1039,14 +1102,72 @@ async def yookassa_webhook(request: Request):
                 f"Если это ошибка — нажмите «Написать нам» в меню бота",
                 source="webhook", scenario="refund",
             )
+
+        # Уведомляем администратора
+        from config import ADMIN_TG_ID
+        client_name = get_user_email(tg_id, payment_id=payment_id) if tg_id else None
+        await send_telegram_notification(
+            ADMIN_TG_ID,
+            f"💸 <b>Возврат средств (Webhook)</b>\n\n"
+            f"Пользователь: <code>{tg_id or 'Web/Unknown'}</code>" + (f" ({client_name})" if client_name else "") + f"\n"
+            f"Платёж: <code>{payment_id}</code>\n"
+            f"Сумма: {amount_value} {amount_currency}\n"
+            f"Статус деактивации: {'✅ Успешно' if success else '⚠️ Ошибка деактивации'}\n\n"
+            f"⚠️ <i>Проверьте конфиги пользователя (3x-ui / AWG).</i>",
+            source="webhook", scenario="admin_refund_alert",
+        )
         
         return Response(status_code=200)
     
     # ===== 4. Проверка существования платежа =====
     current_status = get_payment_status(payment_id)
     if not current_status:
-        logger.warning(f"⚠️ Unknown payment_id: {payment_id}")
-        return {"status": "ignored"}
+        if status_raw in ("canceled", "failed"):
+            amount = obj.get("amount", {}).get("value", 0)
+            cancellation = obj.get("cancellation_details", {})
+            logger.info(
+                f"Race condition — creating canceled record for {payment_id}, "
+                f"reason={cancellation.get('reason')}"
+            )
+            try:
+                create_payment(
+                    payment_id=payment_id,
+                    tg_id=int(tg_id) if tg_id else 0,
+                    tariff=tariff,
+                    amount=amount,
+                    status="canceled",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to insert canceled payment {payment_id}: {e}")
+            if tg_id:
+                cancellation = obj.get("cancellation_details") or {}
+                await handle_failed_payment(
+                    payment_id=payment_id,
+                    tg_id=int(tg_id),
+                    tariff=tariff,
+                    amount=amount,
+                    reason=cancellation.get("reason", ""),
+                    party=cancellation.get("party", ""),
+                )
+            return {"status": "ignored"}
+        elif status_raw == "succeeded" and tariff in TARIFFS:
+            amount = obj.get("amount", {}).get("value", 0)
+            logger.info(f"Race condition — creating pending record for succeeded payment {payment_id}")
+            try:
+                create_payment(
+                    payment_id=payment_id,
+                    tg_id=int(tg_id) if tg_id else 0,
+                    tariff=tariff,
+                    amount=amount,
+                    status="pending",
+                )
+                current_status = "pending"
+            except Exception as e:
+                logger.warning(f"Failed to insert pending payment {payment_id}: {e}")
+                return {"status": "ignored"}
+        else:
+            logger.warning(f"⚠️ Unknown payment_id: {payment_id} (status={status_raw})")
+            return {"status": "ignored"}
     
     # ===== 5. Проверка на дубликат =====
     if current_status in ("paid", "canceled"):
@@ -1073,7 +1194,7 @@ async def yookassa_webhook(request: Request):
         return Response(status_code=404)
     
     # ===== 9. ⭐ ОБРАБОТКА УСПЕШНОГО ПЛАТЕЖА ⭐ =====
-    if current_status == "pending" and new_status == "paid":
+    if current_status in ("pending", "succeeded") and new_status == "paid":
         # Atomically claim payment — only one concurrent webhook wins
         if not claim_payment_for_processing(payment_id):
             logger.info(f"🔁 Payment already claimed by another request: {payment_id}")
@@ -1087,34 +1208,60 @@ async def yookassa_webhook(request: Request):
             update_payment_status(payment_id, "pending")  # revert claim
             return Response(status_code=400)
 
-        # Для веб-заказов: привязать tg_id и user_id из users если есть
-        if is_web_order and web_token:
-            web_user = get_user_by_web_token(web_token) if web_token else None
-            if web_user:
-                tg_id = int(web_user.get('tg_id') or 0)
-                payment_data = {**payment_data, 'tg_id': tg_id, '_web_user_id': web_user['id']}
+        # Для веб-заказов: привязать tg_id и user_id если есть
+        web_user_id_from_db = payment_data.get("web_user_id") or payment_data.get("_web_user_id")
+        if not web_user_id_from_db and is_web_order:
+            if web_token:
+                from api.db import get_user_by_web_token
+                _u = get_user_by_web_token(web_token)
+                if _u:
+                    web_user_id_from_db = _u['id']
+            if not web_user_id_from_db and web_email:
+                from api.db import get_user_by_email
+                _u = get_user_by_email(web_email)
+                if _u:
+                    web_user_id_from_db = _u['id']
 
-                # Process web referral if present
-                ref_token = metadata.get("ref")
-                if ref_token:
-                    from api.db import process_web_referral
-                    if process_web_referral(web_user['id'], ref_token):
-                        logger.info(f"Web referral applied on payment: user_id={web_user['id']}, ref={ref_token}")
+        if web_user_id_from_db:
+            payment_data = {**payment_data, '_web_user_id': web_user_id_from_db}
+            if not tg_id:
+                from api.db import get_user_by_id as _get_user_by_id
+                web_user = _get_user_by_id(web_user_id_from_db)
+                if web_user:
+                    tg_id = int(web_user.get('tg_id') or 0)
+                    if tg_id:
+                        payment_data['tg_id'] = tg_id
+
+            # Process web referral if present
+            ref_token = metadata.get("ref")
+            if ref_token:
+                from api.db import process_web_referral
+                if process_web_referral(web_user_id_from_db, ref_token):
+                    logger.info(f"Web referral applied on payment: user_id={web_user_id_from_db}, ref={ref_token}")
 
         # Save payment method for autopay if available
         pm = obj.get("payment_method", {})
         if pm.get("saved") and pm.get("id"):
             from api.db import save_user_payment_method, save_user_payment_method_by_id
             pm_id = pm["id"]
+            save_res = None
             if is_web_order and payment_data.get('_web_user_id'):
-                save_user_payment_method_by_id(
+                save_res = save_user_payment_method_by_id(
                     payment_data['_web_user_id'], pm_id, tariff,
                     vpn_type or "vless",
                 )
-                logger.info(f"Saved payment method {pm_id} for web user_id={payment_data['_web_user_id']}")
-                if tg_id and int(tg_id) > 0:
-                    try:
-                        tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
+                logger.info(f"Saved payment method {pm_id} for web user_id={payment_data['_web_user_id']} (autopay_enabled={save_res.get('autopay_enabled') if save_res else False})")
+            elif tg_id and int(tg_id) > 0:
+                save_res = save_user_payment_method(
+                    int(tg_id), pm_id, tariff,
+                    vpn_type or "vless",
+                )
+                logger.info(f"Saved payment method {pm_id} for tg_id={tg_id} (autopay_enabled={save_res.get('autopay_enabled') if save_res else False})")
+
+            if tg_id and int(tg_id) > 0 and save_res:
+                try:
+                    tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
+                    if save_res.get("autopay_enabled"):
                         await send_telegram_notification(
                             int(tg_id),
                             f"💳 <b>Способ оплаты сохранён</b>\n\n"
@@ -1123,26 +1270,18 @@ async def yookassa_webhook(request: Request):
                             f"Управление автопродлением: /autopay",
                             source="webhook", scenario="autopay_enabled",
                         )
-                    except Exception:
-                        logger.warning(f"Failed to send autopay enabled notification for tg:{tg_id}", exc_info=True)
-            elif tg_id and int(tg_id) > 0:
-                save_user_payment_method(
-                    int(tg_id), pm_id, tariff,
-                    vpn_type or "vless",
-                )
-                logger.info(f"Saved payment method {pm_id} for tg_id={tg_id}")
-                try:
-                    tariff_name = TARIFFS.get(tariff, {}).get("name", tariff)
-                    await send_telegram_notification(
-                        int(tg_id),
-                        f"💳 <b>Способ оплаты сохранён</b>\n\n"
-                        f"Автопродление включено для тарифа «{tariff_name}».\n"
-                        f"При истечении подписки мы автоматически спишем средства с сохранённой карты.\n\n"
-                        f"Управление автопродлением: /autopay",
-                        source="webhook", scenario="autopay_enabled",
-                    )
+                    else:
+                        d_at = save_res.get("disabled_at")
+                        date_str = d_at.strftime('%d.%m.%Y') if d_at and hasattr(d_at, 'strftime') else 'ранее'
+                        await send_telegram_notification(
+                            int(tg_id),
+                            f"💳 <b>Способ оплаты сохранён</b>\n\n"
+                            f"Автопродление <b>не включено</b>, так как вы отключили его ранее ({date_str}).\n\n"
+                            f"Управлять автооплатой и включить при желании: /autopay",
+                            source="webhook", scenario="autopay_kept_disabled",
+                        )
                 except Exception:
-                    logger.warning(f"Failed to send autopay enabled notification for tg:{tg_id}", exc_info=True)
+                    logger.warning(f"Failed to send autopay notification for tg:{tg_id}", exc_info=True)
 
         # Consume promo code if used (both web and bot flows)
         promo_code_str = metadata.get("promo_code")
@@ -1152,6 +1291,19 @@ async def yookassa_webhook(request: Request):
             if promo:
                 use_promocode(promo["id"], int(tg_id or 0))
                 logger.info(f"Promo '{promo_code_str}' consumed for payment {payment_id}")
+
+        # Clear winback discount after paid purchase
+        if tg_id:
+            try:
+                from api.db import set_winback_discount
+                set_winback_discount(int(tg_id), False)
+            except Exception:
+                pass
+
+        # Idempotency: skip if VPN was already issued for this payment
+        if payment_data.get("vpn_issued"):
+            logger.info(f"⏭️ VPN already issued for payment {payment_id}, skipping")
+            return Response(status_code=200)
 
         success = await process_successful_payment(payment_id, payment_data, vpn_type)
 
@@ -1204,6 +1356,12 @@ async def yookassa_webhook(request: Request):
 
         logger.info(f"💾 Payment claimed and processed: {payment_id} -> paid")
     elif new_status == "canceled":
+        cancellation = obj.get("cancellation_details", {})
+        logger.info(
+            f"Payment {payment_id} canceled: "
+            f"party={cancellation.get('party')}, "
+            f"reason={cancellation.get('reason')}"
+        )
         # ===== 10. Обновление статуса отмены =====
         update_payment_status(payment_id, new_status)
         logger.info(f"💾 Payment status updated: {payment_id} -> {new_status}")
@@ -1221,14 +1379,15 @@ async def yookassa_webhook(request: Request):
             # Дополнительное уведомление не нужно
             pass
         elif new_status == "canceled":
-            message = (
-                f"❌ Платёж не прошёл\n\n"
-                f"💳 ID платежа: {payment_id}\n"
-                f"📦 Тариф: {tariff_name}\n\n"
-                f"Попробуйте ещё раз или обратитесь в поддержку."
+            cancellation = obj.get("cancellation_details") or {}
+            await handle_failed_payment(
+                payment_id=payment_id,
+                tg_id=int(tg_id),
+                tariff=tariff,
+                amount=payment_data.get("amount") or amount,
+                reason=cancellation.get("reason", ""),
+                party=cancellation.get("party", ""),
             )
-            await send_telegram_notification(tg_id, message,
-                source="webhook", scenario="payment_canceled")
         else:
             message = f"⏳ Платёж {payment_id} в обработке ({new_status})"
             await send_telegram_notification(tg_id, message,

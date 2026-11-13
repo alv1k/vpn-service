@@ -16,7 +16,7 @@ SERVER_ADDRESS = "10.10.0.1/24"
 NETWORK_PREFIX = "10.10.0."
 SERVER_ENDPOINT = os.getenv("WG_HOST", "91.132.161.112")
 LISTEN_PORT = int(os.getenv("WG_PORT", "51888"))
-DNS = os.getenv("WG_DEFAULT_DNS", "1.1.1.1,8.8.8.8")
+DNS = os.getenv("WG_DEFAULT_DNS", "8.8.8.8, 8.8.4.4")
 MTU = int(os.getenv("WG_MTU", "1360"))
 KEEPALIVE = int(os.getenv("WG_PERSISTENT_KEEPALIVE", "25"))
 

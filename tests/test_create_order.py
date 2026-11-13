@@ -57,18 +57,18 @@ class TestCreateOrderValidation:
 class TestCreateOrderProduction:
 
     @patch("api.db.create_payment")
-    @patch("api.web_api.Payment")
+    @patch("api.web_api.async_payment_create", new_callable=AsyncMock)
     @patch("api.web_api._get_or_create_web_user")
     @patch("api.notifications.verify_code", return_value=True)
     def test_creates_yookassa_payment(self, mock_verify, mock_get_user,
-                                      mock_pay_cls, mock_create_pay, client):
+                                      mock_pay_create, mock_create_pay, client):
         """Valid order creates YooKassa payment and returns URL."""
         mock_get_user.return_value = FAKE_USER.copy()
 
         mock_payment = MagicMock()
         mock_payment.id = "pay-prod-1"
         mock_payment.confirmation.confirmation_url = "https://yookassa.ru/pay"
-        mock_pay_cls.create.return_value = mock_payment
+        mock_pay_create.return_value = mock_payment
 
         resp = client.post("/api/web/order", json={
             "email": "user@test.com", "code": "123456", "tariff_id": "monthly_30d",
@@ -83,12 +83,12 @@ class TestCreateOrderProduction:
         mock_create_pay.assert_called_once()
 
     @patch("api.db.create_payment")
-    @patch("api.web_api.Payment")
+    @patch("api.web_api.async_payment_create", new_callable=AsyncMock)
     @patch("api.db.get_promocode")
     @patch("api.web_api._get_or_create_web_user")
     @patch("api.notifications.verify_code", return_value=True)
     def test_promo_discount_applied(self, mock_verify, mock_get_user,
-                                    mock_get_promo, mock_pay_cls,
+                                    mock_get_promo, mock_pay_create,
                                     mock_create_pay, client):
         """Active promo code reduces payment amount."""
         from bot_xui.tariffs import TARIFFS
@@ -102,7 +102,7 @@ class TestCreateOrderProduction:
         mock_payment = MagicMock()
         mock_payment.id = "pay-promo"
         mock_payment.confirmation.confirmation_url = "https://yookassa.ru/pay"
-        mock_pay_cls.create.return_value = mock_payment
+        mock_pay_create.return_value = mock_payment
 
         resp = client.post("/api/web/order", json={
             "email": "user@test.com", "code": "123456",
@@ -114,32 +114,33 @@ class TestCreateOrderProduction:
         # Check discounted price was sent to YooKassa
         full_price = TARIFFS["monthly_30d"]["price"]
         expected = max(1, round(full_price * 70 / 100))
-        charged = mock_pay_cls.create.call_args[0][0]["amount"]["value"]
+        charged = mock_pay_create.call_args[0][0]["amount"]["value"]
         assert int(charged) == expected
 
     @patch("api.db.create_payment")
-    @patch("api.web_api.Payment")
+    @patch("api.web_api.async_payment_create", new_callable=AsyncMock)
     @patch("api.web_api._get_or_create_web_user")
     @patch("api.notifications.verify_code", return_value=True)
     def test_metadata_includes_email_and_tariff(self, mock_verify, mock_get_user,
-                                                 mock_pay_cls, mock_create_pay, client):
+                                                 mock_pay_create, mock_create_pay, client):
         """Payment metadata contains email, tariff, and web_token."""
         mock_get_user.return_value = FAKE_USER.copy()
 
         mock_payment = MagicMock()
         mock_payment.id = "pay-meta"
         mock_payment.confirmation.confirmation_url = "https://pay"
-        mock_pay_cls.create.return_value = mock_payment
+        mock_pay_create.return_value = mock_payment
 
         client.post("/api/web/order", json={
             "email": "u@b.com", "code": "123456", "tariff_id": "monthly_30d",
         })
 
-        metadata = mock_pay_cls.create.call_args[0][0]["metadata"]
+        metadata = mock_pay_create.call_args[0][0]["metadata"]
         assert metadata["email"] == "u@b.com"
         assert metadata["tariff"] == "monthly_30d"
         assert metadata["web_token"] == "tok-abc"
         assert metadata["source"] == "web"
+
 
 
 # ═════════════════════════════════════════════

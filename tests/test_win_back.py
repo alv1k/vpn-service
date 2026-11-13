@@ -1,5 +1,6 @@
-"""Tests for scripts/win_back_users.py — classify_users scenarios."""
+"""Tests for scripts/win_back_users.py — classify_funnel and message scenarios."""
 import sys
+import os
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 
@@ -7,38 +8,55 @@ import pytest
 
 sys.modules.setdefault("yookassa", MagicMock())
 
-from scripts.win_back_users import classify_users, NOW, DELAY, MB
+from scripts.win_back_users import (
+    classify_funnel,
+    get_buttons_for_scenario,
+    NOW,
+    MB,
+    MESSAGES,
+    COOLDOWN_DAYS,
+    MAX_MESSAGES,
+)
+from config import ADMIN_TG_ID
 
 
-def _make_user(tg_id=100, first_name="Test", sub_until=None,
-               test_vless=False, test_awg=False, test_se=False,
-               created_at=None):
-    if sub_until is None:
-        sub_until = NOW + timedelta(days=30)
-    if created_at is None:
-        created_at = NOW - timedelta(days=10)
+def _make_user(
+    tg_id=100,
+    first_name="Test",
+    sub_until=None,
+    test_vless=False,
+    test_awg=False,
+    created_at=None,
+):
     return {
         "tg_id": tg_id,
         "first_name": first_name,
         "subscription_until": sub_until,
         "test_vless_activated": test_vless,
         "test_awg_activated": test_awg,
-        "test_softether_activated": test_se,
-        "created_at": created_at,
+        "created_at": created_at or (NOW - timedelta(days=10)),
     }
 
 
 def _make_key(tg_id, vpn_type="vless", expires_at=None, created_at=None):
     if expires_at is None:
         expires_at = NOW + timedelta(days=30)
-    if created_at is None:
-        created_at = NOW - timedelta(days=5)
     return {
         "tg_id": tg_id,
         "client_name": f"{vpn_type}_{tg_id}",
         "vpn_type": vpn_type,
         "expires_at": expires_at,
-        "created_at": created_at,
+        "created_at": created_at or (NOW - timedelta(days=5)),
+    }
+
+
+def _make_payment(tg_id, amount=199, tariff="month_1"):
+    return {
+        "tg_id": tg_id,
+        "tariff": tariff,
+        "amount": amount,
+        "status": "paid",
+        "created_at": NOW - timedelta(days=15),
     }
 
 
@@ -54,236 +72,242 @@ def _make_traffic(tg_id, upload=0, download=0, enabled=True, last_online_ms=0):
 
 
 # ═════════════════════════════════════════════
-#  awg_inactive scenario
+#  General filters & guards
 # ═════════════════════════════════════════════
 
-class TestAwgInactive:
+class TestGeneralFilters:
+    def test_admin_ignored(self):
+        """Admin user must be ignored by classifier."""
+        admin = _make_user(tg_id=ADMIN_TG_ID, created_at=NOW - timedelta(days=5))
+        candidates = classify_funnel([admin], {}, {}, {})
+        assert len(candidates) == 0
 
-    def test_awg_inactive_basic(self):
-        """User with AWG key offline ≥1 day → awg_inactive."""
-        user = _make_user(tg_id=100)
-        keys = {100: [_make_key(100, vpn_type="awg")]}
-        traffic = _make_traffic(100, upload=100 * MB, download=200 * MB,
-                                last_online_ms=(NOW - timedelta(days=2)).timestamp() * 1000)
-
-        results = classify_users([user], keys, {}, traffic)
-
-        assert len(results["awg_inactive"]) == 1
-        assert results["awg_inactive"][0]["tg_id"] == 100
-        assert results["awg_inactive"][0]["days_offline"] >= 1
-
-    def test_awg_inactive_exactly_1_day(self):
-        """User offline exactly 1 day → awg_inactive (boundary)."""
-        user = _make_user(tg_id=200)
-        keys = {200: [_make_key(200, vpn_type="awg")]}
-        traffic = _make_traffic(200, upload=10 * MB, download=20 * MB,
-                                last_online_ms=(NOW - timedelta(days=1)).timestamp() * 1000)
-
-        results = classify_users([user], keys, {}, traffic)
-
-        assert len(results["awg_inactive"]) == 1
-        assert results["awg_inactive"][0]["tg_id"] == 200
-
-    def test_awg_inactive_online_recently_not_triggered(self):
-        """User with AWG online <1 day ago → NOT awg_inactive."""
-        user = _make_user(tg_id=300)
-        keys = {300: [_make_key(300, vpn_type="awg")]}
-        traffic = _make_traffic(300, upload=10 * MB, download=20 * MB,
-                                last_online_ms=(NOW - timedelta(hours=12)).timestamp() * 1000)
-
-        results = classify_users([user], keys, {}, traffic)
-
-        assert len(results["awg_inactive"]) == 0
-
-    def test_awg_inactive_no_last_online_not_triggered(self):
-        """User with AWG but last_online=0 (never connected) → NOT awg_inactive."""
-        user = _make_user(tg_id=400)
-        keys = {400: [_make_key(400, vpn_type="awg")]}
-        traffic = _make_traffic(400, upload=0, download=0, last_online_ms=0)
-
-        results = classify_users([user], keys, {}, traffic)
-
-        assert len(results["awg_inactive"]) == 0
-
-    def test_awg_inactive_expired_sub_not_triggered(self):
-        """User with AWG but expired subscription → NOT awg_inactive (goes to expired)."""
-        user = _make_user(tg_id=500, sub_until=NOW - timedelta(days=2))
-        keys = {500: [_make_key(500, vpn_type="awg", expires_at=NOW - timedelta(days=2))]}
-        traffic = _make_traffic(500, upload=10 * MB, download=20 * MB,
-                                last_online_ms=(NOW - timedelta(days=5)).timestamp() * 1000)
-
-        results = classify_users([user], keys, {}, traffic)
-
-        assert len(results["awg_inactive"]) == 0
-        assert len(results["expired_fresh"]) == 1
-
-    def test_awg_inactive_vless_awg_both_present(self):
-        """User with both VLESS and AWG offline ≥1 day → awg_inactive (not vless_only)."""
-        user = _make_user(tg_id=600)
-        keys = {
-            600: [
-                _make_key(600, vpn_type="vless"),
-                _make_key(600, vpn_type="awg"),
-            ]
-        }
-        traffic = _make_traffic(600, upload=50 * MB, download=100 * MB,
-                                last_online_ms=(NOW - timedelta(days=3)).timestamp() * 1000)
-
-        results = classify_users([user], keys, {}, traffic)
-
-        assert len(results["awg_inactive"]) == 1
-        assert len(results["vless_only_inactive"]) == 0
-
-    def test_vless_only_still_works_when_awg_present(self):
-        """VLESS-only user (no AWG) offline ≥1 day → vless_only_inactive (not awg_inactive)."""
-        user = _make_user(tg_id=700)
-        keys = {700: [_make_key(700, vpn_type="vless")]}
-        traffic = _make_traffic(700, upload=10 * MB, download=20 * MB,
-                                last_online_ms=(NOW - timedelta(days=2)).timestamp() * 1000)
-
-        results = classify_users([user], keys, {}, traffic)
-
-        assert len(results["vless_only_inactive"]) == 1
-        assert len(results["awg_inactive"]) == 0
-
-    def test_awg_inactive_multiple_users(self):
-        """Multiple AWG users, only offline ones matched."""
-        users = [_make_user(tg_id=800), _make_user(tg_id=801), _make_user(tg_id=802)]
-        keys = {
-            800: [_make_key(800, vpn_type="awg")],
-            801: [_make_key(801, vpn_type="awg")],
-            802: [_make_key(802, vpn_type="awg")],
-        }
-        traffic = {
-            800: {"upload": 10 * MB, "download": 20 * MB, "enabled": True,
-                   "last_online": (NOW - timedelta(days=5)).timestamp() * 1000},
-            801: {"upload": 10 * MB, "download": 20 * MB, "enabled": True,
-                   "last_online": (NOW - timedelta(hours=6)).timestamp() * 1000},
-            802: {"upload": 10 * MB, "download": 20 * MB, "enabled": True,
-                   "last_online": (NOW - timedelta(days=10)).timestamp() * 1000},
-        }
-
-        results = classify_users(users, keys, {}, traffic)
-
-        assert len(results["awg_inactive"]) == 2
-        matched_ids = {u["tg_id"] for u in results["awg_inactive"]}
-        assert matched_ids == {800, 802}
-
-    def test_awg_inactive_days_offline_in_info(self):
-        """Verify days_offline is correctly calculated and included."""
-        user = _make_user(tg_id=900)
-        keys = {900: [_make_key(900, vpn_type="awg")]}
-        traffic = _make_traffic(900, upload=10 * MB, download=20 * MB,
-                                last_online_ms=(NOW - timedelta(days=7)).timestamp() * 1000)
-
-        results = classify_users([user], keys, {}, traffic)
-
-        assert len(results["awg_inactive"]) == 1
-        assert results["awg_inactive"][0]["days_offline"] == 7
-
-
-class TestPrintReportNoneHandling:
-
-    def test_none_name_does_not_crash(self):
-        """User with name=None should not crash print_report."""
-        import io
-        from scripts.win_back_users import print_report
-
-        results = {
-            'zero_traffic': [{
-                'tg_id': 100,
-                'name': None,
-                'total_mb': 0.0,
-                'keys': 1,
-                'vpn_types': ['vless'],
-                'paid_count': 0,
-            }],
-        }
-        # Should not raise TypeError
-        print_report(results)
+    def test_missing_or_zero_tg_id_ignored(self):
+        """Users with no tg_id or tg_id=0 are skipped."""
+        u1 = _make_user(tg_id=0)
+        u2 = _make_user(tg_id=None)
+        candidates = classify_funnel([u1, u2], {}, {}, {})
+        assert len(candidates) == 0
 
 
 # ═════════════════════════════════════════════
-#  Hysteria2 scenarios
+#  Scenario: never_activated_3d
 # ═════════════════════════════════════════════
 
-class TestHysteria2:
+class TestNeverActivated3d:
+    def test_eligible_after_3_days(self):
+        """Registered 3+ days ago, no keys, no payments, test not activated."""
+        user = _make_user(tg_id=101, created_at=NOW - timedelta(days=3, hours=1))
+        candidates = classify_funnel([user], {}, {}, {})
+        assert len(candidates) == 1
+        assert candidates[0]["tg_id"] == 101
+        assert candidates[0]["scenario"] == "never_activated_3d"
+        assert candidates[0]["priority"] == 5
 
-    def test_hysteria_traffic_counts_as_active(self):
-        """User with only vless key in DB but hysteria2 in x-ui — traffic from hysteria counts."""
-        user = _make_user(tg_id=1000)
-        # Only VLESS key in vpn_keys, but hysteria2 exists in x-ui
-        keys = {1000: [_make_key(1000, vpn_type="vless")]}
-        traffic = _make_traffic(1000, upload=50 * MB, download=100 * MB,
-                                last_online_ms=(NOW - timedelta(hours=6)).timestamp() * 1000)
-        hysteria_ids = {1000}
+    def test_skip_if_registered_recently(self):
+        """Registered less than 3 days ago -> not eligible yet."""
+        user = _make_user(tg_id=102, created_at=NOW - timedelta(days=2))
+        candidates = classify_funnel([user], {}, {}, {})
+        assert len(candidates) == 0
 
-        results = classify_users([user], keys, {}, traffic, hysteria_ids)
+    def test_skip_if_test_was_activated(self):
+        """Test was activated -> not never_activated_3d."""
+        user = _make_user(tg_id=103, test_vless=True, created_at=NOW - timedelta(days=5))
+        candidates = classify_funnel([user], {}, {}, {})
+        assert len(candidates) == 0
 
-        # Should NOT be zero_traffic — user has traffic via hysteria2
-        assert len(results["zero_traffic"]) == 0
-        assert len(results["low_traffic"]) == 0
+    def test_skip_if_user_has_keys(self):
+        """User has keys -> not never_activated_3d."""
+        user = _make_user(tg_id=104, created_at=NOW - timedelta(days=5))
+        keys = {104: [_make_key(104)]}
+        candidates = classify_funnel([user], keys, {}, {})
+        assert len(candidates) == 0
 
-    def test_hysteria_in_vpn_types(self):
-        """Hysteria2 client appears in vpn_types."""
-        user = _make_user(tg_id=1001)
-        keys = {1001: [_make_key(1001, vpn_type="vless")]}
-        traffic = _make_traffic(1001, upload=10 * MB, download=20 * MB,
-                                last_online_ms=(NOW - timedelta(days=2)).timestamp() * 1000)
-        hysteria_ids = {1001}
+    def test_skip_if_user_paid_before(self):
+        """User paid before -> not never_activated_3d."""
+        user = _make_user(tg_id=105, created_at=NOW - timedelta(days=5))
+        payments = {105: [_make_payment(105)]}
+        candidates = classify_funnel([user], {}, payments, {})
+        assert len(candidates) == 0
 
-        results = classify_users([user], keys, {}, traffic, hysteria_ids)
 
-        # hysteria should appear in vpn_types for this user
-        all_users = (
-            results["zero_traffic"] + results["low_traffic"] +
-            results["vless_only_inactive"] + results["recently_inactive"]
-        )
-        found = [u for u in all_users if u["tg_id"] == 1001]
-        if found:
-            assert "hysteria" in found[0]["vpn_types"]
+# ═════════════════════════════════════════════
+#  Scenario: test_0mb_2d & test_ended_2d
+# ═════════════════════════════════════════════
 
-    def test_hysteria_user_without_vless_key_not_classified_as_zero_traffic(self):
-        """User with hysteria2 (no vpn_keys), has traffic — not zero_traffic."""
-        user = _make_user(tg_id=1002)
-        keys = {}  # No keys in vpn_keys
-        traffic = _make_traffic(1002, upload=100 * MB, download=200 * MB)
-        hysteria_ids = {1002}
+class TestTestEndedScenarios:
+    def test_test_0mb_2d_when_zero_traffic(self):
+        """Test ended 2+ days ago, no payments, 0 MB traffic -> test_0mb_2d."""
+        user = _make_user(tg_id=201, test_vless=True, sub_until=NOW - timedelta(days=2))
+        test_expires = NOW - timedelta(days=2, hours=1)
+        keys = {201: [_make_key(201, expires_at=test_expires)]}
+        traffic = _make_traffic(201, upload=0, download=0)
 
-        results = classify_users([user], keys, {}, traffic, hysteria_ids)
+        candidates = classify_funnel([user], keys, {}, traffic)
+        assert len(candidates) == 1
+        assert candidates[0]["tg_id"] == 201
+        assert candidates[0]["scenario"] == "test_0mb_2d"
+        assert candidates[0]["priority"] == 2
+        assert candidates[0]["total_mb"] == 0.0
 
-        # User has no keys at all, but has traffic — should not be in zero_traffic
-        # (zero_traffic requires has_active_key)
-        assert len(results["zero_traffic"]) == 0
+    def test_test_0mb_2d_when_handshake_noise_traffic(self):
+        """Test ended 2+ days ago, no payments, low handshake traffic (1.4 KB) -> test_0mb_2d."""
+        user = _make_user(tg_id=201, test_vless=True, sub_until=NOW - timedelta(days=2))
+        test_expires = NOW - timedelta(days=2, hours=1)
+        keys = {201: [_make_key(201, expires_at=test_expires)]}
+        traffic = _make_traffic(201, upload=700, download=735)  # ~1.4 KB
 
-    def test_vless_only_inactive_excludes_hysteria_users(self):
-        """User with VLESS+hysteria2 (no AWG) offline → vless_only_inactive (hysteria doesn't count as AWG)."""
-        user = _make_user(tg_id=1003)
-        keys = {1003: [_make_key(1003, vpn_type="vless")]}
-        traffic = _make_traffic(1003, upload=10 * MB, download=20 * MB,
-                                last_online_ms=(NOW - timedelta(days=3)).timestamp() * 1000)
-        hysteria_ids = {1003}
+        candidates = classify_funnel([user], keys, {}, traffic)
+        assert len(candidates) == 1
+        assert candidates[0]["tg_id"] == 201
+        assert candidates[0]["scenario"] == "test_0mb_2d"
+        assert candidates[0]["priority"] == 2
 
-        results = classify_users([user], keys, {}, traffic, hysteria_ids)
+    def test_test_ended_2d_when_traffic_exists(self):
+        """Test ended 2+ days ago, traffic > 0, no payments -> test_ended_2d."""
+        user = _make_user(tg_id=202, test_awg=True, sub_until=NOW - timedelta(days=2))
+        test_expires = NOW - timedelta(days=2, hours=1)
+        keys = {202: [_make_key(202, expires_at=test_expires)]}
+        traffic = _make_traffic(202, upload=10 * MB, download=50 * MB)
 
-        # User has VLESS + hysteria but no AWG — should still get vless_only_inactive
-        assert len(results["vless_only_inactive"]) == 1
-        assert results["vless_only_inactive"][0]["tg_id"] == 1003
+        candidates = classify_funnel([user], keys, {}, traffic)
+        assert len(candidates) == 1
+        assert candidates[0]["tg_id"] == 202
+        assert candidates[0]["scenario"] == "test_ended_2d"
+        assert candidates[0]["priority"] == 2
+        assert candidates[0]["total_mb"] == 60.0
 
-    def test_multi_config_partial_includes_hysteria(self):
-        """User with VLESS + hysteria + AWG → multi_config_partial if one type unused."""
-        user = _make_user(tg_id=1004, created_at=NOW - timedelta(days=30))
-        keys = {
-            1004: [
-                _make_key(1004, vpn_type="vless", created_at=NOW - timedelta(days=20)),
-                _make_key(1004, vpn_type="awg", created_at=NOW - timedelta(days=20)),
-            ]
-        }
-        traffic = _make_traffic(1004, upload=50 * MB, download=100 * MB)
-        hysteria_ids = {1004}
+    def test_test_ended_skip_if_less_than_2_days(self):
+        """Test ended only 1 day ago -> not triggered yet."""
+        user = _make_user(tg_id=203, test_vless=True, sub_until=NOW - timedelta(days=1))
+        test_expires = NOW - timedelta(days=1)
+        keys = {203: [_make_key(203, expires_at=test_expires)]}
 
-        results = classify_users([user], keys, {}, traffic, hysteria_ids)
+        candidates = classify_funnel([user], keys, {}, {})
+        assert len(candidates) == 0
 
-        # 3 types (vless, awg, hysteria), key_age=20d ≥ 7d → multi_config_partial
-        assert len(results["multi_config_partial"]) == 1
-        assert "hysteria" in results["multi_config_partial"][0]["vpn_types"]
+    def test_test_ended_skip_if_user_has_active_sub(self):
+        """Test was used, but user currently has active subscription -> skip."""
+        user = _make_user(tg_id=204, test_vless=True, sub_until=NOW + timedelta(days=10))
+        test_expires = NOW - timedelta(days=5)
+        keys = {204: [_make_key(204, expires_at=test_expires)]}
+
+        candidates = classify_funnel([user], keys, {}, {})
+        assert len(candidates) == 0
+
+    def test_test_ended_skip_if_user_paid_before(self):
+        """User already has payments -> handled by expired flow, not test flow."""
+        user = _make_user(tg_id=205, test_vless=True, sub_until=NOW - timedelta(days=3))
+        test_expires = NOW - timedelta(days=3)
+        keys = {205: [_make_key(205, expires_at=test_expires)]}
+        payments = {205: [_make_payment(205)]}
+
+        candidates = classify_funnel([user], keys, payments, {})
+        assert len(candidates) == 1
+        assert candidates[0]["scenario"] == "expired_2d"
+
+
+# ═════════════════════════════════════════════
+#  Scenario: expired_2d
+# ═════════════════════════════════════════════
+
+class TestExpired2d:
+    def test_expired_in_window(self):
+        """Subscription expired 2 to 9 days ago -> expired_2d."""
+        user = _make_user(tg_id=301, sub_until=NOW - timedelta(days=3))
+        keys = {301: [_make_key(301, expires_at=NOW - timedelta(days=3))]}
+        payments = {301: [_make_payment(301)]}
+
+        candidates = classify_funnel([user], keys, payments, {})
+        assert len(candidates) == 1
+        assert candidates[0]["tg_id"] == 301
+        assert candidates[0]["scenario"] == "expired_2d"
+        assert candidates[0]["days_expired"] == 3
+        assert candidates[0]["priority"] == 1
+
+    def test_expired_fresh_1_day_skip(self):
+        """Subscription expired only 1 day ago -> not in [2, 10) window."""
+        user = _make_user(tg_id=302, sub_until=NOW - timedelta(days=1))
+        keys = {302: [_make_key(302, expires_at=NOW - timedelta(days=1))]}
+        payments = {302: [_make_payment(302)]}
+
+        candidates = classify_funnel([user], keys, payments, {})
+        assert len(candidates) == 0
+
+    def test_expired_10_days_skip_for_funnel(self):
+        """Expired 10+ days ago -> moves to loyalty campaign, not expired_2d."""
+        user = _make_user(tg_id=303, sub_until=NOW - timedelta(days=10))
+        keys = {303: [_make_key(303, expires_at=NOW - timedelta(days=10))]}
+        payments = {303: [_make_payment(303)]}
+
+        candidates = classify_funnel([user], keys, payments, {})
+        assert len(candidates) == 0
+
+
+# ═════════════════════════════════════════════
+#  Scenario: protocol_inactive_7d
+# ═════════════════════════════════════════════
+
+class TestProtocolInactive7d:
+    def test_active_sub_offline_7_days(self):
+        """Active subscription but offline for ≥7 days -> protocol_inactive_7d."""
+        user = _make_user(tg_id=401, sub_until=NOW + timedelta(days=20))
+        keys = {401: [_make_key(401)]}
+        last_online = (NOW - timedelta(days=7, hours=2)).timestamp() * 1000
+        traffic = _make_traffic(401, upload=10 * MB, download=10 * MB, last_online_ms=last_online)
+
+        candidates = classify_funnel([user], keys, {}, traffic)
+        assert len(candidates) == 1
+        assert candidates[0]["tg_id"] == 401
+        assert candidates[0]["scenario"] == "protocol_inactive_7d"
+        assert candidates[0]["days_offline"] >= 7
+        assert candidates[0]["priority"] == 4
+
+    def test_active_sub_offline_less_than_7_days(self):
+        """Active subscription offline 5 days -> skip."""
+        user = _make_user(tg_id=402, sub_until=NOW + timedelta(days=20))
+        keys = {402: [_make_key(402)]}
+        last_online = (NOW - timedelta(days=5)).timestamp() * 1000
+        traffic = _make_traffic(402, upload=10 * MB, download=10 * MB, last_online_ms=last_online)
+
+        candidates = classify_funnel([user], keys, {}, traffic)
+        assert len(candidates) == 0
+
+    def test_active_sub_never_connected_last_online_zero(self):
+        """Active subscription with last_online = 0 -> skip."""
+        user = _make_user(tg_id=403, sub_until=NOW + timedelta(days=20))
+        keys = {403: [_make_key(403)]}
+        traffic = _make_traffic(403, upload=0, download=0, last_online_ms=0)
+
+        candidates = classify_funnel([user], keys, {}, traffic)
+        assert len(candidates) == 0
+
+
+# ═════════════════════════════════════════════
+#  Buttons & Messages verification
+# ═════════════════════════════════════════════
+
+class TestButtonsAndMessages:
+    def test_messages_contain_required_placeholders(self):
+        """Check template formatting."""
+        assert "{promo_code}" in MESSAGES["expired_2d"]
+        assert "{promo_code}" in MESSAGES["test_ended_2d"]
+        assert "3 дня бесплатного доступа" in MESSAGES["loyalty_gift_10d"]
+
+    @patch("api.db.get_web_token", return_value="token123")
+    def test_get_buttons_with_token(self, mock_token):
+        """Test buttons rendering with web token."""
+        b_test0 = get_buttons_for_scenario("test_0mb_2d", tg_id=501)
+        assert any("token123" in btn.get("url", "") for row in b_test0 for btn in row)
+
+        b_expired = get_buttons_for_scenario("expired_2d", tg_id=501)
+        assert b_expired[0][0]["callback_data"] == "tariffs"
+
+        b_loyalty = get_buttons_for_scenario("loyalty_survey", tg_id=501)
+        assert len(b_loyalty[0]) == 3  # good, normal, bad ratings
+
+    @patch("api.db.get_web_token", return_value=None)
+    def test_get_buttons_without_token(self, mock_token):
+        """Test buttons fallback when no web token."""
+        b_test0 = get_buttons_for_scenario("test_0mb_2d", tg_id=502)
+        assert any("/my/" in btn.get("url", "") for row in b_test0 for btn in row)

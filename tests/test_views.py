@@ -129,15 +129,16 @@ class TestShowTariffs:
         mock_build.assert_called_once_with(100, mode="buy")
 
     @pytest.mark.asyncio
+    @patch("bot_xui.views.reply_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views._build_tariff_text_and_keyboard")
-    async def test_show_renew_tariffs(self, mock_build):
+    async def test_show_renew_tariffs(self, mock_build, mock_reply):
         """show_renew_tariffs saves context and uses mode=renew."""
         from bot_xui.views import show_renew_tariffs
 
         mock_build.return_value = ("text", MagicMock())
         query = MagicMock()
         query.from_user.id = 100
-        query.message.reply_text = AsyncMock()
+        query.message.chat.send_message = AsyncMock()
 
         context = MagicMock()
         context.user_data = {}
@@ -226,7 +227,7 @@ class TestRefreshVlessLinks:
 class TestShowConfigs:
 
     @pytest.mark.asyncio
-    @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
+    @patch("bot_xui.views.safe_edit_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @patch("bot_xui.views._refresh_vless_links")
     async def test_with_active_keys(self, mock_refresh, mock_keys, mock_edit):
@@ -265,11 +266,11 @@ class TestShowConfigs:
         mock_no_configs.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
+    @patch("bot_xui.views.safe_edit_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @patch("bot_xui.views._refresh_vless_links")
     async def test_extra_protocol_buttons(self, mock_refresh, mock_keys, mock_edit):
-        """Active VLESS-only user gets +AWG and +SoftEther buttons."""
+        """Active VLESS-only user gets +AWG button."""
         from bot_xui.views import show_configs
 
         mock_keys.return_value = [
@@ -286,7 +287,6 @@ class TestShowConfigs:
         markup = mock_edit.call_args[1]["reply_markup"]
         all_callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row if btn.callback_data]
         assert "get_awg_config" in all_callbacks
-        assert "get_softether_config" in all_callbacks
 
 
 # ═════════════════════════════════════════════
@@ -303,6 +303,8 @@ class TestShowNoConfigs:
         query = MagicMock()
         query.from_user.id = 100
         query.edit_message_text = AsyncMock()
+        for attr in ['photo', 'video', 'document', 'sticker', 'animation', 'poll', 'voice', 'video_note', 'audio', 'location', 'venue', 'contact', 'dice', 'game']:
+            setattr(query.message, attr, None)
 
         await _show_no_configs(query)
 
@@ -319,7 +321,7 @@ class TestShowNoConfigs:
 class TestShowSingleConfigVless:
 
     @pytest.mark.asyncio
-    @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
+    @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_web_token", return_value="tok123")
     @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
     @patch("bot_xui.views.get_user_by_tg_id")
@@ -327,7 +329,7 @@ class TestShowSingleConfigVless:
     @patch("bot_xui.views.qrcode.QRCode")
     @patch("bot_xui.views.get_keys_by_tg_id")
     async def test_vless_caption_has_instruction_link(self, mock_keys, mock_qr_cls, mock_payment,
-                                                       mock_user_tg, mock_user_web, mock_token, mock_sub_url):
+                                                        mock_user_tg, mock_user_web, mock_token, mock_reply_photo):
         """VLESS single config caption includes instruction link."""
         from bot_xui.views import show_single_config
 
@@ -349,13 +351,13 @@ class TestShowSingleConfigVless:
 
         await show_single_config(query, "tiin_100", MagicMock())
 
-        query.message.chat.send_photo.assert_called_once()
-        caption = query.message.chat.send_photo.call_args[1]["caption"]
+        mock_reply_photo.assert_called_once()
+        caption = mock_reply_photo.call_args[1]["caption"]
         assert "Инструкция" in caption
-        assert "344988.snk.wtf/my/tok123" in caption
+        assert "/my/tok123" in caption
 
     @pytest.mark.asyncio
-    @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
+    @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_web_token", return_value="tok123")
     @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
     @patch("bot_xui.views.get_user_by_tg_id")
@@ -363,7 +365,7 @@ class TestShowSingleConfigVless:
     @patch("bot_xui.views.qrcode.QRCode")
     @patch("bot_xui.views.get_keys_by_tg_id")
     async def test_vless_keyboard_has_instruction_button(self, mock_keys, mock_qr_cls, mock_payment,
-                                                         mock_user_tg, mock_user_web, mock_token, mock_sub_url):
+                                                          mock_user_tg, mock_user_web, mock_token, mock_reply_photo):
         """VLESS single config keyboard includes '📖 Инструкция' URL button."""
         from bot_xui.views import show_single_config
 
@@ -385,12 +387,12 @@ class TestShowSingleConfigVless:
 
         await show_single_config(query, "tiin_100", MagicMock())
 
-        markup = query.message.chat.send_photo.call_args[1]["reply_markup"]
+        markup = mock_reply_photo.call_args[1]["reply_markup"]
         all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
-        assert any("344988.snk.wtf/my/tok123" in u for u in all_urls)
+        assert any("/my/tok123" in u for u in all_urls)
 
     @pytest.mark.asyncio
-    @patch("bot_xui.views.get_user_sub_url", return_value="https://sub/100")
+    @patch("bot_xui.views.reply_photo_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_web_token", return_value="")
     @patch("bot_xui.views.get_user_by_web_token", return_value={"id": 42})
     @patch("bot_xui.views.get_user_by_tg_id")
@@ -398,7 +400,7 @@ class TestShowSingleConfigVless:
     @patch("bot_xui.views.qrcode.QRCode")
     @patch("bot_xui.views.get_keys_by_tg_id")
     async def test_vless_empty_token_caption_has_no_instruction_link(self, mock_keys, mock_qr_cls, mock_payment,
-                                                                      mock_user_tg, mock_user_web, mock_token, mock_sub_url):
+                                                                       mock_user_tg, mock_user_web, mock_token, mock_reply_photo):
         """With empty web_token, caption instruction link is absent but button is still present."""
         from bot_xui.views import show_single_config
 
@@ -420,12 +422,12 @@ class TestShowSingleConfigVless:
 
         await show_single_config(query, "tiin_100", MagicMock())
 
-        caption = query.message.chat.send_photo.call_args[1]["caption"]
-        assert "344988.snk.wtf/my/" not in caption
+        caption = mock_reply_photo.call_args[1]["caption"]
+        assert "/my/" not in caption
         # No instruction button without token
-        markup = query.message.chat.send_photo.call_args[1]["reply_markup"]
+        markup = mock_reply_photo.call_args[1]["reply_markup"]
         all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
-        assert not any("344988.snk.wtf/my/" in u for u in all_urls)
+        assert not any("/my/" in u for u in all_urls)
 
 
 # ═════════════════════════════════════════════
@@ -465,14 +467,6 @@ class TestPrettyConfigLabel:
         # short uses period "7 дней", long uses full name "Неделя — 7 дней"
         assert "7" in label_short
 
-    def test_softether_protocol(self):
-        """SoftEther vpn_type returns hardware emoji."""
-        from bot_xui.views import _pretty_config_label
-        key = {"vpn_type": "softether", "client_name": "se_1", "payment_id": None}
-        emoji, label = _pretty_config_label(key)
-        assert emoji == "🖥"
-        assert "SoftEther" in label
-
     def test_awg_protocol(self):
         """AWG vpn_type returns mobile emoji."""
         from bot_xui.views import _pretty_config_label
@@ -506,62 +500,57 @@ class TestBuildMainMenuText:
 
     @patch("bot_xui.views.get_referral_count", return_value=0)
     @patch("bot_xui.views.get_web_token", return_value=None)
-    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info-block", False))
     @patch("bot_xui.views.get_keys_by_tg_id")
-    def test_active_key_shows_expires(self, mock_keys, mock_sub, mock_token, mock_ref):
-        """Active key shows '⏱ Истекает' label."""
+    def test_active_key_shows_expires(self, mock_keys, mock_token, mock_ref):
+        """Active key shows '⏳ Активен до:' label."""
         from bot_xui.views import build_main_menu_text
         future = datetime.utcnow() + timedelta(days=30)
         mock_keys.return_value = [
             {"client_name": "x", "vpn_type": "vless", "expires_at": future, "payment_id": "p1"},
         ]
         text = build_main_menu_text(tg_id=100)
-        assert "Истекает" in text
-        assert "Истекла" not in text
-        assert "sub-info-block" in text
+        assert "Активен до:" in text
+        assert "Истек:" not in text
 
     @patch("bot_xui.views.get_referral_count", return_value=0)
     @patch("bot_xui.views.get_web_token", return_value=None)
-    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info-block", False))
     @patch("bot_xui.views.get_keys_by_tg_id")
-    def test_expired_key_shows_expired_label(self, mock_keys, mock_sub, mock_token, mock_ref):
-        """Expired key shows '⏱ Истекла' + 'Подписка истекла' hint."""
+    def test_expired_key_shows_expired_label(self, mock_keys, mock_token, mock_ref):
+        """Expired key shows '⌛️ Истек:' + 'Подписка истекла' hint."""
         from bot_xui.views import build_main_menu_text
         past = datetime.utcnow() - timedelta(days=1)
         mock_keys.return_value = [
             {"client_name": "x", "vpn_type": "vless", "expires_at": past, "payment_id": "p1"},
         ]
         text = build_main_menu_text(tg_id=100)
-        assert "Истекла" in text
+        assert "Истек:" in text
         assert "Подписка истекла" in text
 
     @patch("bot_xui.views.get_referral_count", return_value=0)
     @patch("bot_xui.views.get_web_token", return_value="tok123")
-    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info", False))
     @patch("bot_xui.views.get_keys_by_tg_id")
-    def test_web_token_renders_guide_link(self, mock_keys, mock_sub, mock_token, mock_ref):
-        """If web_token exists, '🪄 Гид по подключению' link is shown."""
+    def test_web_token_renders_guide_link(self, mock_keys, mock_token, mock_ref):
+        """If web_token exists, 'Инструкция по настройке' link is shown."""
         from bot_xui.views import build_main_menu_text
         mock_keys.return_value = [
             {"client_name": "x", "vpn_type": "vless",
              "expires_at": datetime.utcnow() + timedelta(days=10), "payment_id": "p1"},
         ]
         text = build_main_menu_text(tg_id=100)
-        assert "Гид по подключению" in text
+        assert "Инструкция по настройке" in text
         assert "tok123" in text
 
     @patch("bot_xui.views.get_referral_count", return_value=0)
     @patch("bot_xui.views.get_web_token", return_value=None)
-    @patch("bot_xui.views._build_subscription_info", return_value=("sub-info", False))
     @patch("bot_xui.views.get_keys_by_tg_id")
-    def test_block_order_sub_then_guide_then_referral(self, mock_keys, mock_sub, mock_token, mock_ref):
-        """sub-info appears before referral block (and guide if present)."""
+    def test_block_order_sub_then_guide_then_referral(self, mock_keys, mock_token, mock_ref):
+        """Active subscription appears before referral block."""
         from bot_xui.views import build_main_menu_text
         mock_keys.return_value = [
             {"client_name": "x", "vpn_type": "vless",
              "expires_at": datetime.utcnow() + timedelta(days=10), "payment_id": "p1"},
         ]
         text = build_main_menu_text(tg_id=100)
-        sub_pos = text.find("sub-info")
-        ref_pos = text.find("Бонус за друзей")
+        sub_pos = text.find("Активная подписка")
+        ref_pos = text.find("Бонусная программа")
         assert sub_pos < ref_pos

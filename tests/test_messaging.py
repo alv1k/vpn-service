@@ -14,8 +14,9 @@ sys.modules.setdefault("yookassa", MagicMock())
 class TestSendMessageByTgId:
 
     @pytest.mark.asyncio
+    @patch("api.db.log_message_sent")
     @patch("api.db.execute_query")
-    async def test_success(self, mock_exec):
+    async def test_success(self, mock_exec, mock_log):
         """Sends message, clears bot_blocked flag, and logs to message_log."""
         from bot_xui.messaging import send_message_by_tg_id
 
@@ -28,15 +29,15 @@ class TestSendMessageByTgId:
         bot.send_message.assert_called_once_with(
             chat_id=100, text="hello", parse_mode=None, reply_markup=None,
         )
-        # Should clear bot_blocked and log message
-        assert mock_exec.call_count == 2
+        assert mock_exec.call_count == 1
         calls = [c[0][0] for c in mock_exec.call_args_list]
         assert any("bot_blocked = 0" in c for c in calls)
-        assert any("message_log" in c for c in calls)
+        mock_log.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("api.db.log_message_sent")
     @patch("api.db.execute_query")
-    async def test_blocked_user_flagged(self, mock_exec):
+    async def test_blocked_user_flagged(self, mock_exec, mock_log):
         """If user blocked the bot, sets bot_blocked=1 and logs blocked status."""
         from bot_xui.messaging import send_message_by_tg_id
 
@@ -46,14 +47,15 @@ class TestSendMessageByTgId:
         result = await send_message_by_tg_id(200, "hi", bot=bot)
 
         assert result is False
-        assert mock_exec.call_count == 2
+        assert mock_exec.call_count == 1
         calls = [c[0][0] for c in mock_exec.call_args_list]
         assert any("bot_blocked = 1" in c for c in calls)
-        assert any("message_log" in c for c in calls)
+        mock_log.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("api.db.log_message_sent")
     @patch("api.db.execute_query")
-    async def test_deactivated_user_flagged(self, mock_exec):
+    async def test_deactivated_user_flagged(self, mock_exec, mock_log):
         """Deactivated account also sets bot_blocked."""
         from bot_xui.messaging import send_message_by_tg_id
 
@@ -63,13 +65,14 @@ class TestSendMessageByTgId:
         result = await send_message_by_tg_id(300, "hi", bot=bot)
 
         assert result is False
-        assert mock_exec.call_count == 2
+        assert mock_exec.call_count == 1
         calls = [c[0][0] for c in mock_exec.call_args_list]
         assert any("bot_blocked = 1" in c for c in calls)
-        assert any("message_log" in c for c in calls)
+        mock_log.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_other_error_not_flagged(self):
+    @patch("api.db.log_message_sent")
+    async def test_other_error_not_flagged(self, mock_log):
         """Non-blocked errors return False, log failure but don't set bot_blocked."""
         from bot_xui.messaging import send_message_by_tg_id
 
@@ -80,14 +83,13 @@ class TestSendMessageByTgId:
             result = await send_message_by_tg_id(400, "hi", bot=bot)
 
         assert result is False
-        # Should log the failure but NOT touch bot_blocked
-        assert mock_exec.call_count == 1
-        assert "message_log" in mock_exec.call_args[0][0]
-        assert "bot_blocked" not in mock_exec.call_args[0][0]
+        assert mock_exec.call_count == 0
+        mock_log.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("api.db.log_message_sent")
     @patch("api.db.execute_query")
-    async def test_with_markup(self, mock_exec):
+    async def test_with_markup(self, mock_exec, mock_log):
         """Passes parse_mode and reply_markup through."""
         from bot_xui.messaging import send_message_by_tg_id
 
@@ -100,8 +102,8 @@ class TestSendMessageByTgId:
         bot.send_message.assert_called_once_with(
             chat_id=500, text="<b>bold</b>", parse_mode="HTML", reply_markup=markup,
         )
-        # bot_blocked clear + message_log insert
-        assert mock_exec.call_count == 2
+        assert mock_exec.call_count == 1
+        mock_log.assert_called_once()
 
 
 # ═════════════════════════════════════════════

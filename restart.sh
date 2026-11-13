@@ -14,7 +14,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 show_status() {
-    for svc in bot api awg-api; do
+    for svc in bot api admin-panel; do
         if systemctl is-active --quiet "$svc"; then
             echo -e "  ${GREEN}●${NC} $svc — active"
         else
@@ -45,13 +45,21 @@ case "${1:-all}" in
     api)
         restart_service api
         ;;
-    awg-api)
-        restart_service awg-api
+    admin-panel|admin)
+        restart_service admin-panel
         ;;
     all)
         restart_service bot
         restart_service api
-        restart_service awg-api
+        restart_service admin-panel
+        if [ "${2:-}" == "--test" ]; then
+            echo -e "\n${YELLOW}🧪 Running Alex QA Smoke Test...${NC}"
+            /home/alvik/vpn-service/scripts/run_qa_agent.sh --smoke
+        fi
+        ;;
+    test)
+        echo -e "${YELLOW}🧪 Running Alex QA Smoke Test...${NC}"
+        /home/alvik/vpn-service/scripts/run_qa_agent.sh --smoke
         ;;
     status|s)
         echo "Service status:"
@@ -62,7 +70,7 @@ case "${1:-all}" in
         journalctl -u "$svc" -f --no-pager
         ;;
     *)
-        echo "Usage: $0 {bot|api|awg-api|all|status|logs [bot|api|awg-api]}"
+        echo "Usage: $0 {bot|api|admin-panel|all [--test]|test|status|logs [bot|api|admin-panel]}"
         exit 1
         ;;
 esac

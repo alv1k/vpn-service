@@ -1,9 +1,23 @@
 """Bot DB queries for admin panel (users, payments, vpn_keys)."""
 import logging
+import json
+import os
+import sqlite3
+import time
+from datetime import datetime
 
-from awg_api.db import _get_conn
+import mysql.connector
+from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
 
 logger = logging.getLogger(__name__)
+
+
+def _get_conn():
+    return mysql.connector.connect(
+        host=MYSQL_HOST, port=MYSQL_PORT,
+        user=MYSQL_USER, password=MYSQL_PASSWORD,
+        database=MYSQL_DATABASE,
+    )
 
 
 def list_users(search: str = None, limit: int = 100) -> list[dict]:
@@ -73,10 +87,25 @@ def count_users() -> dict:
             SUM(CASE WHEN subscription_until > NOW() THEN 1 ELSE 0 END) as active_sub,
             SUM(CASE WHEN subscription_until IS NULL AND EXISTS (
                 SELECT 1 FROM vpn_keys k WHERE k.tg_id = users.tg_id AND k.expires_at > NOW()
-            ) THEN 1 ELSE 0 END) as active_key_only
+            ) THEN 1 ELSE 0 END) as active_key_only,
+            SUM(CASE WHEN subscription_until > NOW() AND EXISTS (
+                SELECT 1 FROM payments p WHERE p.tg_id = users.tg_id AND p.status='paid' AND p.is_test=0
+            ) THEN 1 ELSE 0 END) as active_paying,
+            SUM(CASE WHEN subscription_until > NOW() 
+                     AND tg_id NOT IN (364224373, 6648354839, 5254383247)
+                     AND tg_id IS NOT NULL
+                     AND NOT EXISTS (
+                         SELECT 1 FROM payments p WHERE p.tg_id = users.tg_id AND p.status='paid' AND p.is_test=0
+                     ) THEN 1 ELSE 0 END) as active_trial
         FROM users
     """)
-    row = cur.fetchone()
+    row = cur.fetchone() or {}
+    cur.execute("""
+        SELECT COUNT(DISTINCT COALESCE(NULLIF(tg_id, 0), web_user_id)) as paying
+        FROM payments
+        WHERE status = 'paid' AND is_test = 0
+    """)
+    pay_row = cur.fetchone() or {}
     cur.close()
     conn.close()
     active_sub = row.get("active_sub", 0) or 0
@@ -86,6 +115,9 @@ def count_users() -> dict:
         "active": active_sub + active_key,
         "active_sub": active_sub,
         "active_key_only": active_key,
+        "active_paying": row.get("active_paying", 0) or 0,
+        "active_trial": row.get("active_trial", 0) or 0,
+        "paying": pay_row.get("paying", 0) or 0,
     }
 
 
@@ -107,7 +139,9 @@ def get_user_payments(tg_id: int) -> list[dict]:
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT payment_id, tg_id, tariff, amount, status, vpn_issued, is_test, created_at
+        SELECT payment_id, tg_id, tariff, amount, status, vpn_issued, is_test, created_at,
+               CASE WHEN payment_id LIKE 'stars_%' THEN 'XTR' ELSE 'RUB' END AS currency,
+               CASE WHEN payment_id LIKE 'stars_%' THEN 'stars' ELSE 'yookassa' END AS provider
         FROM payments WHERE tg_id = %s ORDER BY created_at DESC
     """, (tg_id,))
     rows = cur.fetchall()
@@ -121,6 +155,8 @@ def recent_payments(limit: int = 20) -> list[dict]:
     cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT p.payment_id, p.tg_id, p.tariff, p.amount, p.status, p.is_test, p.created_at,
+               CASE WHEN p.payment_id LIKE 'stars_%' THEN 'XTR' ELSE 'RUB' END AS currency,
+               CASE WHEN p.payment_id LIKE 'stars_%' THEN 'stars' ELSE 'yookassa' END AS provider,
                COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name, u.last_name
         FROM payments p
         LEFT JOIN users u ON p.tg_id = u.tg_id
@@ -181,8 +217,7 @@ def new_users_today() -> list[dict]:
     cur.execute("""
         SELECT id, tg_id, COALESCE(NULLIF(first_name,''), old_first_name) AS first_name, last_name, email, created_at, web_token
         FROM users
-        WHERE DATE(CONVERT_TZ(created_at, '+00:00', '+09:00'))
-            = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+09:00'))
+        WHERE created_at >= UTC_TIMESTAMP() - INTERVAL 24 HOUR
         ORDER BY created_at DESC
     """)
     rows = cur.fetchall()
@@ -268,13 +303,305 @@ def payment_stats() -> dict:
         SELECT
             COUNT(*) as total,
             SUM(CASE WHEN status='paid' AND is_test=0 THEN 1 ELSE 0 END) as paid,
-            SUM(CASE WHEN status='paid' AND is_test=0 THEN amount ELSE 0 END) as revenue
+            SUM(CASE WHEN status='paid' AND is_test=0 AND payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END) as revenue_rub,
+            SUM(CASE WHEN status='paid' AND is_test=0 AND payment_id LIKE 'stars_%' THEN amount ELSE 0 END) as revenue_stars,
+            SUM(CASE WHEN status='paid' AND is_test=0 AND payment_id NOT LIKE 'stars_%' THEN 1 ELSE 0 END) as paid_rub,
+            SUM(CASE WHEN status='paid' AND is_test=0 AND payment_id LIKE 'stars_%' THEN 1 ELSE 0 END) as paid_stars,
+            SUM(CASE WHEN status='paid' AND is_test=0 THEN amount ELSE 0 END) as raw_total_amount
         FROM payments
     """)
     row = cur.fetchone()
     cur.close()
     conn.close()
-    return row or {"total": 0, "paid": 0, "revenue": 0}
+    if not row:
+        return {"total": 0, "paid": 0, "revenue": 0.0, "revenue_rub": 0.0, "revenue_stars": 0.0, "paid_rub": 0, "paid_stars": 0}
+    row["revenue"] = float(row.get("revenue_rub") or 0.0)
+    row["revenue_rub"] = float(row.get("revenue_rub") or 0.0)
+    row["revenue_stars"] = float(row.get("revenue_stars") or 0.0)
+    row["paid_rub"] = int(row.get("paid_rub") or 0)
+    row["paid_stars"] = int(row.get("paid_stars") or 0)
+    return row
+
+
+def get_financial_projections() -> dict:
+    """Calculate upcoming renewals, forecasts, breakeven, and payments needed to maintain profit."""
+    import math
+    from datetime import timedelta
+    
+    tariff_prices = {
+        "weekly_7d": 50.0,
+        "monthly_30d": 199.0,
+        "standard_3m": 499.0,
+        "annual_365d": 1490.0,
+        "test_24h": 0.0,
+    }
+    tariff_names = {
+        "weekly_7d": "Неделя (7 дн)",
+        "monthly_30d": "Месяц (30 дн)",
+        "standard_3m": "3 месяца",
+        "annual_365d": "Год (365 дн)",
+        "test_24h": "Тест (3 дн)",
+    }
+    try:
+        from bot_xui.tariffs import TARIFFS
+        for k, v in TARIFFS.items():
+            tariff_prices[k] = float(v.get("price", 199))
+            tariff_names[k] = v.get("name", k)
+    except Exception:
+        pass
+
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    now = datetime.utcnow()
+
+    if now.month == 12:
+        next_month_first = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        next_month_first = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    end_of_month = next_month_first - timedelta(seconds=1)
+
+    # Active subscribers and upcoming renewals
+    cur.execute("""
+        SELECT u.id, u.tg_id, COALESCE(NULLIF(u.first_name,''), u.old_first_name) as first_name,
+               u.subscription_until, u.autopay_enabled, u.autopay_tariff, u.payment_method_id,
+               u.test_vless_activated, u.test_awg_activated,
+               (SELECT COUNT(*) FROM payments p WHERE p.tg_id = u.tg_id AND p.status='paid' AND p.is_test=0) as paid_count,
+               (SELECT p.tariff FROM payments p WHERE p.tg_id = u.tg_id AND p.status='paid' AND p.is_test=0 ORDER BY p.created_at DESC LIMIT 1) as last_paid_tariff,
+               (SELECT p.amount FROM payments p WHERE p.tg_id = u.tg_id AND p.status='paid' AND p.is_test=0 ORDER BY p.created_at DESC LIMIT 1) as last_paid_amount
+        FROM users u
+        WHERE u.subscription_until > NOW()
+        ORDER BY u.subscription_until ASC
+    """)
+    active_users = cur.fetchall()
+
+    ADMIN_TG_IDS = {364224373, 6648354839, 5254383247}
+    upcoming_list = []
+    for u in active_users:
+        sub_until = u["subscription_until"]
+        has_autopay = bool(u["autopay_enabled"] and u["payment_method_id"])
+        paid_cnt = int(u["paid_count"] or 0)
+        tg_id = u["tg_id"]
+        days_left = max(0.0, round((sub_until - now).total_seconds() / 86400, 1))
+        if tg_id in ADMIN_TG_IDS or tg_id is None or (days_left > 120 and paid_cnt == 0):
+            user_type = "special"
+            user_type_label = "👑 Админ / Спец"
+            t_key = u["last_paid_tariff"] or "special"
+            expected_price = 0.0
+        elif paid_cnt == 0:
+            user_type = "trial"
+            user_type_label = "🎁 Триал (тест 3 дн)"
+            t_key = "monthly_30d"
+            expected_price = float(tariff_prices.get("monthly_30d", 199.0))
+        elif has_autopay:
+            user_type = "autopay"
+            user_type_label = "⚡ Автоплатеж"
+            t_key = u["autopay_tariff"] or u["last_paid_tariff"] or "monthly_30d"
+            expected_price = float(tariff_prices.get(t_key, 199.0))
+        else:
+            user_type = "manual"
+            user_type_label = "🖐️ Ручное"
+            t_key = u["last_paid_tariff"] or "monthly_30d"
+            expected_price = float(u["last_paid_amount"] or tariff_prices.get(t_key, 199.0))
+
+        t_name = tariff_names.get(t_key, t_key)
+        sub_until_msk = sub_until + timedelta(hours=3)
+
+        upcoming_list.append({
+            "tg_id": tg_id,
+            "first_name": u["first_name"] or f"TG:{tg_id}",
+            "subscription_until": sub_until_msk.strftime("%Y-%m-%d %H:%M") + " (МСК)",
+            "days_left": days_left,
+            "user_type": user_type,
+            "user_type_label": user_type_label,
+            "is_autopay": has_autopay,
+            "is_trial": user_type == "trial",
+            "is_special": user_type == "special",
+            "paid_count": paid_cnt,
+            "tariff_key": t_key,
+            "tariff_name": t_name,
+            "amount": expected_price,
+            "expires_next_7d": sub_until <= (now + timedelta(days=7)),
+            "expires_this_month": sub_until <= end_of_month,
+            "expires_next_30d": sub_until <= (now + timedelta(days=30)),
+        })
+
+    # Horizon Summaries
+    sum_7d_auto = sum(x["amount"] for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "autopay")
+    sum_7d_man = sum(x["amount"] for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "manual")
+    sum_7d_trial = sum(x["amount"] for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "trial")
+    cnt_7d_auto = sum(1 for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "autopay")
+    cnt_7d_man = sum(1 for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "manual")
+    cnt_7d_trial = sum(1 for x in upcoming_list if x["expires_next_7d"] and x["user_type"] == "trial")
+
+    sum_month_auto = sum(x["amount"] for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "autopay")
+    sum_month_man = sum(x["amount"] for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "manual")
+    sum_month_trial = sum(x["amount"] for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "trial")
+    cnt_month_auto = sum(1 for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "autopay")
+    cnt_month_man = sum(1 for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "manual")
+    cnt_month_trial = sum(1 for x in upcoming_list if x["expires_this_month"] and x["user_type"] == "trial")
+
+    sum_30d_auto = sum(x["amount"] for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "autopay")
+    sum_30d_man = sum(x["amount"] for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "manual")
+    sum_30d_trial = sum(x["amount"] for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "trial")
+    cnt_30d_auto = sum(1 for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "autopay")
+    cnt_30d_man = sum(1 for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "manual")
+    cnt_30d_trial = sum(1 for x in upcoming_list if x["expires_next_30d"] and x["user_type"] == "trial")
+
+    # Current month revenue (MTD)
+    cur.execute("""
+        SELECT COUNT(*) as cnt,
+               COALESCE(SUM(amount), 0) as rev,
+               COALESCE(SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END), 0) as rev_rub,
+               COALESCE(SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END), 0) as rev_stars,
+               SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN 1 ELSE 0 END) as cnt_rub,
+               SUM(CASE WHEN payment_id LIKE 'stars_%' THEN 1 ELSE 0 END) as cnt_stars
+        FROM payments
+        WHERE status='paid' AND is_test=0 AND DATE_FORMAT(created_at, '%Y-%m') = DATE_FORMAT(NOW(), '%Y-%m')
+    """)
+    cur_m = cur.fetchone()
+    mtd_rev = float(cur_m["rev_rub"])
+    mtd_cnt = int(cur_m["cnt"])
+    mtd_stars = float(cur_m["rev_stars"])
+    mtd_stars_cnt = int(cur_m["cnt_stars"] or 0)
+
+    # Previous month revenue
+    cur.execute("""
+        SELECT COUNT(*) as cnt,
+               COALESCE(SUM(amount), 0) as rev,
+               COALESCE(SUM(CASE WHEN payment_id NOT LIKE 'stars_%' THEN amount ELSE 0 END), 0) as rev_rub,
+               COALESCE(SUM(CASE WHEN payment_id LIKE 'stars_%' THEN amount ELSE 0 END), 0) as rev_stars
+        FROM payments
+        WHERE status='paid' AND is_test=0 AND DATE_FORMAT(created_at, '%Y-%m') = DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 MONTH), '%Y-%m')
+    """)
+    prev_m = cur.fetchone()
+    prev_rev = float(prev_m["rev_rub"])
+    prev_cnt = int(prev_m["cnt"])
+    prev_stars = float(prev_m["rev_stars"])
+
+    # Current server cost
+    cur.execute("SELECT cost_rub FROM server_costs_monthly WHERE month = DATE_FORMAT(NOW(), '%Y-%m')")
+    c_row = cur.fetchone()
+    cur_server_cost = float(c_row["cost_rub"]) if (c_row and c_row["cost_rub"] is not None) else float(os.getenv("SERVER_MONTHLY_COST", "1350.0"))
+
+    # Average Order Value (last 60 days) - ruble payments only to avoid skewing AOV
+    cur.execute("""
+        SELECT AVG(amount) as aov
+        FROM payments
+        WHERE status='paid' AND is_test=0 AND payment_id NOT LIKE 'stars_%' AND created_at >= NOW() - INTERVAL 60 DAY
+    """)
+    aov_row = cur.fetchone()
+    aov = float(aov_row["aov"] or 385.0)
+
+    cur.close()
+    conn.close()
+
+    # Realistic Forecast:
+    # 95% on autopay, 70% on manual paying retention, 16.5% historical test conversion
+    expected_auto_rest = sum_month_auto * 0.95
+    expected_manual_rest = sum_month_man * 0.70
+    expected_trial_rest = sum_month_trial * 0.165
+
+    projected_month_rev = mtd_rev + expected_auto_rest + expected_manual_rest + expected_trial_rest
+    projected_month_profit = projected_month_rev - cur_server_cost
+
+    # Profit target & Run-Rate
+    target_profit = max(3000.0, prev_rev - cur_server_cost)
+    target_rev = target_profit + cur_server_cost
+    target_payments_needed = math.ceil(target_rev / aov)
+    breakeven_payments = math.ceil(cur_server_cost / aov)
+    payments_remaining = max(0, target_payments_needed - mtd_cnt)
+    target_progress_pct = min(100.0, round((mtd_cnt / max(1, target_payments_needed)) * 100, 1))
+
+    # Normalized MRR (strictly from paying customers, excluding trials and admin)
+    mrr = 0.0
+    for u in upcoming_list:
+        if u["user_type"] not in ["autopay", "manual"]:
+            continue
+        t = u["tariff_key"]
+        if "365d" in t or "annual" in t:
+            mrr += 1490.0 / 12.0
+        elif "3m" in t or "standard" in t:
+            mrr += 499.0 / 3.0
+        elif "7d" in t or "weekly" in t:
+            mrr += 200.0
+        else:
+            mrr += 199.0
+
+    paying_count = sum(1 for x in upcoming_list if x["user_type"] in ["autopay", "manual"])
+    trial_count = sum(1 for x in upcoming_list if x["user_type"] == "trial")
+    special_count = sum(1 for x in upcoming_list if x["user_type"] == "special")
+
+    return {
+        "mtd": {
+            "month": now.strftime("%Y-%m"),
+            "revenue": round(mtd_rev, 2),
+            "revenue_stars": round(mtd_stars, 2),
+            "payments_count": mtd_cnt,
+            "payments_count_stars": mtd_stars_cnt,
+            "profit": round(mtd_rev - cur_server_cost, 2),
+        },
+        "forecast": {
+            "projected_revenue": round(projected_month_rev, 2),
+            "projected_profit": round(projected_month_profit, 2),
+            "autopay_guaranteed_rest_of_month": round(sum_month_auto, 2),
+            "manual_paying_potential_rest_of_month": round(sum_month_man, 2),
+            "trial_conversion_expected_rest_of_month": round(expected_trial_rest, 2),
+            "server_monthly_cost": round(cur_server_cost, 2),
+            "mrr": round(mrr, 2),
+            "aov": round(aov, 1),
+            "previous_month_revenue": round(prev_rev, 2),
+            "growth_pct": round(((projected_month_rev - prev_rev) / max(1, prev_rev)) * 100, 1) if prev_rev > 0 else 0.0,
+        },
+        "target_maintenance": {
+            "target_profit": round(target_profit, 2),
+            "target_revenue": round(target_rev, 2),
+            "target_payments_needed": target_payments_needed,
+            "payments_completed": mtd_cnt,
+            "payments_remaining": payments_remaining,
+            "progress_percent": target_progress_pct,
+            "breakeven_payments_needed": breakeven_payments,
+            "paying_subscribers_total": paying_count,
+            "autopay_subscribers_count": sum(1 for x in upcoming_list if x["user_type"] == "autopay"),
+            "manual_subscribers_count": sum(1 for x in upcoming_list if x["user_type"] == "manual"),
+            "trial_subscribers_count": trial_count,
+            "special_subscribers_count": special_count,
+            "active_subscribers_total": len(active_users),
+            "status": "ACHIEVED" if payments_remaining == 0 else ("ON_TRACK" if target_progress_pct >= 70 else "IN_PROGRESS"),
+        },
+        "horizons": {
+            "next_7_days": {
+                "count_total": cnt_7d_auto + cnt_7d_man + cnt_7d_trial,
+                "count_autopay": cnt_7d_auto,
+                "count_manual": cnt_7d_man,
+                "count_trial": cnt_7d_trial,
+                "amount_total": round(sum_7d_auto + sum_7d_man, 2), # Exclude trial pure amount from guaranteed
+                "amount_autopay": round(sum_7d_auto, 2),
+                "amount_manual": round(sum_7d_man, 2),
+                "amount_trial_potential": round(sum_7d_trial, 2),
+            },
+            "rest_of_month": {
+                "count_total": cnt_month_auto + cnt_month_man + cnt_month_trial,
+                "count_autopay": cnt_month_auto,
+                "count_manual": cnt_month_man,
+                "count_trial": cnt_month_trial,
+                "amount_total": round(sum_month_auto + sum_month_man, 2),
+                "amount_autopay": round(sum_month_auto, 2),
+                "amount_manual": round(sum_month_man, 2),
+                "amount_trial_potential": round(sum_month_trial, 2),
+            },
+            "next_30_days": {
+                "count_total": cnt_30d_auto + cnt_30d_man + cnt_30d_trial,
+                "count_autopay": cnt_30d_auto,
+                "count_manual": cnt_30d_man,
+                "count_trial": cnt_30d_trial,
+                "amount_total": round(sum_30d_auto + sum_30d_man, 2),
+                "amount_autopay": round(sum_30d_auto, 2),
+                "amount_manual": round(sum_30d_man, 2),
+                "amount_trial_potential": round(sum_30d_trial, 2),
+            },
+        },
+        "upcoming_renewals": upcoming_list,
+    }
 
 
 def autopay_failures(limit: int = 50) -> list[dict]:
@@ -328,7 +655,7 @@ def protocol_breakdown() -> list[dict]:
     conn.close()
     
     # Ensure all expected protocols are present, even if count is 0
-    known_protocols = ['vless', 'awg', 'softether', 'hysteria']
+    known_protocols = ['vless', 'awg', 'hysteria']
     result_map = {r['vpn_type']: r['count'] for r in rows}
     return [{"vpn_type": p, "count": result_map.get(p, 0)} for p in known_protocols]
 
@@ -338,6 +665,8 @@ def failed_pending_payments(limit: int = 30) -> list[dict]:
     cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT p.payment_id, p.tg_id, p.tariff, p.amount, p.status, p.created_at,
+               CASE WHEN p.payment_id LIKE 'stars_%' THEN 'XTR' ELSE 'RUB' END AS currency,
+               CASE WHEN p.payment_id LIKE 'stars_%' THEN 'stars' ELSE 'yookassa' END AS provider,
                COALESCE(NULLIF(u.first_name,''), u.old_first_name) AS first_name
         FROM payments p
         LEFT JOIN users u ON p.tg_id = u.tg_id
@@ -422,7 +751,7 @@ def test_to_paid_by_protocol() -> list[dict]:
 
 def list_message_log(tg_id: int = None, source: str = None, status: str = None,
                      limit: int = 100, offset: int = 0) -> list[dict]:
-    """Query message_log with optional filters."""
+    """Query message_log with optional filters (excludes admin/test accounts by default)."""
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     conditions = []
@@ -430,6 +759,8 @@ def list_message_log(tg_id: int = None, source: str = None, status: str = None,
     if tg_id:
         conditions.append("m.tg_id = %s")
         params.append(tg_id)
+    else:
+        conditions.append("m.tg_id NOT IN (364224373, 6648354839, 5254383247)")
     if source:
         conditions.append("m.source = %s")
         params.append(source)
@@ -454,7 +785,7 @@ def list_message_log(tg_id: int = None, source: str = None, status: str = None,
 
 
 def count_message_log(tg_id: int = None, source: str = None, status: str = None) -> dict:
-    """Count message_log with optional filters, grouped by status."""
+    """Count message_log with optional filters, grouped by status (excludes admin/test accounts by default)."""
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     conditions = []
@@ -462,6 +793,8 @@ def count_message_log(tg_id: int = None, source: str = None, status: str = None)
     if tg_id:
         conditions.append("tg_id = %s")
         params.append(tg_id)
+    else:
+        conditions.append("tg_id NOT IN (364224373, 6648354839, 5254383247)")
     if source:
         conditions.append("source = %s")
         params.append(source)
@@ -484,7 +817,7 @@ def count_message_log(tg_id: int = None, source: str = None, status: str = None)
 
 
 def message_log_source_stats(days: int = 7) -> list[dict]:
-    """Per-source message stats for the last N days."""
+    """Per-source message stats for the last N days (excluding admin/test accounts)."""
     conn = _get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
@@ -495,6 +828,7 @@ def message_log_source_stats(days: int = 7) -> list[dict]:
                SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked
         FROM message_log
         WHERE created_at >= NOW() - INTERVAL %s DAY
+          AND tg_id NOT IN (364224373, 6648354839, 5254383247)
         GROUP BY source
         ORDER BY total DESC
     """, (days,))
@@ -502,3 +836,959 @@ def message_log_source_stats(days: int = 7) -> list[dict]:
     cur.close()
     conn.close()
     return rows
+
+
+def get_message_flow_analytics() -> dict:
+    """Computes real customer conversion funnel, retention trigger effectiveness, and support pain points."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    admin_filter = "m.tg_id NOT IN (364224373, 6648354839, 5254383247)"
+    
+    # 1. Funnel
+    cur.execute(f"""
+        SELECT 
+            COUNT(DISTINCT m.tg_id) as total_users,
+            COUNT(DISTINCT CASE WHEN m.scenario = 'start_screen' THEN m.tg_id END) as seen_start,
+            COUNT(DISTINCT CASE WHEN m.scenario = 'test_activation' THEN m.tg_id END) as activated_trial,
+            COUNT(DISTINCT CASE WHEN m.scenario LIKE '%tariff%' THEN m.tg_id END) as viewed_tariffs,
+            COUNT(DISTINCT CASE WHEN m.scenario LIKE '%buy_tariff%' OR m.scenario LIKE '%payment%' OR m.source='webhook' THEN m.tg_id END) as reached_payment
+        FROM message_log m
+        WHERE {admin_filter}
+    """)
+    funnel = cur.fetchone() or {}
+
+    cur.execute("""
+        SELECT COUNT(DISTINCT tg_id) as paid_users
+        FROM payments
+        WHERE status = 'paid' AND is_test = 0 AND tg_id NOT IN (364224373, 6648354839, 5254383247)
+    """)
+    paid_row = cur.fetchone() or {}
+    paid_users = paid_row.get("paid_users", 0)
+
+    # 2. Retention triggers
+    cur.execute(f"""
+        SELECT scenario, COUNT(*) as count
+        FROM message_log m
+        WHERE {admin_filter} AND m.source LIKE 'cron_%' AND m.status = 'sent'
+        GROUP BY scenario
+        ORDER BY count DESC
+        LIMIT 8
+    """)
+    retention_rows = cur.fetchall()
+
+    # 3. Recent incoming support texts
+    cur.execute(f"""
+        SELECT m.id, m.tg_id, COALESCE(NULLIF(u.first_name,''), u.old_first_name) as first_name,
+               m.message_text, m.created_at
+        FROM message_log m
+        LEFT JOIN users u ON m.tg_id = u.tg_id
+        WHERE {admin_filter} AND m.scenario = 'incoming_text'
+        ORDER BY m.created_at DESC
+        LIMIT 5
+    """)
+    support_rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    seen_start = funnel.get("seen_start", 0) or 1
+    act_trial = funnel.get("activated_trial", 0) or 0
+    viewed_tariffs = funnel.get("viewed_tariffs", 0) or 0
+    reached_pay = funnel.get("reached_payment", 0) or 0
+
+    return {
+        "funnel": {
+            "total_users": funnel.get("total_users", 0),
+            "seen_start": seen_start,
+            "activated_trial": act_trial,
+            "trial_pct": round((act_trial / seen_start) * 100, 1),
+            "viewed_tariffs": viewed_tariffs,
+            "tariffs_pct": round((viewed_tariffs / seen_start) * 100, 1),
+            "reached_payment": reached_pay,
+            "payment_intent_pct": round((reached_pay / seen_start) * 100, 1),
+            "paid_users": paid_users,
+            "paid_conversion_pct": round((paid_users / seen_start) * 100, 1),
+        },
+        "retention": retention_rows,
+        "recent_support": support_rows,
+    }
+
+
+def list_webpage_events(limit: int = 100, event_type: str = None, web_token: str = None) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    query = "SELECT * FROM webpage_events WHERE 1=1"
+    params = []
+    if event_type:
+        query += " AND event_type = %s"
+        params.append(event_type)
+    if web_token:
+        query += " AND web_token = %s"
+        params.append(web_token)
+    query += " ORDER BY created_at DESC LIMIT %s"
+    params.append(limit)
+    cur.execute(query, tuple(params))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def webpage_events_stats(days: int = 7) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT event_type, COUNT(*) as cnt
+        FROM webpage_events
+        WHERE created_at >= NOW() - INTERVAL %s DAY
+        GROUP BY event_type
+        ORDER BY cnt DESC
+    """, (days,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def webpage_active_users_last_24h() -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT
+            u.tg_id,
+            u.first_name,
+            u.last_name,
+            u.web_token,
+            UNIX_TIMESTAMP(w.last_event) AS last_event_ts,
+            w.event_count
+        FROM (
+            SELECT
+                tg_id,
+                MAX(created_at) AS last_event,
+                COUNT(*) AS event_count
+            FROM webpage_events
+            WHERE tg_id IS NOT NULL
+              AND created_at >= NOW() - INTERVAL 24 HOUR
+            GROUP BY tg_id
+        ) w
+        JOIN users u ON u.tg_id = w.tg_id
+        ORDER BY w.last_event DESC
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def webpage_visitor_journey(web_token: str, hours: int = 24) -> list[dict]:
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT event_type, element_id, element_text, extra_data, ip, user_agent, created_at
+        FROM webpage_events
+        WHERE web_token = %s
+          AND created_at >= NOW() - INTERVAL %s HOUR
+        ORDER BY created_at ASC
+    """, (web_token, hours))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def get_sub_import_stats(days: int = 30) -> dict:
+    """Return aggregated totals and per-user breakdown of subscription method clicks and imports."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+
+    # 1. Summary totals & today counts
+    cur.execute("""
+        SELECT 
+            COUNT(CASE WHEN event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'de') THEN 1 END) AS de_clicks_total,
+            COUNT(CASE WHEN event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_clicks_total,
+            COUNT(CASE WHEN event_type = 'sub_import_fetch' AND (element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'de') THEN 1 END) AS de_fetches_total,
+            COUNT(CASE WHEN event_type = 'sub_import_fetch' AND (element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_fetches_total,
+            COUNT(CASE WHEN created_at >= CURDATE() AND event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'de') THEN 1 END) AS de_clicks_today,
+            COUNT(CASE WHEN created_at >= CURDATE() AND event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_clicks_today,
+            COUNT(CASE WHEN created_at >= CURDATE() AND event_type = 'sub_import_fetch' AND (element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'de') THEN 1 END) AS de_fetches_today,
+            COUNT(CASE WHEN created_at >= CURDATE() AND event_type = 'sub_import_fetch' AND (element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_fetches_today
+        FROM webpage_events
+        WHERE event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect', 'sub_import_fetch')
+          AND (web_token NOT IN ('tok', 'active-token', 'expired-token', 'expired-token-browser') OR web_token IS NULL)
+          AND created_at >= NOW() - INTERVAL %s DAY
+    """, (days,))
+    summary = cur.fetchone() or {}
+
+    # 2. Per-user grouped counts
+    cur.execute("""
+        SELECT
+            w.tg_id,
+            w.web_token,
+            COUNT(CASE WHEN w.event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (w.element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) = 'de') THEN 1 END) AS de_clicks,
+            COUNT(CASE WHEN w.event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect') AND (w.element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_clicks,
+            COUNT(CASE WHEN w.event_type = 'sub_import_fetch' AND (w.element_id = 'de' OR JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) = 'de') THEN 1 END) AS de_fetches,
+            COUNT(CASE WHEN w.event_type = 'sub_import_fetch' AND (w.element_id = 'ru' OR JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) = 'ru') THEN 1 END) AS ru_fetches,
+            MAX(w.created_at) AS last_activity,
+            SUBSTRING_INDEX(GROUP_CONCAT(
+                CASE 
+                    WHEN w.element_id IN ('de', 'ru') THEN w.element_id
+                    WHEN JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method')) IN ('de', 'ru') THEN JSON_UNQUOTE(JSON_EXTRACT(w.extra_data, '$.method'))
+                    ELSE NULL
+                END
+                ORDER BY w.created_at DESC
+            ), ',', 1) AS last_choice
+        FROM webpage_events w
+        WHERE w.event_type IN ('sub_option_select', 'sub_option_copy', 'sub_option_connect', 'sub_import_fetch')
+          AND (w.web_token NOT IN ('tok', 'active-token', 'expired-token', 'expired-token-browser') OR w.web_token IS NULL)
+          AND w.created_at >= NOW() - INTERVAL %s DAY
+        GROUP BY w.tg_id, w.web_token
+        ORDER BY last_activity DESC
+        LIMIT 100
+    """, (days,))
+    rows = cur.fetchall() or []
+
+    # 3. Batch enrich with user names
+    tg_ids = [r["tg_id"] for r in rows if r.get("tg_id")]
+    tokens = [r["web_token"] for r in rows if r.get("web_token")]
+
+    users_by_tg = {}
+    users_by_token = {}
+
+    if tg_ids or tokens:
+        conds = []
+        params = []
+        if tg_ids:
+            ph = ",".join(["%s"] * len(tg_ids))
+            conds.append(f"tg_id IN ({ph})")
+            params.extend(tg_ids)
+        if tokens:
+            ph = ",".join(["%s"] * len(tokens))
+            conds.append(f"web_token IN ({ph})")
+            params.extend(tokens)
+
+        cur.execute(f"""
+            SELECT tg_id, web_token,
+                   COALESCE(NULLIF(first_name,''), NULLIF(old_first_name,''), 'Пользователь') AS first_name,
+                   last_name
+            FROM users
+            WHERE {" OR ".join(conds)}
+        """, tuple(params))
+        for u in cur.fetchall():
+            if u.get("tg_id"):
+                users_by_tg[u["tg_id"]] = u
+            if u.get("web_token"):
+                users_by_token[u["web_token"]] = u
+
+    cur.close()
+    conn.close()
+
+    for r in rows:
+        u = users_by_tg.get(r.get("tg_id")) or users_by_token.get(r.get("web_token")) or {}
+        r["first_name"] = u.get("first_name") or "Пользователь"
+        r["last_name"] = u.get("last_name") or ""
+        if r.get("last_activity") and hasattr(r["last_activity"], "isoformat"):
+            r["last_activity"] = r["last_activity"].isoformat()
+        else:
+            r["last_activity"] = str(r.get("last_activity") or "")
+
+    return {
+        "summary": summary,
+        "users": rows,
+        "days": days
+    }
+
+
+def get_user_delete_preview(tg_id: int) -> dict:
+    """Collect all user data that would be deleted for a given tg_id."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+
+    # User info
+    cur.execute("SELECT * FROM users WHERE tg_id = %s", (tg_id,))
+    user = cur.fetchone()
+
+    if not user:
+        cur.close()
+        conn.close()
+        return {"found": False}
+
+    # VPN keys
+    cur.execute("SELECT id, client_name, vpn_type, expires_at, created_at FROM vpn_keys WHERE tg_id = %s ORDER BY created_at DESC", (tg_id,))
+    vpn_keys = cur.fetchall()
+
+    # Payments (last 10)
+    cur.execute("SELECT payment_id, tariff, amount, status, is_test, created_at FROM payments WHERE tg_id = %s ORDER BY created_at DESC LIMIT 10", (tg_id,))
+    payments = cur.fetchall()
+
+    # AWG clients by name pattern
+    client_name = f"tiin_{tg_id}"
+    cur.execute("SELECT id, name, address, enabled FROM awg_clients WHERE name = %s", (client_name,))
+    awg_clients = cur.fetchall()
+
+    # Related record counts
+    counts = {}
+    for table, condition in [
+        ("autopay_log", "tg_id = %s"),
+        ("message_log", "tg_id = %s"),
+        ("promocode_usages", "tg_id = %s"),
+        ("promo_activations", "tg_id = %s"),
+        ("winback_log", "tg_id = %s"),
+        ("webpage_events", "tg_id = %s"),
+    ]:
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM {table} WHERE {condition}", (tg_id,))
+        counts[table] = cur.fetchone()["cnt"]
+
+    # auth_sessions count (via user_id)
+    if user.get("id"):
+        cur.execute("SELECT COUNT(*) AS cnt FROM auth_sessions WHERE user_id = %s", (user["id"],))
+        counts["auth_sessions"] = cur.fetchone()["cnt"]
+
+    cur.close()
+    conn.close()
+
+    return {
+        "found": True,
+        "user": {
+            "id": user["id"],
+            "tg_id": user["tg_id"],
+            "first_name": user.get("first_name") or user.get("old_first_name") or "",
+            "email": user.get("email") or "",
+            "subscription_until": str(user.get("subscription_until") or "") if user.get("subscription_until") else None,
+            "created_at": str(user.get("created_at") or "") if user.get("created_at") else None,
+        },
+        "vpn_keys": vpn_keys,
+        "payments": payments,
+        "awg_clients": awg_clients,
+        "client_name": client_name,
+        "related_counts": counts,
+    }
+
+
+def delete_user_data(tg_id: int) -> dict:
+    """Fully delete all user data across all tables. Returns deletion stats."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+
+    # Get user info needed for deletion (user_id for auth_sessions)
+    cur.execute("SELECT id FROM users WHERE tg_id = %s", (tg_id,))
+    user_row = cur.fetchone()
+    user_id = user_row["id"] if user_row else None
+
+    deleted = {}
+
+    # 1. vpn_keys
+    cur.execute("DELETE FROM vpn_keys WHERE tg_id = %s", (tg_id,))
+    deleted["vpn_keys"] = cur.rowcount
+
+    # 2. payments
+    cur.execute("DELETE FROM payments WHERE tg_id = %s", (tg_id,))
+    deleted["payments"] = cur.rowcount
+
+    # 3. autopay_log
+    cur.execute("DELETE FROM autopay_log WHERE tg_id = %s", (tg_id,))
+    deleted["autopay_log"] = cur.rowcount
+
+    # 4. message_log
+    cur.execute("DELETE FROM message_log WHERE tg_id = %s", (tg_id,))
+    deleted["message_log"] = cur.rowcount
+
+    # 5. promocode_usages
+    cur.execute("DELETE FROM promocode_usages WHERE tg_id = %s", (tg_id,))
+    deleted["promocode_usages"] = cur.rowcount
+
+    # 6. promo_activations
+    cur.execute("DELETE FROM promo_activations WHERE tg_id = %s", (tg_id,))
+    deleted["promo_activations"] = cur.rowcount
+
+    # 7. winback_log
+    cur.execute("DELETE FROM winback_log WHERE tg_id = %s", (tg_id,))
+    deleted["winback_log"] = cur.rowcount
+
+    # 8. webpage_events
+    cur.execute("DELETE FROM webpage_events WHERE tg_id = %s", (tg_id,))
+    deleted["webpage_events"] = cur.rowcount
+
+    # 9. auth_sessions (by user_id)
+    if user_id:
+        cur.execute("DELETE FROM auth_sessions WHERE user_id = %s", (user_id,))
+        deleted["auth_sessions"] = cur.rowcount
+
+    # 10. users (last)
+    cur.execute("DELETE FROM users WHERE tg_id = %s", (tg_id,))
+    deleted["users"] = cur.rowcount
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return deleted
+
+
+def get_monitoring_stats() -> dict:
+    """Fetch monitoring data for admin panel (traffic stats + instagram probe stats)."""
+    import sqlite3
+
+    # Получаем актуальные активные инбаунды из 3x-ui + awg0
+    active_inbounds = {}
+    try:
+        conn_xui = sqlite3.connect("/etc/x-ui/x-ui.db")
+        c_xui = conn_xui.cursor()
+        for row in c_xui.execute("SELECT id, remark, port, protocol FROM inbounds WHERE enable = 1"):
+            active_inbounds[row[0]] = {
+                "remark": row[1] or f"Inbound-{row[0]}",
+                "port": row[2],
+                "protocol": row[3]
+            }
+        conn_xui.close()
+    except Exception as e:
+        logger.error(f"Error fetching x-ui inbounds for monitoring: {e}")
+
+    active_inbounds[100] = {"remark": "AmneziaWG-awg0", "port": 51888, "protocol": "amneziawg"}
+    # Российские инбаунды (СПб, Selectel)
+    active_inbounds[201] = {"remark": "🇷🇺 RU-VLESS (WS TLS)", "port": 8443, "protocol": "vless"}
+    active_inbounds[202] = {"remark": "🇷🇺 RU-Hysteria2 (TLS)", "port": 35443, "protocol": "hysteria2"}
+
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+
+    # 1. Latest snapshot per active inbound
+    cur.execute("""
+        SELECT s1.inbound_id, s1.remark, s1.port, s1.protocol, s1.up_bytes, s1.down_bytes,
+               s1.total_bytes, s1.up_speed_bps, s1.down_speed_bps, s1.created_at
+        FROM inbound_traffic_stats s1
+        INNER JOIN (
+            SELECT inbound_id, MAX(id) as max_id
+            FROM inbound_traffic_stats
+            GROUP BY inbound_id
+        ) s2 ON s1.inbound_id = s2.inbound_id AND s1.id = s2.max_id
+        ORDER BY s1.inbound_id ASC
+    """)
+    raw_current = cur.fetchall()
+    latest_map = {r["inbound_id"]: r for r in raw_current}
+    current_inbounds = []
+    for ib_id, meta in active_inbounds.items():
+        if ib_id in latest_map:
+            item = dict(latest_map[ib_id])
+            item["remark"] = meta["remark"]
+            item["port"] = meta["port"]
+            item["protocol"] = meta["protocol"]
+            current_inbounds.append(item)
+
+    # 2. Hourly averages / max for the last 24h per active inbound
+    cur.execute("""
+        SELECT inbound_id,
+               COUNT(*) as snapshots,
+               ROUND(AVG(down_speed_bps)/1024/1024, 4) as avg_down_mbps,
+               ROUND(MAX(down_speed_bps)/1024/1024, 4) as max_down_mbps,
+               ROUND(AVG(up_speed_bps)/1024/1024, 4) as avg_up_mbps,
+               ROUND(MAX(up_speed_bps)/1024/1024, 4) as max_up_mbps
+        FROM inbound_traffic_stats
+        WHERE created_at >= NOW() - INTERVAL 24 HOUR
+        GROUP BY inbound_id
+    """)
+    stats_map = {r["inbound_id"]: r for r in cur.fetchall()}
+    summary_24h = []
+    for ib_id, meta in active_inbounds.items():
+        st = stats_map.get(ib_id, {
+            "snapshots": 0, "avg_down_mbps": 0.0, "max_down_mbps": 0.0,
+            "avg_up_mbps": 0.0, "max_up_mbps": 0.0
+        })
+        summary_24h.append({
+            "inbound_id": ib_id,
+            "remark": meta["remark"],
+            "port": meta["port"],
+            "protocol": meta["protocol"],
+            "snapshots": st["snapshots"],
+            "avg_down_mbps": float(st["avg_down_mbps"]),
+            "max_down_mbps": float(st["max_down_mbps"]),
+            "avg_up_mbps": float(st["avg_up_mbps"]),
+            "max_up_mbps": float(st["max_up_mbps"]),
+        })
+
+    summary_24h.sort(key=lambda x: x["max_down_mbps"], reverse=True)
+
+    cur.close()
+    conn.close()
+
+    return {
+        "current_inbounds": current_inbounds,
+        "summary_24h": summary_24h,
+    }
+
+
+def subscription_status_summary() -> dict:
+    """Return expiring_soon (within 3 days) and recently_expired (within 30 days) user list and counts.
+    Enriched with winback funnel stages (gift activated, pending, offer sent, paid status, bot blocked).
+    Considers minimum of users.subscription_until and 3x-ui /etc/x-ui/x-ui.db client expiryTime."""
+    conn = _get_conn()
+    cur = conn.cursor(dictionary=True)
+
+    # 1. Fetch users from MySQL
+    cur.execute("""
+        SELECT u.id, u.tg_id, COALESCE(NULLIF(u.first_name,''), NULLIF(u.old_first_name,'')) AS first_name,
+               u.last_name, u.web_token, u.subscription_until, COALESCE(u.bot_blocked, 0) AS bot_blocked
+        FROM users u
+    """)
+    user_rows = cur.fetchall()
+
+    # 2. Fetch payments aggregate per user
+    cur.execute("""
+        SELECT tg_id, COUNT(*) AS payments_count, COALESCE(SUM(amount), 0) AS total_paid
+        FROM payments
+        WHERE status = 'paid'
+        GROUP BY tg_id
+    """)
+    pay_rows = cur.fetchall()
+    pay_map = {r["tg_id"]: r for r in pay_rows if r.get("tg_id")}
+
+    # 3. Fetch winback log entries
+    cur.execute("""
+        SELECT tg_id, scenario, sent_at
+        FROM winback_log
+        ORDER BY sent_at ASC
+    """)
+    wb_rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    from collections import defaultdict
+    wb_map = defaultdict(list)
+    for r in wb_rows:
+        if r.get("tg_id"):
+            wb_map[r["tg_id"]].append(r)
+
+    users_map = {r["tg_id"]: r for r in user_rows if r.get("tg_id")}
+
+    # 4. Fetch min active expiryTime per tg_id from 3x-ui SQLite db
+    xui_expires = {}
+    import sqlite3
+    try:
+        xconn = sqlite3.connect('/etc/x-ui/x-ui.db')
+        xcur = xconn.cursor()
+        xcur.execute("SELECT settings FROM inbounds")
+        inbound_rows = xcur.fetchall()
+        xconn.close()
+        for irow in inbound_rows:
+            try:
+                sett = json.loads(irow[0])
+                for cl in sett.get("clients", []):
+                    tg_id = cl.get("tgId")
+                    exp_ms = cl.get("expiryTime", 0)
+                    if tg_id and exp_ms and exp_ms > 0:
+                        if tg_id not in xui_expires or exp_ms < xui_expires[tg_id]:
+                            xui_expires[tg_id] = exp_ms
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Failed to read x-ui.db for expiry: {e}")
+
+    now = datetime.utcnow()
+    expiring_soon = []
+    recently_expired = []
+
+    for tg_id, u in users_map.items():
+        sub = u.get("subscription_until")
+        xui_ms = xui_expires.get(tg_id)
+        xui_dt = datetime.utcfromtimestamp(xui_ms / 1000.0) if xui_ms else None
+
+        # Effective expiry: users.subscription_until is canonical.
+        # Use max if multiple dates exist to avoid false-positives from stale secondary inbounds.
+        dates = []
+        if sub and isinstance(sub, datetime):
+            dates.append(sub)
+        if xui_dt:
+            dates.append(xui_dt)
+
+        if not dates:
+            continue
+
+        eff = max(dates)
+
+        diff_seconds = (eff - now).total_seconds()
+        hours = int(diff_seconds / 3600)
+
+        # Check payments info
+        p_info = pay_map.get(tg_id, {})
+        p_count = int(p_info.get("payments_count", 0))
+        p_total = float(p_info.get("total_paid", 0.0))
+
+        # Check winback history
+        user_wb = wb_map.get(tg_id, [])
+        is_bot_blocked = bool(u.get("bot_blocked", 0))
+
+        gift_activated = False
+        gift_activated_at = None
+        gift_sent = False
+        gift_sent_at = None
+        last_wb_scenario = None
+        last_wb_at = None
+        sends_count = 0
+
+        for wb in user_wb:
+            sc = wb.get("scenario", "")
+            s_at = wb.get("sent_at")
+            if sc in ("loyalty_gift_activated", "gift_activated"):
+                gift_activated = True
+                gift_activated_at = s_at.strftime("%Y-%m-%d %H:%M") if hasattr(s_at, "strftime") else str(s_at)
+            elif sc in ("loyalty_gift_10d", "loyalty_gift", "test_0mb_2d"):
+                gift_sent = True
+                gift_sent_at = s_at.strftime("%Y-%m-%d %H:%M") if hasattr(s_at, "strftime") else str(s_at)
+                sends_count += 1
+                last_wb_scenario = sc
+                last_wb_at = s_at
+            else:
+                sends_count += 1
+                last_wb_scenario = sc
+                last_wb_at = s_at
+
+        # Determine winback stage
+        if is_bot_blocked:
+            wb_stage = "bot_blocked"
+            wb_badge = "🚫 Бот заблокирован"
+        elif gift_activated:
+            wb_stage = "gift_activated"
+            wb_badge = "🎁 Доп. тест активирован"
+        elif gift_sent:
+            wb_stage = "gift_pending"
+            wb_badge = "⏳ Доп. тест ожидает активации"
+        elif last_wb_scenario:
+            wb_stage = "offer_sent"
+            wb_badge = f"📨 Оффер: {last_wb_scenario}"
+        else:
+            wb_stage = "ready_to_send"
+            wb_badge = "✉️ Оффер не отправлялся"
+
+        entry = {
+            "id": u["id"],
+            "tg_id": u["tg_id"],
+            "first_name": u["first_name"],
+            "last_name": u["last_name"],
+            "subscription_until": eff.strftime("%Y-%m-%d %H:%M:%S"),
+            "web_token": u["web_token"],
+            "payments_count": p_count,
+            "paid_amount": p_total,
+            "is_paid": p_count > 0,
+            "bot_blocked": is_bot_blocked,
+            "winback_stage": wb_stage,
+            "winback_badge": wb_badge,
+            "gift_activated": gift_activated,
+            "gift_activated_at": gift_activated_at,
+            "gift_sent": gift_sent,
+            "gift_sent_at": gift_sent_at,
+            "last_winback_scenario": last_wb_scenario,
+            "last_winback_at": last_wb_at.strftime("%Y-%m-%d %H:%M") if hasattr(last_wb_at, "strftime") and last_wb_at else str(last_wb_at) if last_wb_at else None,
+            "sends_count": sends_count,
+        }
+
+        if 0 <= hours <= 72:
+            entry["hours_left"] = hours
+            expiring_soon.append(entry)
+        elif -720 <= hours < 0:
+            entry["hours_ago"] = abs(hours)
+            recently_expired.append(entry)
+
+    expiring_soon.sort(key=lambda x: x.get("hours_left", 0))
+    recently_expired.sort(key=lambda x: x.get("hours_ago", 0))
+
+    return {
+        "expiring_soon": expiring_soon,
+        "recently_expired": recently_expired,
+        "expiring_soon_count": len(expiring_soon),
+        "recently_expired_count": len(recently_expired),
+        "stats": {
+            "total_expired": len(recently_expired),
+            "gift_activated_count": sum(1 for x in recently_expired if x.get("winback_stage") == "gift_activated"),
+            "gift_pending_count": sum(1 for x in recently_expired if x.get("winback_stage") == "gift_pending"),
+            "ready_to_send_count": sum(1 for x in recently_expired if x.get("winback_stage") == "ready_to_send"),
+            "paid_users_count": sum(1 for x in recently_expired if x.get("is_paid")),
+            "bot_blocked_count": sum(1 for x in recently_expired if x.get("bot_blocked")),
+        }
+    }
+
+
+def get_inbounds_popularity_stats(days: int = 3) -> dict:
+    """Fetch all inbounds with SNI, transport parameters and traffic deltas for the specified period."""
+    import json
+    xui_db_path = "/etc/x-ui/x-ui.db"
+    now_ts = int(time.time() * 1000)
+    period_start_ts = now_ts - (days * 86400 * 1000)
+
+    inbounds_list = []
+
+    # 1. Parse /etc/x-ui/x-ui.db
+    if os.path.exists(xui_db_path):
+        try:
+            xconn = sqlite3.connect(xui_db_path)
+            xcur = xconn.cursor()
+
+            # Online stats from client_traffics
+            online_recent_map = {} # inbound_id -> count of clients online in period
+            try:
+                xcur.execute("""
+                    SELECT inbound_id, COUNT(DISTINCT email)
+                    FROM client_traffics
+                    WHERE last_online >= ?
+                    GROUP BY inbound_id
+                """, (period_start_ts,))
+                for row in xcur.fetchall():
+                    if row[0]:
+                        online_recent_map[row[0]] = row[1]
+            except Exception as e:
+                logger.warning(f"Error querying client_traffics: {e}")
+
+            xcur.execute("SELECT id, remark, port, protocol, settings, stream_settings, enable, up, down FROM inbounds")
+            for row in xcur.fetchall():
+                ib_id, remark, port, protocol, settings_str, stream_str, enable, ib_up, ib_down = row
+                
+                settings = {}
+                if settings_str:
+                    try:
+                        settings = json.loads(settings_str)
+                    except Exception:
+                        pass
+                
+                stream = {}
+                if stream_str:
+                    try:
+                        stream = json.loads(stream_str)
+                    except Exception:
+                        pass
+
+                clients = settings.get("clients", [])
+                total_clients = len(clients)
+                active_clients = 0
+                for cl in clients:
+                    exp = cl.get("expiryTime", 0)
+                    if cl.get("enable", True) and (exp == 0 or exp > now_ts):
+                        active_clients += 1
+
+                net = stream.get("network", "tcp")
+                sec = stream.get("security", "none")
+                
+                sni_list = []
+                target = ""
+                fingerprint = ""
+                path = ""
+                mode = ""
+                
+                if sec == "reality":
+                    rs = stream.get("realitySettings", {})
+                    sni_list = rs.get("serverNames", [])
+                    target = rs.get("target", "")
+                    fingerprint = rs.get("settings", {}).get("fingerprint", "")
+                elif sec == "tls":
+                    ts = stream.get("tlsSettings", {})
+                    if ts.get("serverName"):
+                        sni_list = [ts.get("serverName")]
+                
+                if net == "xhttp":
+                    xs = stream.get("xhttpSettings", {})
+                    path = xs.get("path", "")
+                    mode = xs.get("mode", "")
+                    if not sni_list and xs.get("host"):
+                        sni_list = [xs.get("host")]
+                elif net == "ws":
+                    ws = stream.get("wsSettings", {})
+                    path = ws.get("path", "")
+                    if not sni_list and ws.get("headers", {}).get("Host"):
+                        sni_list = [ws.get("headers", {}).get("Host")]
+                elif net == "grpc":
+                    gs = stream.get("grpcSettings", {})
+                    path = gs.get("serviceName", "")
+
+                inbounds_list.append({
+                    "id": ib_id,
+                    "remark": remark or f"Inbound #{ib_id}",
+                    "port": port,
+                    "protocol": protocol,
+                    "network": net,
+                    "security": sec,
+                    "sni": sni_list,
+                    "target": target,
+                    "fingerprint": fingerprint,
+                    "path": path,
+                    "mode": mode,
+                    "enable": bool(enable),
+                    "total_clients": total_clients,
+                    "active_clients": active_clients,
+                    "online_in_period": online_recent_map.get(ib_id, 0),
+                    "lifetime_up": ib_up or 0,
+                    "lifetime_down": ib_down or 0,
+                })
+            xconn.close()
+        except Exception as e:
+            logger.error(f"Failed to read x-ui.db: {e}")
+
+    # 2. Add AmneziaWG (id=100) if active
+    awg_rx_path = "/sys/class/net/awg0/statistics/rx_bytes"
+    awg_tx_path = "/sys/class/net/awg0/statistics/tx_bytes"
+    if os.path.exists(awg_rx_path) and os.path.exists(awg_tx_path):
+        try:
+            # count awg clients from mysql or awg config
+            awg_clients_cnt = 0
+            try:
+                conn_awg = _get_conn()
+                c_cur = conn_awg.cursor(dictionary=True)
+                c_cur.execute("SELECT COUNT(*) as cnt FROM users WHERE awg_pubkey IS NOT NULL AND awg_pubkey != '' AND is_active = 1")
+                r = c_cur.fetchone()
+                if r:
+                    awg_clients_cnt = r["cnt"]
+                c_cur.close()
+                conn_awg.close()
+            except Exception:
+                pass
+
+            inbounds_list.append({
+                "id": 100,
+                "remark": "AmneziaWG-awg0",
+                "port": 51888,
+                "protocol": "amneziawg",
+                "network": "udp",
+                "security": "awg-obfs",
+                "sni": ["AWG (H1-H4/S1-S2)"],
+                "target": "awg0 kernel",
+                "fingerprint": "AmneziaWG 2.0",
+                "path": "",
+                "mode": "",
+                "enable": True,
+                "total_clients": awg_clients_cnt,
+                "active_clients": awg_clients_cnt,
+                "online_in_period": awg_clients_cnt,
+                "lifetime_up": 0,
+                "lifetime_down": 0,
+            })
+        except Exception as e:
+            logger.warning(f"Error adding AWG inbound: {e}")
+
+    # 3. Query MySQL inbound_traffic_stats for the requested period (days)
+    traffic_map = {}
+    total_period_traffic = 0
+
+    try:
+        conn = _get_conn()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT inbound_id,
+                   MAX(up_bytes) - MIN(up_bytes) as up_diff,
+                   MAX(down_bytes) - MIN(down_bytes) as down_diff,
+                   MAX(total_bytes) - MIN(total_bytes) as total_diff,
+                   MAX(up_speed_bps) as max_up_speed,
+                   MAX(down_speed_bps) as max_down_speed,
+                   AVG(up_speed_bps) as avg_up_speed,
+                   AVG(down_speed_bps) as avg_down_speed
+            FROM inbound_traffic_stats
+            WHERE created_at >= NOW() - INTERVAL %s DAY
+            GROUP BY inbound_id
+        """, (days,))
+        
+        for row in cur.fetchall():
+            ib_id = row["inbound_id"]
+            up_d = max(0, row["up_diff"] or 0)
+            down_d = max(0, row["down_diff"] or 0)
+            tot_d = max(0, row["total_diff"] or 0)
+            if tot_d == 0 and (up_d > 0 or down_d > 0):
+                tot_d = up_d + down_d
+
+            traffic_map[ib_id] = {
+                "up_bytes": up_d,
+                "down_bytes": down_d,
+                "total_bytes": tot_d,
+                "max_up_speed_bps": row["max_up_speed"] or 0,
+                "max_down_speed_bps": row["max_down_speed"] or 0,
+                "avg_up_speed_bps": float(row["avg_up_speed"] or 0),
+                "avg_down_speed_bps": float(row["avg_down_speed"] or 0),
+            }
+            total_period_traffic += tot_d
+
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error querying traffic stats for {days} days: {e}")
+
+    # 4. Query user_inbound_activity details for each inbound
+    inbound_users_map = {}
+    try:
+        conn_u = _get_conn()
+        cur_u = conn_u.cursor(dictionary=True)
+        cur_u.execute("""
+            SELECT a.email, a.inbound_id, a.connections_count, a.up_bytes, a.down_bytes, a.total_bytes,
+                   a.first_connected_at, a.last_connected_at,
+                   COALESCE(u.tg_id, vk.tg_id) AS tg_id,
+                   COALESCE(NULLIF(u.first_name,''), NULLIF(u.old_first_name,'')) AS first_name,
+                   u.last_name, u.web_token
+            FROM user_inbound_activity a
+            LEFT JOIN vpn_keys vk ON a.email = vk.client_name
+            LEFT JOIN users u ON (a.tg_id IS NOT NULL AND a.tg_id != 0 AND a.tg_id = u.tg_id)
+                              OR (vk.tg_id IS NOT NULL AND vk.tg_id != 0 AND vk.tg_id = u.tg_id)
+                              OR (vk.user_id IS NOT NULL AND vk.user_id = u.id)
+            ORDER BY a.total_bytes DESC
+        """)
+        for urow in cur_u.fetchall():
+            iid = urow["inbound_id"]
+            if iid not in inbound_users_map:
+                inbound_users_map[iid] = []
+            inbound_users_map[iid].append({
+                "email": urow["email"],
+                "tg_id": urow["tg_id"],
+                "first_name": urow["first_name"] or urow["email"],
+                "last_name": urow["last_name"] or "",
+                "web_token": urow["web_token"] or "",
+                "connections_count": urow["connections_count"] or 1,
+                "up_bytes": urow["up_bytes"] or 0,
+                "down_bytes": urow["down_bytes"] or 0,
+                "total_bytes": urow["total_bytes"] or 0,
+                "first_connected_at": urow["first_connected_at"].strftime("%Y-%m-%d %H:%M") if urow["first_connected_at"] else None,
+                "last_connected_at": urow["last_connected_at"].strftime("%Y-%m-%d %H:%M") if urow["last_connected_at"] else None,
+            })
+        cur_u.close()
+        conn_u.close()
+    except Exception as e:
+        logger.error(f"Error querying user_inbound_activity: {e}")
+
+    # Combine inbounds with traffic stats and user breakdowns
+    result_inbounds = []
+    for ib in inbounds_list:
+        ib_id = ib["id"]
+        t = traffic_map.get(ib_id, {
+            "up_bytes": 0,
+            "down_bytes": 0,
+            "total_bytes": 0,
+            "max_up_speed_bps": 0,
+            "max_down_speed_bps": 0,
+            "avg_up_speed_bps": 0,
+            "avg_down_speed_bps": 0,
+        })
+        
+        tot = t["total_bytes"]
+        share_pct = round((tot / total_period_traffic * 100), 2) if total_period_traffic > 0 else 0.0
+
+        users_list = inbound_users_map.get(ib_id, [])
+        total_connections = sum(u["connections_count"] for u in users_list) if users_list else (1 if tot > 0 else 0)
+
+        item = {
+            **ib,
+            "period_up_bytes": t["up_bytes"],
+            "period_down_bytes": t["down_bytes"],
+            "period_total_bytes": tot,
+            "period_share_pct": share_pct,
+            "max_down_speed_mbps": round(t["max_down_speed_bps"] / 1024 / 1024, 2),
+            "max_up_speed_mbps": round(t["max_up_speed_bps"] / 1024 / 1024, 2),
+            "avg_down_speed_mbps": round(t["avg_down_speed_bps"] / 1024 / 1024, 2),
+            "avg_up_speed_mbps": round(t["avg_up_speed_bps"] / 1024 / 1024, 2),
+            "total_connections": total_connections,
+            "users": users_list,
+        }
+        result_inbounds.append(item)
+
+    # Sort descending by traffic in period, then by active clients
+    result_inbounds.sort(key=lambda x: (x["period_total_bytes"], x["active_clients"]), reverse=True)
+
+    return {
+        "days": days,
+        "total_period_bytes": total_period_traffic,
+        "inbounds_count": len(result_inbounds),
+        "inbounds": result_inbounds,
+    }
+
+
+

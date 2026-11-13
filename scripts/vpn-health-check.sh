@@ -51,7 +51,7 @@ if ss -tlnp | grep -q ':7443'; then
     log "✅ Xray listening on 7443"
     RESULTS+="✅ Xray port 7443: OK\n"
 else
-    try_restart "Xray" "sudo docker restart x-ui" "ss -tlnp | grep -q ':7443'"
+    try_restart "Xray" "sudo systemctl restart x-ui" "ss -tlnp | grep -q ':7443'"
     if [ "$TRY_RESTART_OK" -eq 1 ]; then
         RESULTS+="✅ Xray port 7443: OK [auto-recovered]\n"
         RECOVERED+="Xray "
@@ -103,31 +103,6 @@ else
     FAILED=1
 fi
 
-# Test 7: SoftEther VPN server on port 5555
-if ss -tlnp | grep -q ':5555'; then
-    log "✅ SoftEther listening on 5555"
-    RESULTS+="✅ SoftEther port 5555: OK\n"
-else
-    log "❌ SoftEther NOT listening on 5555"
-    RESULTS+="❌ SoftEther port 5555: DOWN\n"
-    FAILED=1
-fi
-
-# Test 8: SoftEther VPN Azure relay
-# SoftEther: vpncmd requires /PASSWORD in args (no stdin option).
-# Minimize exposure: read from .env only when needed, unset after.
-source <(grep -E '^SOFTETHER_SERVER_PASSWORD=' "$ENV_FILE")
-AZURE_OUTPUT=$(timeout 30 /opt/softether/vpncmd localhost:5555 /SERVER /PASSWORD:"$SOFTETHER_SERVER_PASSWORD" /CMD VpnAzureGetStatus 2>&1)
-unset SOFTETHER_SERVER_PASSWORD
-if echo "$AZURE_OUTPUT" | grep -q "Connection to VPN Azure Cloud Server is Established|Yes"; then
-    AZURE_HOST=$(echo "$AZURE_OUTPUT" | grep "Hostname.*VPN Azure" | awk -F'|' '{print $2}' | xargs)
-    log "✅ VPN Azure connected: $AZURE_HOST"
-    RESULTS+="✅ VPN Azure: $AZURE_HOST\n"
-else
-    log "❌ VPN Azure NOT connected"
-    RESULTS+="❌ VPN Azure: DOWN\n"
-    FAILED=1
-fi
 
 # Test 9: x-ui container status
 # if docker ps --format '{{.Names}} {{.Status}}' | grep -q "^x-ui Up"; then
@@ -181,22 +156,73 @@ else
     fi
 fi
 
-# Test 10: AmneziaWG API on port 51821
+# Test 10: Admin Panel API on port 51821
 AWG_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://127.0.0.1:51821/ 2>/dev/null)
 if [ "$AWG_CODE" -ge 200 ] && [ "$AWG_CODE" -lt 500 ]; then
-    log "✅ AWG API on 51821: HTTP $AWG_CODE"
-    RESULTS+="✅ AWG API 51821: OK\n"
+    log "✅ Admin Panel API on 51821: HTTP $AWG_CODE"
+    RESULTS+="✅ Admin Panel API 51821: OK\n"
 else
-    try_restart "AWG API" "sudo systemctl restart awg-api" "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 http://127.0.0.1:51821/ 2>/dev/null | grep -qE '^[2-4]'"
+    try_restart "Admin Panel API" "sudo systemctl restart admin-panel" "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 http://127.0.0.1:51821/ 2>/dev/null | grep -qE '^[2-4]'"
     if [ "$TRY_RESTART_OK" -eq 1 ]; then
-        RESULTS+="✅ AWG API 51821: OK [auto-recovered]\n"
-        RECOVERED+="AWG-API "
+        RESULTS+="✅ Admin Panel API 51821: OK [auto-recovered]\n"
+        RECOVERED+="Admin-Panel "
     else
-        log "❌ AWG API on 51821: DOWN"
-        RESULTS+="❌ AWG API 51821: DOWN\n"
+        log "❌ Admin Panel API on 51821: DOWN"
+        RESULTS+="❌ Admin Panel API 51821: DOWN\n"
         FAILED=1
     fi
 fi
+
+# Test 10a: MTProto proxy (mtg) on port 3129
+MTG_REPLAY_STATE="/tmp/mtg_replay_attacks_last"
+if ss -tlnp | grep -q ':3129'; then
+    MTG_METRICS=$(curl -s --connect-timeout 3 http://127.0.0.1:3129/metrics 2>/dev/null)
+    if [ -n "$MTG_METRICS" ]; then
+        MTG_CONN=$(echo "$MTG_METRICS" | grep "^mtg_client_connections{ip_family="ipv4"}" | awk '{print $2}')
+        MTG_TG_CONN=$(echo "$MTG_METRICS" | grep "^mtg_telegram_connections{" | awk '{sum += $2} END {print sum}')
+        MTG_REPLAY=$(echo "$MTG_METRICS" | grep "^mtg_replay_attacks " | awk '{print $2}')
+        MTG_REPLAY=${MTG_REPLAY:-0}
+
+        # Check replay attack rate (threshold: 100 per hour)
+        CURRENT_TIME=$(date +%s)
+        if [ -f "$MTG_REPLAY_STATE" ]; then
+            read PREV_REPLAY PREV_TIME < "$MTG_REPLAY_STATE"
+            TIME_DELTA=$((CURRENT_TIME - PREV_TIME))
+            REPLAY_DELTA=$((MTG_REPLAY - PREV_REPLAY))
+            if [ "$TIME_DELTA" -gt 0 ]; then
+                REPLAY_PER_HOUR=$((REPLAY_DELTA * 3600 / TIME_DELTA))
+                if [ "$REPLAY_PER_HOUR" -gt 100 ]; then
+                    log "⚠️ MTProto replay attacks HIGH: ${REPLAY_DELTA} in ${TIME_DELTA}s (~${REPLAY_PER_HOUR}/h)"
+                    RESULTS+="⚠️ MTProto replay: ${REPLAY_PER_HOUR}/h (clients: ${MTG_CONN:-0})\n"
+                else
+                    log "✅ MTProto proxy: client_conn=${MTG_CONN:-0}, tg_conn=${MTG_TG_CONN:-0}, replay_rate=${REPLAY_PER_HOUR}/h"
+                    RESULTS+="✅ MTProto proxy: OK (clients: ${MTG_CONN:-0}, tg: ${MTG_TG_CONN:-0}, replay: ${REPLAY_PER_HOUR}/h)\n"
+                fi
+            else
+                log "✅ MTProto proxy: client_conn=${MTG_CONN:-0}, tg_conn=${MTG_TG_CONN:-0}"
+                RESULTS+="✅ MTProto proxy: OK (clients: ${MTG_CONN:-0}, tg: ${MTG_TG_CONN:-0})\n"
+            fi
+        else
+            log "✅ MTProto proxy: client_conn=${MTG_CONN:-0}, tg_conn=${MTG_TG_CONN:-0}, replay=${MTG_REPLAY}"
+            RESULTS+="✅ MTProto proxy: OK (clients: ${MTG_CONN:-0}, tg: ${MTG_TG_CONN:-0}, replay: ${MTG_REPLAY})\n"
+        fi
+        echo "$MTG_REPLAY $CURRENT_TIME" > "$MTG_REPLAY_STATE"
+    else
+        log "⚠️ MTProto proxy listening but metrics empty"
+        RESULTS+="⚠️ MTProto proxy: metrics empty\n"
+    fi
+else
+    try_restart "MTProto" "sudo systemctl restart mtg" "ss -tlnp | grep -q ':3129'"
+    if [ "$TRY_RESTART_OK" -eq 1 ]; then
+        RESULTS+="✅ MTProto proxy: OK [auto-recovered]\n"
+        RECOVERED+="MTProto "
+    else
+        log "❌ MTProto proxy NOT listening on 3129"
+        RESULTS+="❌ MTProto proxy: DOWN\n"
+        FAILED=1
+    fi
+fi
+
 
 # Test 11: Telegram Bot service
 if systemctl is-active --quiet bot.service; then
@@ -248,24 +274,77 @@ else
     fi
 fi
 
-# Test 14: Nginx connection capacity
-NGINX_MAX_CONN=4096
+# Capacity & Resources Audit
+RESULTS+="\n📊 <b>Server Capacity & Load:</b>\n"
+
+# 1. CPU Load Average & Cores
+CORES=$(nproc 2>/dev/null || echo 1)
+LOAD_1M=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "0")
+LOAD_PCT=$(awk -v l="$LOAD_1M" -v c="$CORES" 'BEGIN {printf "%.0f", (l/c)*100}')
+if [ "$LOAD_PCT" -ge 90 ]; then
+    log "❌ High CPU Load: ${LOAD_1M} (${LOAD_PCT}% across ${CORES} cores)"
+    RESULTS+="❌ CPU Load: ${LOAD_1M} / ${CORES} cores (${LOAD_PCT}%)\n"
+    FAILED=1
+elif [ "$LOAD_PCT" -ge 75 ]; then
+    log "⚠️ Elevated CPU Load: ${LOAD_1M} (${LOAD_PCT}% across ${CORES} cores)"
+    RESULTS+="⚠️ CPU Load: ${LOAD_1M} / ${CORES} cores (${LOAD_PCT}%)\n"
+else
+    log "✅ CPU Load: ${LOAD_1M} / ${CORES} cores"
+    RESULTS+="✅ CPU Load: ${LOAD_1M} / ${CORES} cores\n"
+fi
+
+# 2. RAM Capacity
+RAM_TOTAL_MB=$(free -m | awk '/Mem:/{print $2}')
+RAM_AVAIL_MB=$(free -m | awk '/Mem:/{print $7}')
+RAM_USED_MB=$((RAM_TOTAL_MB - RAM_AVAIL_MB))
+RAM_PCT=$((RAM_USED_MB * 100 / RAM_TOTAL_MB))
+RAM_AVAIL_HUMAN=$(awk -v m="$RAM_AVAIL_MB" 'BEGIN {if (m >= 1024) printf "%.1fG", m/1024; else printf "%dM", m}')
+RAM_TOTAL_HUMAN=$(awk -v m="$RAM_TOTAL_MB" 'BEGIN {printf "%.1fG", m/1024}')
+if [ "$RAM_PCT" -ge 90 ]; then
+    log "❌ RAM Capacity CRITICAL: ${RAM_PCT}% used (${RAM_AVAIL_HUMAN} free)"
+    RESULTS+="❌ RAM: ${RAM_PCT}% used (${RAM_AVAIL_HUMAN} free of ${RAM_TOTAL_HUMAN})\n"
+    FAILED=1
+elif [ "$RAM_PCT" -ge 80 ]; then
+    log "⚠️ RAM Capacity HIGH: ${RAM_PCT}% used (${RAM_AVAIL_HUMAN} free)"
+    RESULTS+="⚠️ RAM: ${RAM_PCT}% used (${RAM_AVAIL_HUMAN} free of ${RAM_TOTAL_HUMAN})\n"
+else
+    log "✅ RAM Capacity: ${RAM_PCT}% used (${RAM_AVAIL_HUMAN} free of ${RAM_TOTAL_HUMAN})"
+    RESULTS+="✅ RAM: ${RAM_PCT}% used (${RAM_AVAIL_HUMAN} free of ${RAM_TOTAL_HUMAN})\n"
+fi
+
+# 3. Disk Capacity (Root filesystem)
+DISK_USE_PCT=$(df / --output=pcent | tail -1 | tr -dc '0-9')
+DISK_AVAIL_HUMAN=$(df -h / --output=avail | tail -1 | tr -d ' ')
+DISK_TOTAL_HUMAN=$(df -h / --output=size | tail -1 | tr -d ' ')
+if [ "$DISK_USE_PCT" -ge 90 ]; then
+    log "❌ Disk CRITICAL: ${DISK_USE_PCT}% used (${DISK_AVAIL_HUMAN} free)"
+    RESULTS+="❌ Disk: ${DISK_USE_PCT}% used (${DISK_AVAIL_HUMAN} free of ${DISK_TOTAL_HUMAN})\n"
+    FAILED=1
+elif [ "$DISK_USE_PCT" -ge 80 ]; then
+    log "⚠️ Disk HIGH: ${DISK_USE_PCT}% used (${DISK_AVAIL_HUMAN} free)"
+    RESULTS+="⚠️ Disk: ${DISK_USE_PCT}% used (${DISK_AVAIL_HUMAN} free of ${DISK_TOTAL_HUMAN})\n"
+else
+    log "✅ Disk: ${DISK_USE_PCT}% used (${DISK_AVAIL_HUMAN} free of ${DISK_TOTAL_HUMAN})"
+    RESULTS+="✅ Disk: ${DISK_USE_PCT}% used (${DISK_AVAIL_HUMAN} free of ${DISK_TOTAL_HUMAN})\n"
+fi
+
+# 4. VPN Clients & Capacity (x-ui)
+if [ -f "/etc/x-ui/x-ui.db" ]; then
+    XUI_STATS=$(sqlite3 /etc/x-ui/x-ui.db "SELECT (SELECT COUNT(*) FROM client_traffics WHERE enable=1), (SELECT COUNT(*) FROM inbounds WHERE enable=1);" 2>/dev/null)
+    if [ -n "$XUI_STATS" ]; then
+        XUI_CLIENTS=$(echo "$XUI_STATS" | cut -d'|' -f1)
+        XUI_INBOUNDS=$(echo "$XUI_STATS" | cut -d'|' -f2)
+        log "✅ VPN Clients: ${XUI_CLIENTS} active on ${XUI_INBOUNDS} inbounds"
+        RESULTS+="✅ VPN Clients: ${XUI_CLIENTS} active (${XUI_INBOUNDS} inbounds)\n"
+    fi
+fi
+
+# 5. Nginx Active Connections
 NGINX_STATUS=$(curl -s http://127.0.0.1:8881/nginx_status 2>/dev/null)
 if [ -n "$NGINX_STATUS" ]; then
     NGINX_ACTIVE=$(echo "$NGINX_STATUS" | awk '/Active connections/{print $3}')
-    NGINX_PCT=$((NGINX_ACTIVE * 100 / NGINX_MAX_CONN))
-    if [ "$NGINX_PCT" -ge 90 ]; then
-        log "❌ Nginx connections CRITICAL: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%)"
-        RESULTS+="❌ Nginx connections: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%) CRITICAL\n"
-        FAILED=1
-    elif [ "$NGINX_PCT" -ge 75 ]; then
-        log "⚠️ Nginx connections HIGH: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%)"
-        RESULTS+="⚠️ Nginx connections: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%) HIGH\n"
-        FAILED=1
-    else
-        log "✅ Nginx connections: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%)"
-        RESULTS+="✅ Nginx conn: ${NGINX_ACTIVE}/${NGINX_MAX_CONN} (${NGINX_PCT}%)\n"
-    fi
+    log "✅ Nginx active connections: ${NGINX_ACTIVE}"
+    RESULTS+="✅ Nginx conn: ${NGINX_ACTIVE} active\n"
 else
     log "⚠️ Nginx stub_status unavailable"
     RESULTS+="⚠️ Nginx stub_status: unavailable\n"

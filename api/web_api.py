@@ -6,19 +6,25 @@ import logging
 import secrets
 import uuid
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from yookassa import Configuration, Payment
+from bot_xui.yookassa_client import async_payment_create
 
 from config import (
     YOO_KASSA_SHOP_ID, YOO_KASSA_SECRET_KEY,
     YOO_KASSA_TEST_SHOP_ID, YOO_KASSA_TEST_SECRET_KEY,
     ADMIN_TG_ID, SERVER_LOCATION,
+    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM,
+    VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
+    VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+    HYSTERIA_INBOUND_ID, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID,
+    XUI_HOST, XUI_USERNAME, XUI_PASSWORD, PORTAL_BASE_URL,
 )
 from bot_xui.tariffs import TARIFFS
-from api.db import execute_query, get_user_by_web_token, get_keys_by_tg_id
+from api.db import execute_query, get_user_by_web_token, get_keys_by_tg_id, get_db
 
 logger = logging.getLogger(__name__)
 web_api_router = APIRouter(prefix="/api/web")
@@ -43,6 +49,7 @@ class PromoResponse(BaseModel):
 
 class OrderCodeRequest(BaseModel):
     email: EmailStr
+    company: str | None = None  # Honeypot field for bot trapping
 
 
 class OrderRequest(BaseModel):
@@ -142,8 +149,24 @@ async def validate_promo(req: PromoRequest):
 
 
 @web_api_router.post("/order/send-code")
-async def order_send_code(req: OrderCodeRequest):
+async def order_send_code(req: OrderCodeRequest, request: Request):
     """Send verification code to email before placing an order."""
+    if req.company and req.company.strip():
+        logger.warning(f"Honeypot triggered in /api/web/order/send-code from bot: {req.company}")
+        return {"ok": True, "message": "Код отправлен на почту"}
+
+    token = request.headers.get("x-handshake-token")
+    from api.handshake import consume_handshake_token
+    if not consume_handshake_token(token):
+        client_ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+        logger.warning(f"Missing or invalid handshake token in /api/web/order/send-code from {client_ip}")
+        raise HTTPException(403, "Сессия устарела. Обновите страницу.")
+
+    from api.disposable_email import is_disposable_email
+    if is_disposable_email(req.email):
+        logger.warning(f"Blocked disposable email in /api/web/order/send-code: {req.email}")
+        raise HTTPException(400, "Использование временных email не поддерживается")
+
     from api.notifications import create_auth_code
     code = create_auth_code(req.email.lower().strip(), "email")
     if not code:
@@ -230,7 +253,7 @@ async def create_order(req: OrderRequest):
         logger.info(f"[TEST] Web order auto-confirmed: {fake_id} for {req.email}, tariff={req.tariff_id}")
 
         return OrderResponse(
-            payment_url=f"https://344988.snk.wtf/my/{user['web_token']}",
+            payment_url=f"{PORTAL_BASE_URL}/my/{user['web_token']}",
             payment_id=fake_id,
             web_token=user["web_token"],
         )
@@ -239,12 +262,12 @@ async def create_order(req: OrderRequest):
     Configuration.account_id = YOO_KASSA_SHOP_ID
     Configuration.secret_key = YOO_KASSA_SECRET_KEY
 
-    payment = Payment.create(
+    payment = await async_payment_create(
         {
             "amount": {"value": str(price), "currency": "RUB"},
             "confirmation": {
                 "type": "redirect",
-                "return_url": f"https://344988.snk.wtf/my/{user['web_token']}",
+                "return_url": f"{PORTAL_BASE_URL}/my/{user['web_token']}",
             },
             "capture": True,
             "save_payment_method": True,
@@ -260,6 +283,7 @@ async def create_order(req: OrderRequest):
         tariff=req.tariff_id,
         amount=price,
         status="pending",
+        web_user_id=user.get("id"),
     )
 
     logger.info(f"Web order: {payment.id} for {req.email}, tariff={req.tariff_id}, price={price}")
@@ -280,6 +304,282 @@ async def check_status(payment_id: str):
         raise HTTPException(404, "Платёж не найден")
 
     return StatusResponse(status=payment.get("status", "pending"))
+
+
+# ─────────────────────────────────────────────
+#  Test subscription (free, no payment)
+# ─────────────────────────────────────────────
+
+class TestCheckEmailRequest(BaseModel):
+    email: EmailStr
+
+
+class TestCheckResponse(BaseModel):
+    exists: bool
+    test_activated: bool
+    web_token: str | None = None
+
+
+class TestActivateRequest(BaseModel):
+    email: EmailStr
+    code: str
+    company: str | None = None  # Honeypot field for bot trapping
+
+
+class TestActivateResponse(BaseModel):
+    ok: bool
+    already_activated: bool = False
+    web_token: str | None = None
+    vless_link: str | None = None
+    message: str | None = None
+
+
+class TestExtendRequest(BaseModel):
+    email: EmailStr
+    web_token: str | None = None
+
+
+@web_api_router.post("/test/check-email", response_model=TestCheckResponse)
+async def test_check_email(req: TestCheckEmailRequest):
+    """Check if user exists and if test is already activated."""
+    email = req.email.lower().strip()
+    row = execute_query(
+        "SELECT id, web_token, test_vless_activated FROM users WHERE email = %s",
+        (email,), fetch='one',
+    )
+    if row:
+        return TestCheckResponse(
+            exists=True,
+            test_activated=bool(row.get("test_vless_activated")),
+            web_token=row.get("web_token"),
+        )
+    return TestCheckResponse(exists=False, test_activated=False)
+
+
+@web_api_router.post("/test/activate", response_model=TestActivateResponse)
+async def test_activate(req: TestActivateRequest, request: Request):
+    """Activate free test subscription for user."""
+    # Honeypot: trap bots that blindly fill invisible fields
+    if req.company and req.company.strip():
+        logger.warning(f"Honeypot triggered in /api/web/test/activate from bot: {req.company}")
+        return TestActivateResponse(
+            ok=False,
+            message="Ошибка запроса",
+        )
+
+    token = request.headers.get("x-handshake-token")
+    from api.handshake import consume_handshake_token
+    if not consume_handshake_token(token):
+        client_ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+        logger.warning(f"Missing or invalid handshake token in /api/web/test/activate from {client_ip}")
+        raise HTTPException(403, "Сессия устарела. Обновите страницу.")
+
+    from api.disposable_email import is_disposable_email
+    email = req.email.lower().strip()
+    if is_disposable_email(email):
+        logger.warning(f"Blocked disposable email in /api/web/test/activate: {email}")
+        raise HTTPException(400, "Использование временных email не поддерживается")
+
+    code = req.code.strip() if req.code else ""
+    if not code:
+        raise HTTPException(400, "Необходимо указать код подтверждения")
+
+    from api.notifications import verify_code
+    if not verify_code(email, code):
+        raise HTTPException(400, "Неверный или истёкший код")
+
+    from api.db import get_db
+
+    # Find or create user
+    user = _get_or_create_web_user(email)
+    user_id = user["id"]
+
+    # If user exists and test already activated — reject
+    if user.get("test_vless_activated"):
+        return TestActivateResponse(
+            ok=False,
+            already_activated=True,
+            message="Тестовая подписка уже активирована",
+        )
+
+    # Activate test (same logic as activate-test endpoint)
+    result = await _do_activate_test(user_id, email)
+    return TestActivateResponse(
+        ok=True,
+        already_activated=False,
+        web_token=user["web_token"],
+        vless_link=result.get("vless_link"),
+        message="Тестовая подписка активирована на 3 дня",
+    )
+
+
+@web_api_router.post("/test/extend", response_model=TestActivateResponse)
+async def test_extend(req: TestExtendRequest):
+    """Extend test subscription by 1 day."""
+    from datetime import datetime, timedelta, timezone
+
+    email = req.email.lower().strip()
+
+    # Find user
+    if req.web_token:
+        user = get_user_by_web_token(req.web_token)
+    else:
+        row = execute_query(
+            "SELECT id, web_token, subscription_until, test_vless_activated FROM users WHERE email = %s",
+            (email,), fetch='one',
+        )
+        if not row:
+            raise HTTPException(404, "Пользователь не найден")
+        user = row
+
+    if not user.get("test_vless_activated"):
+        return TestActivateResponse(
+            ok=False,
+            message="Тестовая подписка не была активирована",
+        )
+
+    # Extend by 1 day
+    current_until = user.get("subscription_until")
+    if current_until and current_until > datetime.now(timezone.utc):
+        new_until = current_until + timedelta(days=1)
+    else:
+        new_until = datetime.now(timezone.utc) + timedelta(days=1)
+
+    from api.db import update_user_subscription_by_id
+    update_user_subscription_by_id(user["id"], new_until)
+
+    # Update XUI client expiry time
+    client_email = f"tiin_web_{user['id']}"
+    try:
+        from bot_xui.utils import XUIClient
+        from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD
+        xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+        existing = xui.get_client_by_email(client_email)
+        if existing and existing.get('inbound_id'):
+            new_expiry_ms = int(new_until.timestamp() * 1000)
+            xui.update_client_expiry(existing['inbound_id'], existing['client'], new_expiry_ms)
+            logger.info(f"Updated XUI expiry for {client_email}: {new_until}")
+    except Exception as e:
+        logger.warning(f"Failed to update XUI expiry: {e}")
+
+    # Update vpn_keys expires_at
+    execute_query(
+        "UPDATE vpn_keys SET expires_at = %s WHERE user_id = %s AND vpn_type = 'vless'",
+        (new_until, user["id"]),
+    )
+
+    # Send email notification
+    from api.notifications import send_test_extended_email
+    portal_url = f"{PORTAL_BASE_URL}/my/{user.get('web_token', '')}"
+    send_test_extended_email(to=email, portal_url=portal_url, new_until=new_until)
+
+    return TestActivateResponse(
+        ok=True,
+        web_token=user.get("web_token"),
+        message="Подписка продлена на 1 день",
+    )
+
+
+async def _do_activate_test(user_id: int, email: str) -> dict:
+    """Core test activation logic: create VPN, save to DB, send email."""
+    from api.db import (
+        create_vpn_key, update_user_subscription_by_id,
+        get_user_by_id,
+    )
+    from bot_xui.utils import XUIClient, generate_vless_link
+    from config import (
+        VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
+        VLESS_PBK, VLESS_SID, VLESS_SNI,
+        VLESS_INBOUND_ID, HYSTERIA_INBOUND_ID, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID,
+        ACTIVE_INBOUND_IDS,
+        XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_SUB_PATH,
+    )
+
+    _db = get_db()
+    _cur = _db.cursor()
+    try:
+        _cur.execute(
+            "UPDATE users SET test_vless_activated = 1 "
+            "WHERE id = %s AND test_vless_activated = 0",
+            (user_id,),
+        )
+        _db.commit()
+        if _cur.rowcount == 0:
+            return {"error": "already_activated"}
+    finally:
+        _cur.close()
+        _db.close()
+
+    tz_tokyo = timezone(timedelta(hours=9))
+    test_hours = TARIFFS["test_24h"]["hours"]
+    raw_end = datetime.now(timezone.utc) + timedelta(hours=test_hours)
+    end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
+    expiry_ms = int(end_tokyo.timestamp() * 1000)
+    expires_at = end_tokyo.astimezone(timezone.utc)
+
+    client_email = f"tiin_web_{user_id}"
+    client_uuid = str(uuid.uuid4())
+
+    xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
+
+    # Delete existing client to avoid duplicates
+    existing = xui.get_client_by_email(client_email)
+    if existing and existing.get('inbound_id'):
+        xui.delete_client(existing['inbound_id'], existing['client'].get('email', client_email))
+        logger.info(f"_do_activate_test: deleted existing XUI client: {client_email}")
+
+    result = xui.create_client(
+        email=client_email,
+        tg_id=0,
+        expiry_time=expiry_ms,
+        limit_ip=TARIFFS["test_24h"]["device_limit"],
+        inbound_ids=ACTIVE_INBOUND_IDS,
+    )
+
+    if not result.get("success"):
+        raise RuntimeError(f"XUI create_client failed: {result.get('msg')}")
+
+    if result.get("uuid"):
+        client_uuid = result["uuid"]
+
+    vless_link = generate_vless_link(
+        client_id=client_uuid,
+        domain=VLESS_DOMAIN,
+        port=VLESS_PORT,
+        path=VLESS_PATH,
+        client_name=client_email,
+        pbk=VLESS_PBK,
+        sid=VLESS_SID,
+        sni=VLESS_SNI,
+        fp="chrome",
+        spx="/",
+        remark=f"🐿 TIIN | VLESS",
+    )
+
+    # Get subscription URL by email (web users all have tg_id=0)
+    sub_id = result.get("subId")
+    sub_url = f"{XUI_SUB_PATH}/updates_ui/{sub_id}" if sub_id else ""
+    if not sub_url:
+        sub_url = xui.get_client_subscription_url_by_email(client_email) or ""
+
+    create_vpn_key(
+        tg_id=0, payment_id=None,
+        client_id=client_uuid, client_name=client_email,
+        client_ip=None, client_public_key=None,
+        vless_link=vless_link, expires_at=expires_at, vpn_type="vless",
+        subscription_link=sub_url or None,
+        user_id=user_id,
+    )
+
+    sub_until = expires_at.replace(tzinfo=None)
+    update_user_subscription_by_id(user_id, sub_until)
+
+    from api.notifications import send_test_success_email
+    portal_url = f"{PORTAL_BASE_URL}/my/{get_user_by_id(user_id).get('web_token', '')}"
+    send_test_success_email(to=email, portal_url=portal_url)
+
+    logger.info(f"Test activated: user_id={user_id}, email={email}, sub_url={sub_url}")
+    return {"vless_link": vless_link}
 
 
 # ─────────────────────────────────────────────
@@ -308,6 +608,7 @@ async def activate_test(req: TestActivateRequest):
     from config import (
         VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
         VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
+        VLESS_HTTP_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID, ACTIVE_INBOUND_IDS,
         XUI_HOST, XUI_USERNAME, XUI_PASSWORD,
     )
 
@@ -340,42 +641,36 @@ async def activate_test(req: TestActivateRequest):
     expiry_ms = int(end_tokyo.timestamp() * 1000)
     expires_at = end_tokyo.astimezone(timezone.utc)
 
-    # Create VLESS client in XUI
+    # Create VLESS+Hysteria client in XUI via new API
     import uuid as _uuid
     client_email = f"tiin_web_{user['id']}"
     client_uuid = str(_uuid.uuid4())
-    inbound_id = int(VLESS_INBOUND_ID)
 
     try:
         xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
-        
-        # 1. Register VLESS
-        success = xui.add_client(
-            inbound_id=inbound_id,
+
+        # Delete existing client with same name (re-activation case)
+        existing = xui.get_client_by_email(client_email)
+        if existing and existing.get('inbound_id'):
+            xui.delete_client(existing['inbound_id'], existing['client'].get('email', client_email))
+            logger.info(f"Deleted existing XUI client: {client_email}")
+
+        hysteria_inbound_id = xui.get_hysteria_inbound_id()
+        result = xui.create_client(
             email=client_email,
             tg_id=0,
-            uuid=client_uuid,
             expiry_time=expiry_ms,
-            total_gb=0,
             limit_ip=TARIFFS["test_24h"]["device_limit"],
+            inbound_ids=ACTIVE_INBOUND_IDS,
         )
-        if not success:
-            raise RuntimeError("add_vless_client returned False")
-        
-        # 2. Register Hysteria v2
-        hysteria_inbound_id = xui.get_hysteria_inbound_id()
-        xui.add_client(
-            inbound_id=hysteria_inbound_id,
-            email=f"{client_email}_h",
-            tg_id=0,
-            uuid=client_uuid,
-            expiry_time=expiry_ms,
-            sub_id=None # sub_id will be managed by VLESS
-        )
-        
+        if not result.get("success"):
+            raise RuntimeError(f"create_client failed: {result.get('msg')}")
+        if result.get("uuid"):
+            client_uuid = result["uuid"]
+
+
     except Exception as e:
         logger.error(f"Failed to create VPN clients: {e}")
-        # Rollback the flag so user can retry
         _db2 = get_db()
         _cur2 = _db2.cursor()
         try:
@@ -403,7 +698,11 @@ async def activate_test(req: TestActivateRequest):
         remark=f"🇩🇪 {SERVER_LOCATION} | VLESS",
     )
 
-    sub_url = xui.get_client_subscription_url(tg_id=0) or ""
+    from config import XUI_SUB_PATH
+    sub_id = result.get("subId")
+    sub_url = f"{XUI_SUB_PATH}/updates_ui/{sub_id}" if sub_id else ""
+    if not sub_url:
+        sub_url = xui.get_client_subscription_url_by_email(client_email) or ""
 
     create_vpn_key(
         tg_id=0, payment_id=None,
@@ -466,8 +765,8 @@ async def activate_trial_by_email(req: TestActivateByEmailRequest):
 #  Site analytics
 # ─────────────────────────────────────────────
 
-ALLOWED_EVENTS = {"visit", "click_proxy", "click_connect"}
-ALLOWED_ORIGINS = {"https://alekscko.beget.tech", "https://344988.snk.wtf", "https://tiinservice.ru", "https://www.tiinservice.ru"}
+ALLOWED_EVENTS = {"visit", "click_proxy", "click_connect", "click_test_sub", "click_tg_bot"}
+ALLOWED_ORIGINS = {"https://alekscko.beget.tech", "https://344988.snk.wtf", "https://tiinservice.online", "https://www.tiinservice.online", "https://ru-server.tiinservice.online"}
 
 
 class SiteEvent(BaseModel):
@@ -572,3 +871,203 @@ async def support_contact(req: SupportRequest, request: Request):
 
     logger.info(f"Support contact from {email}")
     return {"ok": True, "message": "Сообщение отправлено"}
+
+
+# ─────────────────────────────────────────────
+#  Message logging (for external senders like Hermes)
+# ─────────────────────────────────────────────
+
+class LogMessageRequest(BaseModel):
+    tg_id: int
+    source: str = "external"
+    scenario: str = "unknown"
+    text: str | None = None
+
+
+@web_api_router.post("/contact")
+async def contact_form(req: Request):
+    """Handle contact form submission from portfolio site."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart as MIMEMultipartCls
+
+    body = await req.json()
+    name = (body.get("name") or "").strip()
+    email = (body.get("email") or "").strip()
+    message = (body.get("message") or "").strip()
+
+    if not name or not email or not message:
+        raise HTTPException(400, "All fields are required")
+    if len(message) > 5000:
+        raise HTTPException(400, "Message too long")
+
+    subject = f"Portfolio contact: {name}"
+    text = f"Name: {name}\nEmail: {email}\n\nMessage:\n{message}"
+
+    msg = MIMEMultipartCls("alternative")
+    msg["Subject"] = subject
+    msg["From"] = SMTP_FROM or SMTP_USER
+    msg["To"] = "alekseevaalena442@gmail.com"
+    msg["Reply-To"] = email
+    msg.attach(MIMEText(text, "plain", "utf-8"))
+
+    try:
+        port = int(SMTP_PORT or 587)
+        if port == 465:
+            with smtplib.SMTP_SSL(SMTP_HOST, port) as server:
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM or SMTP_USER, "alekseevaalena442@gmail.com", msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST, port) as server:
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM or SMTP_USER, "alekseevaalena442@gmail.com", msg.as_string())
+        logger.info(f"Contact form: from {email}, name={name}")
+        return {"ok": True}
+    except Exception as e:
+        logger.exception(f"Contact form failed: {e}")
+        raise HTTPException(500, "Failed to send message")
+
+
+@web_api_router.post("/log-message")
+async def log_message(req: LogMessageRequest):
+    """Log a message sent by an external sender (e.g. Hermes Agent)."""
+    from api.db import log_message_sent
+    try:
+        log_message_sent(
+            tg_id=req.tg_id,
+            source=req.source,
+            scenario=req.scenario,
+            message_text=req.text,
+            status="sent",
+        )
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"log-message failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────
+#  Portfolio Analytics
+# ─────────────────────────────────────────────
+
+class PortfolioVisitRequest(BaseModel):
+    session_id: str
+    visitor_id: str
+    page_url: str
+    path: str = "/"
+    referrer: str | None = None
+    user_agent: str | None = None
+    device_type: str | None = None
+    screen_width: int | None = None
+    screen_height: int | None = None
+    language: str | None = None
+
+
+class PortfolioScrollRequest(BaseModel):
+    session_id: str
+    scroll_percent: int
+    scroll_px: int = 0
+    duration_seconds: int = 0
+
+
+class PortfolioClickRequest(BaseModel):
+    session_id: str
+    visitor_id: str | None = None
+    element_tag: str | None = None
+    element_id: str | None = None
+    element_classes: str | None = None
+    element_text: str | None = None
+    target_url: str | None = None
+    scroll_depth_percent: int = 0
+    x_coord: int | None = None
+    y_coord: int | None = None
+
+
+@web_api_router.post("/portfolio/visit")
+async def track_portfolio_visit(req: PortfolioVisitRequest, request: Request):
+    """Record a page visit on the portfolio site."""
+    from api.portfolio_analytics import record_visit
+    ip = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for") or (request.client.host if request.client else None)
+    if ip and "," in ip:
+        ip = ip.split(",")[0].strip()
+
+    data = req.model_dump()
+    data["ip_address"] = ip
+    if not data.get("user_agent"):
+        data["user_agent"] = request.headers.get("user-agent")
+
+    ok = record_visit(data)
+    return {"ok": ok}
+
+
+@web_api_router.post("/portfolio/scroll")
+async def track_portfolio_scroll(req: PortfolioScrollRequest):
+    """Update scroll depth and duration for a portfolio visit."""
+    from api.portfolio_analytics import update_scroll
+    ok = update_scroll(
+        session_id=req.session_id,
+        scroll_percent=req.scroll_percent,
+        scroll_px=req.scroll_px,
+        duration_sec=req.duration_seconds,
+    )
+    return {"ok": ok}
+
+
+@web_api_router.post("/portfolio/click")
+async def track_portfolio_click(req: PortfolioClickRequest):
+    """Record a click or interaction on the portfolio site."""
+    from api.portfolio_analytics import record_click
+    ok = record_click(req.model_dump())
+    return {"ok": ok}
+
+
+@web_api_router.post("/portfolio/beacon")
+async def track_portfolio_beacon(request: Request):
+    """Handle beacon payloads from navigator.sendBeacon upon page unload."""
+    from api.portfolio_analytics import update_scroll
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "error": "Invalid payload"}
+
+    session_id = data.get("session_id")
+    if not session_id:
+        return {"ok": False, "error": "Missing session_id"}
+
+    scroll_percent = int(data.get("scroll_percent", 0))
+    scroll_px = int(data.get("scroll_px", 0))
+    duration_seconds = int(data.get("duration_seconds", 0))
+
+    ok = update_scroll(session_id, scroll_percent, scroll_px, duration_seconds)
+    return {"ok": ok}
+
+
+@web_api_router.get("/portfolio/admin/summary")
+async def get_portfolio_summary():
+    """Get aggregated analytics summary for portfolio."""
+    from api.portfolio_analytics import get_summary
+    return get_summary()
+
+
+@web_api_router.get("/portfolio/admin/visits")
+async def get_portfolio_visits(page: int = 1, limit: int = 50, search: str = None, device: str = None):
+    """Get paginated visits for portfolio."""
+    from api.portfolio_analytics import get_visits
+    return get_visits(page=page, limit=min(limit, 200), search=search, device=device)
+
+
+@web_api_router.get("/portfolio/admin/clicks")
+async def get_portfolio_clicks(page: int = 1, limit: int = 50, session_id: str = None, search: str = None):
+    """Get paginated clicks for portfolio."""
+    from api.portfolio_analytics import get_clicks
+    return get_clicks(page=page, limit=min(limit, 200), session_id=session_id, search=search)
+
+
+@web_api_router.get("/portfolio/admin/session/{session_id}")
+async def get_portfolio_session(session_id: str):
+    """Get full session trace including visit info and click events."""
+    from api.portfolio_analytics import get_session_details
+    return get_session_details(session_id)
+
+

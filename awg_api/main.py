@@ -7,7 +7,9 @@ import asyncio
 import json
 import logging
 import random
+import re
 import secrets
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from io import BytesIO
@@ -15,8 +17,9 @@ from io import BytesIO
 import os
 
 import qrcode
+
 from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, FileResponse
 
 from . import db, awg_manager
 from admin.routes import router as admin_router, get_admin_page_route, _admin_ws_connections, _ws_authenticate, _broadcast_ws, _get_online_users
@@ -168,7 +171,48 @@ async def admin_websocket(websocket: WebSocket):
 app.include_router(admin_router)
 
 
+# ── Webpage Events (public, protected by nginx auth_basic) ──────────────────────
+
+from fastapi import Query as _Query
+
+@app.get("/api/admin/webpage-events")
+async def webpage_events_list(
+    limit: int = _Query(100),
+    event_type: str = _Query(None),
+    web_token: str = _Query(None),
+):
+    from admin.db import list_webpage_events
+    from admin.routes import _clean
+    return _clean(list_webpage_events(limit=limit, event_type=event_type, web_token=web_token))
+
+
+@app.get("/api/admin/webpage-events/stats")
+async def webpage_events_stats(days: int = _Query(7)):
+    from admin.db import webpage_events_stats
+    from admin.routes import _clean
+    return _clean(webpage_events_stats(days=days))
+
+
+@app.get("/api/admin/webpage-events/active-users")
+async def webpage_active_users():
+    from admin.db import webpage_active_users_last_24h
+    from admin.routes import _clean
+    return _clean(webpage_active_users_last_24h())
+
+
+@app.get("/api/admin/webpage-events/journey/{token}")
+async def webpage_visitor_journey(token: str):
+    from admin.db import webpage_visitor_journey
+    from admin.routes import _clean
+    return _clean(webpage_visitor_journey(token))
+
+
 app.get("/")(get_admin_page_route())
+
+@app.get("/favicon.png")
+async def favicon():
+    path = os.path.join(os.path.dirname(__file__), "..", "admin", "static", "favicon.png")
+    return FileResponse(path, media_type="image/png")
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────

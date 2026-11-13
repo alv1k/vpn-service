@@ -12,18 +12,168 @@ from datetime import datetime
 from io import BytesIO
 
 
-import qrcode
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, Response
-from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET
-from awg_api.config import SERVER_ENDPOINT as AWG_SERVER_HOST, LISTEN_PORT as AWG_LISTEN_PORT
 
-from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id, is_vless_test_activated_by_id
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, Response, JSONResponse
+from pydantic import BaseModel
+from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET, TELEGRAM_BOT_TOKEN, ADMIN_TG_ID, PORTAL_BASE_URL, SUB_BASE_URL, AWG_ENDPOINT, AWG_PORT
+# from awg_api.config import SERVER_ENDPOINT as AWG_SERVER_HOST, LISTEN_PORT as AWG_LISTEN_PORT
+AWG_SERVER_HOST = AWG_ENDPOINT.split(":")[0] if ":" in AWG_ENDPOINT else AWG_ENDPOINT
+AWG_LISTEN_PORT = AWG_PORT
+import urllib.request
+
+from api.db import get_user_by_web_token, get_keys_by_tg_id, get_keys_by_user_id, is_vless_test_activated_by_id, execute_query, log_message_sent
 from bot_xui.helpers import get_user_sub_url
+
 
 
 logger = logging.getLogger(__name__)
 web_router = APIRouter()
+
+
+class WebEventRequest(BaseModel):
+    event_type: str
+    element_id: str | None = None
+    element_text: str | None = None
+    extra_data: dict | None = None
+
+
+def _log_webpage_event(web_token: str, event_type: str, element_id: str | None = None,
+                       element_text: str | None = None, extra_data: dict | None = None,
+                       ip: str | None = None, user_agent: str | None = None):
+    user = get_user_by_web_token(web_token)
+    user_id = user.get("id") if user else None
+    tg_id = user.get("tg_id") if user else None
+    try:
+        execute_query(
+            "INSERT INTO webpage_events (web_token, user_id, tg_id, event_type, element_id, element_text, extra_data, ip, user_agent) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (web_token, user_id, tg_id, event_type, element_id, element_text,
+             json_mod.dumps(extra_data) if extra_data else None, ip, user_agent[:512] if user_agent else None),
+        )
+    except Exception as e:
+        logger.warning(f"Failed to log webpage event: {e}")
+
+
+@web_router.post("/my/{token}/event")
+async def track_webpage_event(token: str, req: WebEventRequest, request: Request):
+    extra = req.extra_data or {}
+    element_id = req.element_id
+    if isinstance(extra, dict) and extra.get("method") and (not element_id or element_id not in ("de", "ru")):
+        element_id = str(extra.get("method"))
+    _log_webpage_event(
+        web_token=token,
+        event_type=req.event_type,
+        element_id=element_id,
+        element_text=req.element_text,
+        extra_data=extra,
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    return JSONResponse({"ok": True})
+
+
+class WebFeedbackRequest(BaseModel):
+    message: str
+
+
+@web_router.get("/my/{token}/ticket-status")
+async def get_ticket_status(token: str):
+    user = get_user_by_web_token(token)
+    if not user:
+        return JSONResponse({"error": "User not found"}, status_code=404)
+    ticket = execute_query(
+        "SELECT id, user_message, status, admin_reply, replied_at, created_at "
+        "FROM web_support_tickets WHERE web_token = %s ORDER BY id DESC LIMIT 1",
+        (token,), fetch='one'
+    )
+    if not ticket:
+        return JSONResponse({"has_ticket": False})
+    return JSONResponse({
+        "has_ticket": True,
+        "id": ticket["id"],
+        "user_message": ticket["user_message"],
+        "status": ticket["status"],
+        "admin_reply": ticket["admin_reply"],
+        "replied_at": ticket["replied_at"].strftime("%d.%m.%Y %H:%M") if ticket["replied_at"] else None,
+        "created_at": ticket["created_at"].strftime("%d.%m.%Y %H:%M") if ticket["created_at"] else None,
+    })
+
+
+@web_router.post("/my/{token}/feedback")
+async def send_web_feedback(token: str, req: WebFeedbackRequest, request: Request):
+    user = get_user_by_web_token(token)
+    if not user:
+        return JSONResponse({"error": "User not found"}, status_code=404)
+
+    msg_text = (req.message or "").strip()
+    if not msg_text:
+        return JSONResponse({"error": "Сообщение не может быть пустым"}, status_code=400)
+    if len(msg_text) > 2000:
+        return JSONResponse({"error": "Сообщение слишком длинное (максимум 2000 символов)"}, status_code=400)
+
+    user_id = user.get("id")
+    tg_id = user.get("tg_id")
+    first_name = user.get("first_name") or "Пользователь"
+    username = user.get("username")
+    email = user.get("email") or "не указан"
+    sub_until = _format_date(user.get("subscription_until"))
+
+    ticket_id = execute_query(
+        "INSERT INTO web_support_tickets (web_token, user_id, tg_id, user_message, status) "
+        "VALUES (%s, %s, %s, %s, 'open')",
+        (token, user_id, tg_id, msg_text)
+    )
+
+    _log_webpage_event(
+        web_token=token,
+        event_type="submit_support_ticket",
+        element_id="supportTicketForm",
+        element_text=msg_text[:100],
+        extra_data={"ticket_id": ticket_id},
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+
+    if tg_id:
+        log_message_sent(
+            tg_id=tg_id,
+            source="web_support",
+            scenario="ticket_created",
+            message_text=msg_text,
+            status="sent",
+        )
+
+    # Отправка уведомления администратору в Telegram
+    try:
+        tg_mention = f"@{username}" if username else "нет"
+        admin_text = (
+            f"🎫 <b>Новый тикет #{ticket_id} с веб-портала</b>\n\n"
+            f"👤 <b>Пользователь:</b> {html_mod.escape(first_name)} (ID: <code>{user_id or '?'}</code>, TG: <code>{tg_id or 'нет'}</code>, {tg_mention})\n"
+            f"📧 <b>Email:</b> <code>{html_mod.escape(email)}</code>\n"
+            f"📅 <b>Подписка:</b> {sub_until}\n"
+            f"🔗 <b>Токен:</b> <code>{token[:10]}...</code>\n\n"
+            f"💬 <b>Сообщение:</b>\n{html_mod.escape(msg_text)}\n\n"
+            f"<i>👉 Ответьте на это сообщение (Reply), чтобы отправить ответ пользователю на веб-страницу.</i>"
+        )
+        payload = json_mod.dumps({
+            "chat_id": ADMIN_TG_ID,
+            "text": admin_text,
+            "parse_mode": "HTML"
+        }).encode("utf-8")
+        tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        req_tg = urllib.request.Request(tg_url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req_tg, timeout=5) as resp:
+            pass
+    except Exception as e:
+        logger.error(f"Failed to send admin TG alert for ticket #{ticket_id}: {e}")
+
+    return JSONResponse({
+        "ok": True,
+        "ticket_id": ticket_id,
+        "message": "Сообщение успешно отправлено администратору"
+    })
+
 
 
 def _parse_awg_conf(conf_text: str) -> dict:
@@ -59,13 +209,7 @@ def _conf_to_vpn_link(conf_text: str) -> str:
     return f"vpn://{encoded}"
 
 
-def _generate_qr_base64(data: str) -> str:
-    bio = BytesIO()
-    qr = qrcode.QRCode(version=1, box_size=8, border=4)
-    qr.add_data(data)
-    qr.make(fit=True)
-    qr.make_image(fill_color="black", back_color="white").save(bio, "PNG")
-    return base64.b64encode(bio.getvalue()).decode()
+
 
 
 def _format_date(dt):
@@ -76,74 +220,137 @@ def _format_date(dt):
     return str(dt)
 
 
-HAPP_ROUTING_CONFIG = {
-    "blockip": [], "blocksites": [],
-    "directip": ["geoip:private", "geoip:ru"],
-    "directsites": [
-        "geosite:category-ru", "geosite:category-gov-ru",
-        "geosite:mailru", "geosite:vk",
-        "domain:ru", "domain:su", "domain:xn--p1ai",
-        "vk.com", "vk.cc", "vk.me", "cdn-vk.net",
-        "tbank-online.com", "tinkoff.ru",
-        "sberbank.ru", "online.sberbank.ru",
-        "yandex.ru", "yandex.net", "yandex.com",
-        "mail.ru", "list.ru", "inbox.ru",
-        "ok.ru", "odnoklassniki.ru",
-        "avito.ru", "ozon.ru",
-        "wildberries.ru", "wb.ru",
-        "gosuslugi.ru", "mos.ru",
-        "lenta.com", "lenta.tech",
-        "kinopoisk.ru", "ivi.ru", "rutube.ru",
+TIIN_ROUTING_CONFIG = {
+    "Name": "TIIN • Smart RU Bypass",
+    "GlobalProxy": "true",
+    "RemoteDNSType": "DoH",
+    "RemoteDNSDomain": "https://dns.google/dns-query",
+    "RemoteDNSIP": "8.8.8.8",
+    "DomesticDNSType": "DoU",
+    "DomesticDNSDomain": "",
+    "DomesticDNSIP": "77.88.8.8",
+    "Geoipurl": "https://344988.snk.wtf/ruleset/geoip.dat",
+    "Geositeurl": "https://344988.snk.wtf/ruleset/geosite.dat",
+    "LastUpdated": "",
+    "DnsHosts": {},
+    "DirectSites": [
+        "domain:ru",
+        "domain:su",
+        "domain:xn--p1ai",
+        "domain:gosuslugi.ru",
+        "domain:esia.gosuslugi.ru",
+        "domain:gu-st.ru",
+        "domain:pos.gosuslugi.ru",
+        "domain:nalog.ru",
+        "domain:nalog.gov.ru",
+        "domain:cbr.ru",
+        "domain:nspk.ru",
+        "domain:mir-pay.ru",
+        "domain:sbp.nspk.ru",
+        "domain:sberbank.ru",
+        "domain:sber.ru",
+        "domain:sberbank.com",
+        "domain:tbank.ru",
+        "domain:t-bank.ru",
+        "domain:tinkoff.ru",
+        "domain:tinkoff.com",
+        "domain:vtb.ru",
+        "domain:alfabank.ru",
+        "domain:gazprombank.ru",
+        "domain:sovcombank.ru",
+        "domain:sakha.gov.ru",
+        "domain:e-yakutia.ru",
+        "domain:2gis.ru",
+        "domain:2gis.com",
+        "domain:kinopoisk.ru",
+        "domain:rutube.ru",
+        "domain:rutubelist.ru",
+        "domain:vk.com",
+        "domain:vk.ru",
+        "domain:vkvideo.ru",
+        "domain:mail.ru",
+        "domain:dzen.ru",
+        "domain:yandex.ru",
+        "domain:ya.ru",
+        "domain:yandex.net",
+        "domain:avito.ru",
+        "domain:ozon.ru",
+        "domain:wildberries.ru",
+        "domain:2ip.ru"
     ],
-    "dnshosts": {"cloudflare-dns.com": "1.1.1.1", "dns.google": "8.8.8.8"},
-    "domainstrategy": "IPIfNonMatch",
-    "domesticdnsdomain": "https://dns.google/dns-query",
-    "domesticdnsip": "77.88.8.8", "domesticdnstype": "DoH",
-    "fakedns": False,
-    "geoipurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
-    "geositeurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
-    "globalproxy": True, "name": "Tiin Split Rules",
-    "proxyip": [], "proxysites": [],
-    "remotednsdomain": "https://cloudflare-dns.com/dns-query",
-    "remotednsip": "77.88.8.1", "remotednstype": "DoU",
-    "routeorder": "block-proxy-direct",
+    "DirectIp": [
+        "geoip:ru",
+        "geoip:private",
+        "109.207.0.0/16"
+    ],
+    "ProxySites": [],
+    "ProxyIp": [],
+    "BlockSites": [],
+    "BlockIp": [],
+    "DomainStrategy": "IPIfNonMatch",
+    "FakeDNS": "false"
 }
+
+# Alias for backwards compatibility
+HAPP_ROUTING_CONFIG = TIIN_ROUTING_CONFIG
 
 
 def _happ_routing_deeplink() -> str:
-    b64 = base64.b64encode(json_mod.dumps(HAPP_ROUTING_CONFIG, ensure_ascii=False).encode()).decode()
+    b64 = base64.b64encode(json_mod.dumps(TIIN_ROUTING_CONFIG, ensure_ascii=False).encode()).decode()
     return f"happ://routing/add/{b64}"
 
 
 @web_router.get("/happ-routing", response_class=HTMLResponse)
 async def happ_routing_redirect():
     deeplink = _happ_routing_deeplink()
-    b64 = deeplink.split("happ://routing/add/")[1]
-    intent_link = f"intent://routing/add/{b64}#Intent;scheme=happ;end"
+    b64 = deeplink.split("happ://routing/onadd/")[1]
+    fallback_link = f"happ://routing/add/{b64}"
+    intent_link = f"intent://routing/onadd/{b64}#Intent;scheme=happ;end"
     return f"""<!DOCTYPE html>
 <html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tiin — настройка маршрутизации</title>
+<title>TIIN — Умная маршрутизация</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <style>
-  body {{ font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #f5f5f5; }}
-  .btn {{ display: inline-block; padding: 16px 32px; background: #007aff; color: white;
-          border-radius: 12px; text-decoration: none; font-size: 18px; margin: 10px; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 40px 20px; background: #0f0d19; color: #f8fafc; }}
+  .card {{ max-width: 460px; margin: 0 auto; background: #1a162b; border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 16px; padding: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }}
+  .title {{ font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 8px; }}
+  .badge {{ display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; background: rgba(168, 85, 247, 0.2); color: #c084fc; margin-bottom: 16px; }}
+  .desc {{ font-size: 14px; color: #94a3b8; line-height: 1.5; margin-bottom: 24px; }}
+  .btn {{ display: block; width: 100%; box-sizing: border-box; padding: 14px 20px; background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%); color: white;
+          border-radius: 12px; text-decoration: none; font-size: 16px; font-weight: 600; margin-bottom: 12px; box-shadow: 0 4px 14px rgba(124, 58, 237, 0.4); }}
+  .btn-alt {{ display: block; width: 100%; box-sizing: border-box; padding: 12px 20px; background: #25203b; color: #cbd5e1; border: 1px solid #3e3859;
+          border-radius: 12px; text-decoration: none; font-size: 14px; font-weight: 500; }}
+  .features {{ text-align: left; margin: 20px 0; padding: 12px 16px; background: rgba(255,255,255,0.03); border-radius: 10px; font-size: 13px; color: #cbd5e1; }}
+  .features li {{ margin-bottom: 6px; }}
 </style>
 </head><body>
-<h2>Настройка маршрутизации</h2>
-<p>Нажмите кнопку, чтобы добавить правила в Happ:</p>
-<a class="btn" id="openBtn" href="{deeplink}">📲 Открыть в Happ</a>
-<p style="margin-top:20px;color:#888;font-size:14px;">Если не открылось автоматически, нажмите кнопку выше.</p>
+<div class="card">
+  <div class="title">🛡 TIIN · Умная маршрутизация</div>
+  <div class="badge">Для приложения Happ</div>
+  <p class="desc">Правила раздельного туннелирования: российские банки, госуслуги и маркетплейсы работают напрямую на максимальной скорости, а заблокированные ресурсы — через защищённый туннель.</p>
+  
+  <div class="features">
+    <div>✅ Сбербанк, Т-Банк, ВТБ, СБП — напрямую</div>
+    <div>✅ Госуслуги, Налог, ЕМИАС — без ошибок 403</div>
+    <div>✅ Ozon, Wildberries, Авито, Яндекс — на полной скорости</div>
+    <div>✅ YouTube, Instagram, X — через скоростной сервер</div>
+  </div>
+
+  <a class="btn" id="openBtn" href="{deeplink}">📲 Включить правила в Happ</a>
+  <a class="btn-alt" href="{fallback_link}">Резервная ссылка (если не открылось)</a>
+</div>
+
 <script>
-  // Try direct deep link first
   var dl = "{deeplink}";
   var intentDl = "{intent_link}";
   var isAndroid = /android/i.test(navigator.userAgent);
   if (isAndroid) {{
     document.getElementById('openBtn').href = intentDl;
   }}
-  setTimeout(function() {{ window.location.href = isAndroid ? intentDl : dl; }}, 300);
+  setTimeout(function() {{
+    window.location.href = isAndroid ? intentDl : dl;
+  }}, 400);
 </script>
 </body></html>"""
 
@@ -180,11 +387,9 @@ async def personal_page(token: str):
 
     # Используем собственный прокси-эндпоинт, который переписывает remark
     # в человекочитаемый формат (🐿 TIIN — осталось N дней)
-    sub_url = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
-    qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
-
-    # sub_url = get_user_sub_url(tg_id, users_id) if active_vless else ""
-    # qr_b64 = _generate_qr_base64(sub_url) if sub_url else ""
+    sub_url_de = f"https://344988.snk.wtf/sub/{token}" if active_vless else ""
+    sub_url_ru = f"https://ru-server.tiinservice.online/sub/{token}" if active_vless else ""
+    sub_url = f"{PORTAL_BASE_URL}/sub/{token}" if active_vless else ""
 
     test_used = is_vless_test_activated_by_id(user['id'])
 
@@ -201,13 +406,14 @@ async def personal_page(token: str):
         is_active=is_active,
         sub_until=_format_date(sub_until),
         sub_url=sub_url,
-        qr_b64=qr_b64,
         happ_routing_link=_happ_routing_deeplink(),
         email=html_mod.escape(user.get('email') or ''),
         web_token=token,
         test_used=test_used,
         awg_link=awg_link,
         awg_download_link=awg_download_link,
+        sub_url_de=sub_url_de,
+        sub_url_ru=sub_url_ru,
     ))
 
 
@@ -305,7 +511,11 @@ min-height:100vh;margin:0;background:#0a0a0a;color:#fff}
 </head><body><div class="c"><h1>404</h1><p>Страница не найдена</p></div></body></html>"""
 
 
-def _render_page(name, is_active, sub_until, sub_url, qr_b64, happ_routing_link="", email="", web_token="", test_used=False, awg_link="", awg_download_link=""):
+def _render_page(name, is_active, sub_until, sub_url, happ_routing_link="", email="", web_token="", test_used=False, awg_link="", awg_download_link="", sub_url_de="", sub_url_ru=""):
+    if not sub_url_de and sub_url:
+        _tok = sub_url.rstrip("/").split("/")[-1]
+        sub_url_de = f"https://344988.snk.wtf/sub/{_tok}"
+        sub_url_ru = f"https://ru-server.tiinservice.online/sub/{_tok}"
     status_color = "#22c55e" if is_active else "#ef4444"
     status_text = "Активна" if is_active else "Неактивна"
     status_dot = "&#9679;"
@@ -332,8 +542,7 @@ min-height:100vh;padding:1rem;-webkit-font-smoothing:antialiased}}
 .status .dot{{color:{status_color};font-size:1.4rem;line-height:1}}
 .status .text{{color:{status_color};font-weight:600}}
 .expiry{{color:#888;font-size:.85rem;margin-top:.4rem}}
-.qr-wrap{{text-align:center;padding:1rem 0}}
-.qr-wrap img{{width:200px;height:200px;border-radius:8px;background:#fff;padding:8px}}
+
 .sub-link{{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:.7rem;
 font-size:.7rem;word-break:break-all;color:#a78bfa;font-family:monospace;cursor:pointer;
 position:relative;text-align:center}}
@@ -373,20 +582,6 @@ margin-top:.8rem;transition:all .15s}}
 .no-sub{{text-align:center;padding:2rem 0;color:#888}}
 .no-sub .emoji{{font-size:2.5rem;margin-bottom:.5rem}}
 
-/* Support form */
-.support-form textarea{{width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
-color:#e5e5e5;padding:.8rem;font-size:.9rem;font-family:inherit;resize:vertical;min-height:80px;
-box-sizing:border-box}}
-.support-form textarea:focus{{border-color:#7c3aed;outline:none}}
-.support-form input[type=email]{{width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
-color:#e5e5e5;padding:.7rem .8rem;font-size:.9rem;font-family:inherit;box-sizing:border-box;margin-bottom:.6rem}}
-.support-form input[type=email]:focus{{border-color:#7c3aed;outline:none}}
-.support-btn{{display:block;width:100%;padding:.8rem;border:none;border-radius:10px;
-background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;margin-top:.8rem}}
-.support-btn:hover{{background:#6d28d9}}
-.support-btn:disabled{{opacity:.5;cursor:not-allowed}}
-.support-ok{{color:#22c55e;text-align:center;font-size:.9rem;margin-top:.8rem;display:none}}
-.support-err{{color:#ef4444;text-align:center;font-size:.85rem;margin-top:.5rem;display:none}}
 </style>
 </head>
 <body>
@@ -397,13 +592,35 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
     <div class="sub">Личный кабинет</div>
 </div>"""
 
+    # Быстрый переход в "Подключить в 1 клик"
+    if sub_url and web_token:
+        html += f"""
+<div class="card" style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(79, 70, 229, 0.08) 100%); border-color: rgba(99, 102, 241, 0.4); text-align: center;">
+    <div style="font-size: .85rem; font-weight: 600; color: #a5b4fc; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
+        🚀 Экспресс-подключение
+    </div>
+    <div style="font-size: .85rem; color: #cbd5e1; margin-bottom: 12px; line-height: 1.4;">
+        Хотите настроить VPN прямо сейчас без ручных шагов?
+    </div>
+    <a href="/go-connect/{web_token}" id="btnGoToOneClick" class="connect-btn primary"
+       style="text-decoration: none; display: block; text-align: center; font-weight: 600; background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); box-shadow: 0 4px 14px rgba(99,102,241,0.35);">
+        ⚡ Подключить в 1 клик
+    </a>
+</div>"""
+
     # Wizard или кнопка активации теста
     if sub_url or test_used:
-        html += _render_wizard(sub_url, qr_b64, happ_routing_link, awg_link, awg_download_link)
-        if test_used and not sub_url:
-            html += '''
+        html += _render_wizard(sub_url, happ_routing_link, awg_link, awg_download_link, sub_url_de, sub_url_ru)
+        if test_used and not is_active:
+            if sub_url:
+                html += '''
 <div class="card" style="margin-top:1rem;background:#1e1b2e;text-align:center;border-color:#fbbf24">
     <p style="color:#fbbf24;font-size:.85rem">⚠️ У вас тестовый период. После его окончания оформите подписку.</p>
+</div>'''
+            else:
+                html += '''
+<div class="card" style="margin-top:1rem;background:#1e1b2e;text-align:center;border-color:#ef4444">
+    <p style="color:#ef4444;font-size:.85rem">🔴 Тестовый период закончился.</p>
 </div>'''
     else:
         html += _render_no_sub(web_token, test_used)
@@ -419,7 +636,7 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
     <div class="expiry">до {sub_until or '—'}</div>
     <a href="https://t.me/tiin_service_bot?start=renew" class="connect-btn primary"
        style="margin-top:1rem;text-align:center;display:block;text-decoration:none">
-        🔄 Продлить подписку
+         Оформить/продлить
     </a>
 </div>
 
@@ -429,44 +646,48 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
     <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
         Бесплатный MTProto-прокси для Telegram. Работает без VPN.
     </p>
-    <a href="tg://proxy?server=mtproto.tiin.su&port=443&secret=ee1234567890abcdef1234567890abcdef"
+    <a href="tg://proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}&secret={MTPROTO_SECRET}"
        class="connect-btn primary" style="text-decoration:none;text-align:center;display:block">
         ⚡ Подключить прокси
     </a>
     <p style="color:#666;font-size:.75rem;text-align:center;margin-top:.6rem">
-        <a href="https://t.me/proxy?server=mtproto.tiin.su&port=443&secret=ee1234567890abcdef1234567890abcdef"
+        <a href="https://t.me/proxy?server={MTPROTO_SERVER}&port={MTPROTO_PORT}&secret={MTPROTO_SECRET}"
            style="color:#a78bfa;text-decoration:none">Альтернативная ссылка</a>
     </p>
 </div>
 
-<!-- Support form -->
-<div class="card">
+<!-- Support -->
+<div class="card" id="supportCard">
     <h2>✉️ Поддержка</h2>
     <p style="color:#888;font-size:.85rem;line-height:1.4;margin-bottom:.8rem">
-        Напишите нам, и мы ответим на вашу почту. Для отправки сообщения
-        нужно подтвердить email — мы отправим код подтверждения.
+        Напишите нам в Telegram или оставьте обращение прямо здесь, если VPN не подключается.
     </p>
-    <div class="support-form">
-        <div id="supStep1">
-            <input type="email" id="supportEmail" placeholder="Ваш email" value="{email}">
-            <button class="support-btn" onclick="supSendCode()">Получить код</button>
+    <a href="https://t.me/tiin_service_bot" class="connect-btn primary"
+       style="text-decoration:none;text-align:center;display:block">
+        💬 Написать в Telegram-бота
+    </a>
+
+    <div style="margin: 1.2rem 0 .6rem; border-top: 1px solid #262626; padding-top: 1rem;">
+        <div style="font-weight: 600; font-size: .9rem; color: #eee; margin-bottom: .4rem;">
+            ✍️ Не работает Telegram?
         </div>
-        <div id="supStep2" style="display:none">
-            <p style="color:#888;font-size:.85rem;margin-bottom:.6rem">
-                Код отправлен на <b id="supEmailShow" style="color:#a78bfa"></b>
-            </p>
-            <input type="text" id="supportCode" placeholder="Код из письма" maxlength="6"
-                   style="width:100%;background:#1a1a1a;border:1px solid #333;border-radius:8px;
-                   color:#e5e5e5;padding:.7rem .8rem;font-size:1.1rem;font-family:inherit;
-                   box-sizing:border-box;margin-bottom:.6rem;text-align:center;letter-spacing:4px">
-            <textarea id="supportMsg" placeholder="Опишите вопрос или проблему..." rows="3"></textarea>
-            <button class="support-btn" onclick="supSubmit()">Отправить</button>
-            <p style="margin-top:.5rem;text-align:center">
-                <a href="javascript:supBack()" style="color:#888;font-size:.8rem;text-decoration:none">Изменить email</a>
-            </p>
+        <p style="color:#888;font-size:.8rem;line-height:1.4;margin-bottom:.8rem">
+            Опишите проблему — сообщение сразу поступит администратору, а ответ появится на этой странице:
+        </p>
+
+        <!-- Блок отображения статуса тикета / ответа админа -->
+        <div id="ticketAlertBox" style="display:none; margin-bottom: .8rem;"></div>
+
+        <div id="ticketFormWrap">
+            <textarea id="ticketMsgInput" rows="3" placeholder="Опишите проблему (например: не подключается VPN, ошибка в приложении)..."
+                style="width:100%; box-sizing:border-box; background:#141414; border:1px solid #333; border-radius:8px; color:#fff; padding:.75rem; font-size:.9rem; font-family:inherit; resize:vertical; outline:none;"></textarea>
+            
+            <button type="button" id="ticketSubmitBtn" class="connect-btn secondary" onclick="submitSupportTicket()"
+                style="margin-top:.6rem; background:#2e1065; border-color:#7c3aed; color:#fff;">
+                📤 Отправить обращение администратору
+            </button>
+            <div id="ticketStatusErr" style="color:#ef4444; font-size:.8rem; margin-top:.4rem; text-align:center; display:none;"></div>
         </div>
-        <div class="support-ok" id="supportOk">✓ Сообщение отправлено! Мы ответим на вашу почту.</div>
-        <div class="support-err" id="supportErr"></div>
     </div>
 </div>
 
@@ -477,15 +698,48 @@ background:#7c3aed;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;ma
 </div>
 
 <div class="copied" id="copiedToast">Скопировано!</div>
+<div class="copied" id="supportToast" style="background:#065f46; border:1px solid #10b981; color:#fff;">
+    ✅ Сообщение отправлено администратору!
+</div>
+
 
 <script>
 const SUB_URL = {json_mod.dumps(sub_url)};
+const SUB_URL_DE = {json_mod.dumps(sub_url_de)};
+const SUB_URL_RU = {json_mod.dumps(sub_url_ru)};
+console.log("SUB_URL =", SUB_URL);
 
 function copyLink() {{
     navigator.clipboard.writeText(SUB_URL).then(function(){{
         var t = document.getElementById('copiedToast');
         t.classList.add('show');
         setTimeout(function(){{ t.classList.remove('show') }}, 1500);
+    }});
+}}
+
+function copyDirect(url) {{
+    try {{
+        var m = (url && url.indexOf('ru-server') !== -1) ? 'ru' : 'de';
+        var data = JSON.stringify({{
+            event_type: "sub_option_copy",
+            element_id: m,
+            element_text: "copyDirect",
+            extra_data: {{ method: m, url: url, source: "portal_step3" }}
+        }});
+        if (navigator.sendBeacon) {{
+            navigator.sendBeacon(window.location.pathname + "/event", new Blob([data], {{ type: "application/json" }}));
+        }} else {{
+            fetch(window.location.pathname + "/event", {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: data, keepalive: true }});
+        }}
+    }} catch(e) {{}}
+    navigator.clipboard.writeText(url).then(function(){{
+        var t = document.getElementById('copiedToast');
+        if (t) {{
+            t.classList.add('show');
+            setTimeout(function(){{ t.classList.remove('show') }}, 1500);
+        }}
+    }}).catch(function(){{
+        prompt("Скопируйте ссылку вручную:", url);
     }});
 }}
 
@@ -498,40 +752,61 @@ const AWG_DOWNLOAD_LINK = {json_mod.dumps(awg_download_link)};
 
 const APPS = {{
     android: [
-        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://play.google.com/store/apps/details?id=com.happproxy&hl=ru', scheme: 'happ://add/' }},
-        {{ name: 'Hiddify', desc: 'Популярный, много функций', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
-        {{ name: 'v2rayNG', desc: 'Проверенный временем', icon: '🔶', store: 'https://play.google.com/store/apps/details?id=com.v2ray.ang', scheme: 'v2rayng://import/' }},
-        {{ name: 'Karing', desc: 'Современный и удобный', icon: '🔵', store: 'https://play.google.com/store/apps/details?id=io.nekohasekai.sagernet', scheme: 'karing://import/' }},
+        {{ name: 'Happ', desc: '⚡ Простой и быстрый (Рекомендуется)', icon: '⚡', store: 'https://play.google.com/store/apps/details?id=com.happproxy&hl=ru', scheme: 'happ://add/' }},
+        {{ name: 'INCY', desc: '🔮 Умный и быстрый (Новинка)', icon: '🔮', store: 'https://play.google.com/store/apps/details?id=cc.incy.app', scheme: 'incy://import/' }},
+        {{ name: 'Hiddify', desc: '🔷 Популярный, много функций', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
+        {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://github.com/KaringX/karing/releases', scheme: 'karing://install-config?url=' }},
+        {{ name: 'v2rayNG', desc: '🔶 Проверенный временем', icon: '🔶', store: 'https://play.google.com/store/apps/details?id=com.v2ray.ang', scheme: 'v2rayng://import/' }},
+        {{ name: 'FlClashX', desc: '⚔️ Быстрый Clash Meta / Mihomo', icon: '⚔️', store: 'https://github.com/pluralplay/FlClashX/releases', scheme: 'clash://install-config?url=' }},
     ],
     ios: [
-        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://apps.apple.com/app/happ-proxy-utility/id6504287215', scheme: 'happ://add/' }},
-        {{ name: 'Streisand', desc: 'Надёжный для iOS', icon: '🟣', store: 'https://apps.apple.com/app/streisand/id6450534064', scheme: 'streisand://import/' }},
+        {{ name: 'INCY', desc: '🔮 Бесплатно в App Store (Рекомендуется)', icon: '🔮', store: 'https://apps.apple.com/app/incy/id6737525381', scheme: 'incy://import/' }},
+        {{ name: 'Happ', desc: '⚡ Простой и быстрый', icon: '⚡', store: 'https://apps.apple.com/app/happ-proxy-utility/id6504287215', scheme: 'happ://add/' }},
+        {{ name: 'Karing', desc: '🔵 Бесплатно в App Store (Универсальный)', icon: '🔵', store: 'https://apps.apple.com/app/karing/id6472431552', scheme: 'karing://install-config?url=' }},
+        {{ name: 'AmneziaVPN', desc: '🛡 Бесплатно в App Store (Доступен в РФ)', icon: '🛡', store: 'https://apps.apple.com/app/amneziavpn/id1600523882', useAwgLink: true }},
+        {{ name: 'Shadowrocket', desc: '🚀 Лучший для iOS (В App Store, 249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},
+        {{ name: 'Hiddify', desc: '🔷 Бесплатный (нужен не-RU Apple ID)', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
     ],
     windows: [
-        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
-        {{ name: 'Hiddify', desc: 'Для Windows и macOS', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
+        {{ name: 'Happ', desc: '⚡ Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
+        {{ name: 'FlClashX', desc: '⚔️ Мощный клиент Clash Meta', icon: '⚔️', store: 'https://github.com/pluralplay/FlClashX/releases', scheme: 'clash://install-config?url=' }},
+        {{ name: 'INCY', desc: '🔮 Удобный и стильный', icon: '🔮', store: 'https://github.com/INCY-DEV/incy-platforms/releases', scheme: 'incy://import/' }},
+        {{ name: 'Hiddify', desc: '🔷 Для Windows и macOS', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
+        {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://github.com/KaringX/karing/releases', scheme: 'karing://install-config?url=' }},
     ],
     macos: [
-        {{ name: 'Happ', desc: 'Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
-        {{ name: 'Hiddify', desc: 'Для macOS и Windows', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
+        {{ name: 'INCY', desc: '🔮 Бесплатно в App Store', icon: '🔮', store: 'https://apps.apple.com/app/incy/id6737525381', scheme: 'incy://import/' }},
+        {{ name: 'Happ', desc: '⚡ Скачать с сайта', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
+        {{ name: 'FlClashX', desc: '⚔️ Для macOS (Mihomo)', icon: '⚔️', store: 'https://github.com/pluralplay/FlClashX/releases', scheme: 'clash://install-config?url=' }},
+        {{ name: 'Hiddify', desc: '🔷 Бесплатно в App Store', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
+        {{ name: 'Karing', desc: '🔵 Бесплатно в App Store', icon: '🔵', store: 'https://apps.apple.com/app/karing/id6472431552', scheme: 'karing://install-config?url=' }},
+        {{ name: 'Shadowrocket', desc: '🚀 Популярный, App Store (249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},
     ],
     tv: [
-        {{ name: 'VPN4TV', desc: 'Для Android TV', icon: '📺', store: 'https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify', scheme: 'hiddify://import/' }},
-        {{ name: 'Hiddify', desc: 'Универсальный', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
+        {{ name: 'VPN4TV', desc: '📺 Для Android TV', icon: '📺', store: 'https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify', scheme: 'hiddify://import/' }},
+        {{ name: 'Hiddify', desc: '🔷 Универсальный', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
+        {{ name: 'Karing', desc: '🔵 Для Android TV / приставок', icon: '🔵', store: 'https://github.com/KaringX/karing/releases', scheme: 'karing://install-config?url=' }},
     ]
 }};
 
 if (AWG_LINK) {{
-    var amneziaApp = {{
+    var amneziaAndroid = {{
         name: 'AmneziaVPN',
-        desc: 'Обходит DPI-блокировки',
+        desc: '🛡 Обходит DPI-блокировки (Работает в РФ)',
+        icon: '🛡',
+        store: 'https://play.google.com/store/apps/details?id=org.amnezia.vpn',
+        useAwgLink: true
+    }};
+    var amneziaDesktop = {{
+        name: 'AmneziaVPN',
+        desc: '🛡 Обходит DPI-блокировки',
         icon: '🛡',
         store: 'https://amnezia.org/downloads',
         useAwgLink: true
     }};
-    ['android', 'ios', 'windows', 'macos'].forEach(function(d) {{
-        APPS[d].push(amneziaApp);
-    }});
+    APPS.android.push(amneziaAndroid);
+    APPS.windows.push(amneziaDesktop);
+    APPS.macos.push(amneziaDesktop);
 }}
 
 function selectDevice(device) {{
@@ -539,12 +814,19 @@ function selectDevice(device) {{
     var list = document.getElementById('appList');
     list.innerHTML = '';
     var apps = APPS[device] || [];
+    if (!AWG_LINK) {{
+        apps = apps.filter(function(a) {{ return !a.useAwgLink; }});
+    }}
     apps.forEach(function(app, i) {{
         list.innerHTML += '<div class=\"app-card\" onclick=\"selectApp(' + i + ')\">' +
             '<div class=\"app-icon\">' + app.icon + '</div>' +
             '<div class=\"app-info\"><div class=\"app-name\">' + app.name + '</div>' +
             '<div class=\"app-desc\">' + app.desc + '</div></div></div>';
     }});
+    var tip = document.getElementById('iosAppStoreTip');
+    if (tip) {{
+        tip.style.display = (device === 'ios') ? 'block' : 'none';
+    }}
     showStep(2);
 }}
 
@@ -564,7 +846,15 @@ function selectApp(index) {{
         awgExtras.style.display = 'block';
         routingBtn.style.display = 'none';
     }} else {{
-        document.getElementById('autoConnectBtn').href = selectedApp.scheme + SUB_URL;
+        if (selectedApp.name === 'Shadowrocket') {{
+            document.getElementById('autoConnectBtn').href = 'shadowrocket://add/sub://' + btoa(unescape(encodeURIComponent(SUB_URL)));
+        }} else if (selectedApp.name === 'Karing') {{
+            document.getElementById('autoConnectBtn').href = 'karing://install-config?url=' + encodeURIComponent(SUB_URL) + '&name=' + encodeURIComponent('🐿 TIIN VPN');
+        }} else if (selectedApp.name === 'Hiddify') {{
+            document.getElementById('autoConnectBtn').href = 'hiddify://import/' + SUB_URL + '#%F0%9F%90%BF%20TIIN%20VPN';
+        }} else {{
+            document.getElementById('autoConnectBtn').href = selectedApp.scheme + SUB_URL;
+        }}
         vlessExtras.style.display = 'block';
         awgExtras.style.display = 'none';
         routingBtn.style.display = 'block';
@@ -577,11 +867,16 @@ function goBack(step) {{
 }}
 
 const HAPP_ROUTING_LINK = {json_mod.dumps(happ_routing_link)};
+const SHADOWROCKET_RULES_LINK = "shadowrocket://install/rule?url=" + encodeURIComponent("{PORTAL_BASE_URL}/rules/shadowrocket.conf");
 
 const ROUTING_GUIDES = {{
-    'Happ': '<p class=\"note\" style=\"margin-top:.8rem\">Нажмите для автоматической настройки:</p><a href=\"' + HAPP_ROUTING_LINK + '\" class=\"connect-btn primary\">Настроить маршруты в Happ</a>',
-    'Hiddify': '<p class=\"note\">Настройки → Конфигурация → Правила маршрутизации → добавьте <b>geosite:category-ru</b> и <b>geoip:ru</b> в прямое подключение.</p>',
-    'Streisand': '<p class=\"note\">Настройки → Маршрутизация → режим обхода → добавьте <b>.ru, .su, .рф</b></p>',
+    'AmneziaVPN': '<div style=\"background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:16px;margin-top:.8rem;text-align:left;\"><div style=\"color:#4ade80;font-weight:600;margin-bottom:6px;\">🛡 Умная маршрутизация активна</div><div style=\"color:#cbd5e1;font-size:0.85rem;line-height:1.4;\">AmneziaVPN уже настроен со Split-Tunneling: российские банки, госуслуги и сервисы работают напрямую, зарубежные — защищены.</div></div>',
+    'INCY': '<div style=\"background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:16px;margin-top:.8rem;text-align:left;\"><div style=\"color:#4ade80;font-weight:600;margin-bottom:6px;\">✨ Всё настроено автоматически!</div><div style=\"color:#cbd5e1;font-size:0.85rem;line-height:1.4;\">INCY получает готовую карту маршрутизации TIIN из подписки. Банки, госуслуги и доставка открываются напрямую, а YouTube и заблокированные сайты — через скоростной европейский туннель.</div></div>',
+    'Hiddify': '<div style=\"background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:16px;margin-top:.8rem;text-align:left;\"><div style=\"color:#4ade80;font-weight:600;margin-bottom:6px;\">✨ Всё настроено автоматически!</div><div style=\"color:#cbd5e1;font-size:0.85rem;line-height:1.4;\">Hiddify автоматически применяет карту умной маршрутизации TIIN: раздельный DNS и прямой доступ к сайтам РФ уже зашиты в вашу подписку.</div></div>',
+    'Karing': '<div style=\"background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:16px;margin-top:.8rem;text-align:left;\"><div style=\"color:#4ade80;font-weight:600;margin-bottom:6px;\">✨ Всё настроено автоматически!</div><div style=\"color:#cbd5e1;font-size:0.85rem;line-height:1.4;\">Karing загружает готовый профиль со Split-DNS и правилами обхода РФ прямо из вашей ссылки.</div></div>',
+    'Happ': '<div style=\"text-align:center;\"><p class=\"note\" style=\"margin-top:.8rem;margin-bottom:12px;\">Нажмите кнопку, чтобы применить правила TIIN в 1 клик:</p><a href=\"' + HAPP_ROUTING_LINK + '\" class=\"connect-btn primary\" style=\"display:block;text-decoration:none;\">📲 Включить умную маршрутизацию в Happ</a><p style=\"color:#94a3b8;font-size:0.75rem;margin-top:8px;\">После нажатия подтвердите добавление в Happ.</p></div>',
+    'Shadowrocket': '<div style=\"text-align:center;\"><p class=\"note\" style=\"margin-top:.8rem;margin-bottom:12px;\">Нажмите кнопку для автоустановки правил TIIN в 1 клик:</p><a href=\"' + SHADOWROCKET_RULES_LINK + '\" class=\"connect-btn primary\" style=\"display:block;text-decoration:none;\">🚀 Установить правила TIIN (1 клик)</a><p style=\"color:#94a3b8;font-size:0.75rem;margin-top:8px;\">В Shadowrocket перейдите в «Конфигурация» и убедитесь, что активен профиль TIIN.</p></div>',
+    'v2rayNG': '<div style=\"background:rgba(234,179,8,0.1);border:1px solid rgba(234,179,8,0.3);border-radius:12px;padding:16px;margin-top:.8rem;text-align:left;\"><div style=\"color:#facc15;font-weight:600;margin-bottom:6px;\">⚙️ Настройка в v2rayNG</div><div style=\"color:#cbd5e1;font-size:0.85rem;line-height:1.4;\">Боковое меню ➔ Настройки ➔ Режим маршрутизации ➔ выберите <b>«Обход локальной сети и РФ» (Bypass LAN and mainland)</b>.</div></div>',
 }};
 
 function showStep(n) {{
@@ -594,76 +889,198 @@ function showStep(n) {{
     }}
 }}
 
-function supErr(msg) {{
-    var el = document.getElementById('supportErr');
-    el.textContent = msg; el.style.display = msg ? 'block' : 'none';
+function detectDevice() {{
+    var ua = navigator.userAgent || '';
+    if (/android/i.test(ua)) return 'android';
+    if (/iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'ios';
+    if (/Windows/i.test(ua)) return 'windows';
+    if (/Macintosh|Mac OS X/i.test(ua)) return 'macos';
+    return null;
 }}
 
-function supSendCode() {{
-    var email = document.getElementById('supportEmail').value.trim();
-    supErr('');
-    if (!email) {{ supErr('Введите email'); return; }}
-    var btn = event.target; btn.disabled = true; btn.textContent = 'Отправка...';
+var autoDev = detectDevice();
+if (autoDev) {{
+    var devEl = document.getElementById('dev-' + autoDev);
+    if (devEl) {{
+        devEl.style.borderColor = '#a78bfa';
+        devEl.style.background = '#2e1065';
+        var lbl = devEl.querySelector('.label');
+        if (lbl) lbl.innerHTML += ' <span style="font-size:0.7rem;color:#c084fc;">(Ваше)</span>';
+    }}
+    selectDevice(autoDev);
+}} else {{
+    showStep(1);
+}}
 
-    fetch('/api/web/support/send-code', {{
+// ── Click tracking ──
+(function() {{
+  var TOKEN = {json_mod.dumps(web_token)};
+  var API = '/my/' + TOKEN + '/event';
+
+  function track(eventType, el, extra) {{
+    var payload = {{
+      event_type: eventType,
+      element_id: el ? el.id || null : null,
+      element_text: el ? (el.textContent || '').trim().substring(0, 200) : null,
+      extra_data: extra || null
+    }};
+    navigator.sendBeacon(API, new Blob([JSON.stringify(payload)], {{ type: 'application/json' }}));
+  }}
+
+  // Track page load
+  track('page_view', null, {{ url: window.location.pathname }});
+
+  // Track all clicks on interactive elements
+  document.addEventListener('click', function(e) {{
+    var el = e.target.closest('a, button, .device-btn, .app-card, .connect-btn, .sub-link, .faq-item');
+    if (!el) return;
+
+    var extra = {{}};
+    if (el.classList.contains('device-btn')) {{
+      extra.device = el.querySelector('.label') ? el.querySelector('.label').textContent.trim() : null;
+      track('select_device', el, extra);
+    }} else if (el.classList.contains('app-card')) {{
+      extra.app = el.querySelector('.app-name') ? el.querySelector('.app-name').textContent.trim() : null;
+      track('select_app', el, extra);
+    }} else if (el.classList.contains('connect-btn')) {{
+      extra.href = el.href || null;
+      extra.btn_text = el.textContent.trim();
+      track('click_connect_btn', el, extra);
+    }} else if (el.classList.contains('sub-link')) {{
+      track('click_sub_link', el);
+    }} else if (el.classList.contains('faq-item')) {{
+      extra.question = el.querySelector('.faq-q span') ? el.querySelector('.faq-q span').textContent.trim() : null;
+      track('click_faq', el, extra);
+    }} else if (el.tagName === 'A') {{
+      extra.href = el.href || null;
+      extra.link_text = el.textContent.trim().substring(0, 100);
+      track('click_link', el, extra);
+    }} else if (el.tagName === 'BUTTON') {{
+      extra.btn_text = el.textContent.trim();
+      track('click_button', el, extra);
+    }}
+  }});
+
+  // Track page sections visibility via IntersectionObserver
+  var sections = ['step1','step2','step3','step4','awgExtras','vlessExtras'];
+  var seen = {{}};
+  if ('IntersectionObserver' in window) {{
+    var observer = new IntersectionObserver(function(entries) {{
+      entries.forEach(function(entry) {{
+        if (entry.isIntersecting && entry.intersectionRatio > 0.5 && !seen[entry.target.id]) {{
+          seen[entry.target.id] = true;
+          track('view_section', entry.target, {{ section: entry.target.id }});
+        }}
+      }});
+    }}, {{ threshold: 0.5 }});
+    sections.forEach(function(id) {{
+      var el = document.getElementById(id);
+      if (el) observer.observe(el);
+    }});
+  }}
+
+  // Track time on page
+  var pageStart = Date.now();
+  window.addEventListener('beforeunload', function() {{
+    var duration = Math.round((Date.now() - pageStart) / 1000);
+    track('page_unload', null, {{ duration_seconds: duration }});
+  }});
+
+  // Track copy events
+  document.addEventListener('copy', function() {{
+    track('copy', null, {{ selection: window.getSelection().toString().substring(0, 100) }});
+  }});
+}})();
+
+// ── Web Support Ticket Functions ──
+var WEB_TOKEN = {json_mod.dumps(web_token)};
+
+function showSupportToast(msg) {{
+    var toast = document.getElementById('supportToast');
+    if (msg) toast.innerText = msg;
+    toast.classList.add('show');
+    setTimeout(function() {{ toast.classList.remove('show'); }}, 3000);
+}}
+
+function submitSupportTicket() {{
+    var input = document.getElementById('ticketMsgInput');
+    var btn = document.getElementById('ticketSubmitBtn');
+    var err = document.getElementById('ticketStatusErr');
+    var text = (input.value || '').trim();
+    if (!text) {{
+        err.innerText = 'Пожалуйста, напишите ваше сообщение';
+        err.style.display = 'block';
+        return;
+    }}
+    err.style.display = 'none';
+    btn.disabled = true;
+    btn.innerText = '⏳ Отправка...';
+
+    fetch('/my/' + WEB_TOKEN + '/feedback', {{
         method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{email: email}})
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ message: text }})
     }})
-    .then(function(r) {{ return r.json().then(function(d) {{ return {{status: r.status, data: d}}; }}); }})
-    .then(function(res) {{
-        if (res.data.ok) {{
-            document.getElementById('supStep1').style.display = 'none';
-            document.getElementById('supStep2').style.display = 'block';
-            document.getElementById('supEmailShow').textContent = email;
-            document.getElementById('supportCode').focus();
+    .then(function(res) {{ return res.json(); }})
+    .then(function(data) {{
+        btn.disabled = false;
+        btn.innerText = '📤 Отправить обращение администратору';
+        if (data.ok) {{
+            input.value = '';
+            showSupportToast('✅ Сообщение отправлено администратору!');
+            checkSupportTicketStatus();
         }} else {{
-            supErr(res.data.detail || res.data.message || 'Ошибка');
+            err.innerText = data.error || 'Ошибка отправки';
+            err.style.display = 'block';
         }}
     }})
-    .catch(function() {{ supErr('Ошибка сети'); }})
-    .finally(function() {{ btn.disabled = false; btn.textContent = 'Получить код'; }});
+    .catch(function() {{
+        btn.disabled = false;
+        btn.innerText = '📤 Отправить обращение администратору';
+        err.innerText = 'Ошибка сети. Попробуйте еще раз.';
+        err.style.display = 'block';
+    }});
 }}
 
-function supBack() {{
-    document.getElementById('supStep2').style.display = 'none';
-    document.getElementById('supStep1').style.display = 'block';
-    supErr('');
-}}
-
-function supSubmit() {{
-    var email = document.getElementById('supportEmail').value.trim();
-    var code = document.getElementById('supportCode').value.trim();
-    var msg = document.getElementById('supportMsg').value.trim();
-    supErr('');
-    if (!code) {{ supErr('Введите код'); return; }}
-    if (!msg) {{ supErr('Введите сообщение'); return; }}
-    var btn = event.target; btn.disabled = true; btn.textContent = 'Отправка...';
-
-    fetch('/api/web/support/contact', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{email: email, message: msg, code: code}})
-    }})
-    .then(function(r) {{ return r.json().then(function(d) {{ return {{status: r.status, data: d}}; }}); }})
-    .then(function(res) {{
-        if (res.data.ok) {{
-            document.getElementById('supStep2').style.display = 'none';
-            document.getElementById('supportOk').style.display = 'block';
-        }} else {{
-            supErr(res.data.detail || res.data.message || 'Ошибка');
+function checkSupportTicketStatus() {{
+    fetch('/my/' + WEB_TOKEN + '/ticket-status')
+    .then(function(res) {{ return res.json(); }})
+    .then(function(data) {{
+        var box = document.getElementById('ticketAlertBox');
+        if (!box) return;
+        if (!data.has_ticket) {{
+            box.style.display = 'none';
+            return;
+        }}
+        box.style.display = 'block';
+        if (data.status === 'open') {{
+            box.innerHTML = '<div style="background:#27272a; border-left:4px solid #eab308; padding:.75rem 1rem; border-radius:6px; font-size:.85rem; color:#fef08a;">' +
+                '<div style="font-weight:600; margin-bottom:.2rem;">⏳ Ваше обращение на рассмотрении (от ' + (data.created_at || '') + ')</div>' +
+                '<div style="color:#d4d4d8;">«' + (data.user_message || '').replace(/</g, "&lt;") + '»</div>' +
+                '<div style="margin-top:.4rem; font-size:.75rem; color:#a1a1aa;">Администратор ответит прямо здесь в ближайшее время.</div>' +
+            '</div>';
+        }} else if (data.status === 'answered' && data.admin_reply) {{
+            box.innerHTML = '<div style="background:#064e3b; border-left:4px solid #10b981; padding:.85rem 1rem; border-radius:6px; font-size:.85rem; color:#ecfdf5;">' +
+                '<div style="font-weight:700; color:#34d399; margin-bottom:.3rem;">💬 Ответ администратора' + (data.replied_at ? ' (' + data.replied_at + ')' : '') + ':</div>' +
+                '<div style="color:#fff; font-size:.9rem; line-height:1.4; white-space:pre-wrap;">' + (data.admin_reply || '').replace(/</g, "&lt;") + '</div>' +
+                '<div style="margin-top:.6rem; padding-top:.4rem; border-top:1px solid #065f46; font-size:.75rem; color:#a7f3d0;">' +
+                    'Ваш вопрос: «' + (data.user_message || '').replace(/</g, "&lt;") + '»' +
+                '</div>' +
+            '</div>';
         }}
     }})
-    .catch(function() {{ supErr('Ошибка сети'); }})
-    .finally(function() {{ btn.disabled = false; btn.textContent = 'Отправить'; }});
+    .catch(function() {{}});
 }}
 
-showStep(1);
+// Initial status check & periodic poll every 15s
+checkSupportTicketStatus();
+setInterval(checkSupportTicketStatus, 15000);
 </script>
+
 </body>
 </html>"""
 
-    return html  # ← этот return должен быть на том же уровне, что и начало функции (без лишних пробелов)
+    return html
 
 def _render_no_sub(web_token="", test_used=False):
     # Если тест уже активирован, показываем мастер с подсказкой о тестовом периоде
@@ -717,7 +1134,7 @@ def _render_no_sub(web_token="", test_used=False):
         }}
         </script>"""
     else:
-        test_btn = '<p style="margin-top:.5rem;font-size:.8rem">Оформите подписку на <a href="https://tiinservice.ru" style="color:#a78bfa">tiinservice.ru</a></p>'
+        test_btn = '<p style="margin-top:.5rem;font-size:.8rem">Оформите подписку на <a href="https://tiinservice.online" style="color:#a78bfa">tiinservice.online</a></p>'
 
     return f"""
 <div class="card">
@@ -729,7 +1146,11 @@ def _render_no_sub(web_token="", test_used=False):
 </div>"""
 
 
-def _render_wizard(sub_url, qr_b64, happ_routing_link="", awg_link="", awg_download_link=""):
+def _render_wizard(sub_url, happ_routing_link="", awg_link="", awg_download_link="", sub_url_de="", sub_url_ru=""):
+    if not sub_url_de and sub_url:
+        _tok = sub_url.rstrip("/").split("/")[-1]
+        sub_url_de = f"https://344988.snk.wtf/sub/{_tok}"
+        sub_url_ru = f"https://ru-server.tiinservice.online/sub/{_tok}"
     return f"""
 <h2 style="text-align:center;color:#e2e8f0;margin:1.5rem 0 .5rem">🛠 Мастер настройки</h2>
 
@@ -739,19 +1160,19 @@ def _render_wizard(sub_url, qr_b64, happ_routing_link="", awg_link="", awg_downl
     <div class="step-indicator">Шаг 1 из 4</div>
     <h2>Ваше устройство</h2>
     <div class="device-grid">
-        <div class="device-btn" onclick="selectDevice('android')">
+        <div class="device-btn" id="dev-android" onclick="selectDevice('android')">
             <div class="icon">🤖</div><div class="label">Android</div>
         </div>
-        <div class="device-btn" onclick="selectDevice('ios')">
+        <div class="device-btn" id="dev-ios" onclick="selectDevice('ios')">
             <div class="icon">🍏</div><div class="label">iPhone / iPad</div>
         </div>
-        <div class="device-btn" onclick="selectDevice('windows')">
+        <div class="device-btn" id="dev-windows" onclick="selectDevice('windows')">
             <div class="icon">💻</div><div class="label">Windows</div>
         </div>
-        <div class="device-btn" onclick="selectDevice('macos')">
+        <div class="device-btn" id="dev-macos" onclick="selectDevice('macos')">
             <div class="icon">🖥</div><div class="label">macOS</div>
         </div>
-        <div class="device-btn" onclick="selectDevice('tv')">
+        <div class="device-btn" id="dev-tv" onclick="selectDevice('tv')">
             <div class="icon">📺</div><div class="label">Android TV</div>
         </div>
     </div>
@@ -764,7 +1185,10 @@ def _render_wizard(sub_url, qr_b64, happ_routing_link="", awg_link="", awg_downl
     <div class="step-indicator">Шаг 2 из 4</div>
     <h2>Выберите приложение</h2>
     <div id="appList"></div>
-    <div class="back-link"><a href="javascript:goBack(1)">&larr; Назад</a></div>
+    <div id="iosAppStoreTip" style="display:none; margin-top:.8rem; background:#1e1b2e; border:1px solid #7c3aed; border-radius:8px; padding:.75rem; font-size:.8rem; color:#d8b4fe; line-height:1.4;">
+        💡 <b>Подсказка для App Store (РФ):</b> В российском регионе бесплатно доступны <b>Karing</b>, <b>INCY</b>, <b>Happ</b> и <b>AmneziaVPN</b>. Для <b>Hiddify</b> нужен не-российский Apple ID.
+    </div>
+    <div class="back-link"><a href="javascript:goBack(1)">&larr; Выбрать другое устройство</a></div>
 </div>
 </div>
 
@@ -782,19 +1206,24 @@ def _render_wizard(sub_url, qr_b64, happ_routing_link="", awg_link="", awg_downl
 
     <!-- VLESS-only manual import -->
     <div id="vlessExtras">
-        <p class="note" style="margin-top:1.2rem">Или добавьте вручную — скопируйте ссылку:</p>
-        <div class="sub-link" onclick="copyLink()">{html_mod.escape(sub_url)}</div>
+        <p class="note" style="margin-top:1.2rem">Если кнопка не открыла приложение — скопируйте ссылку подписки и вставьте в приложении через <b>«+ ➔ Импорт из буфера обмена»</b>:</p>
+        
+        <div style="font-size: .8rem; font-weight: 600; color: #93c5fd; margin-top: 12px; margin-bottom: 4px; text-align: left;">🇩🇪 Способ 1: Основной сервер (Германия)</div>
+        <div class="sub-link" onclick="copyDirect('{html_mod.escape(sub_url_de)}')" title="Нажмите, чтобы скопировать">{html_mod.escape(sub_url_de)}</div>
+        <button type="button" class="connect-btn secondary" onclick="copyDirect('{html_mod.escape(sub_url_de)}')" style="margin-top:.3rem; padding:.5rem; font-size:.8rem;">📋 Скопировать Способ 1 (Германия)</button>
 
-        <div class="qr-wrap">
-            <img src="data:image/png;base64,{qr_b64}" alt="QR">
-        </div>
-        <p class="note">Отсканируйте QR-код камерой или из приложения</p>
+        <div style="font-size: .8rem; font-weight: 600; color: #86efac; margin-top: 14px; margin-bottom: 4px; text-align: left;">🇷🇺 Способ 2: Резервный шлюз РФ (Selectel СПб)</div>
+        <div class="sub-link" onclick="copyDirect('{html_mod.escape(sub_url_ru)}')" title="Нажмите, чтобы скопировать">{html_mod.escape(sub_url_ru)}</div>
+        <button type="button" class="connect-btn secondary" onclick="copyDirect('{html_mod.escape(sub_url_ru)}')" style="margin-top:.3rem; padding:.5rem; font-size:.8rem;">📋 Скопировать Способ 2 (Россия)</button>
+        
+        <p class="note" style="margin-top:.8rem; font-size: .75rem; color: #94a3b8;">💡 <i>Если подписка не обновляется первым способом (блокировка оператора), используйте <b>Способ 2 (РФ)</b>.</i></p>
     </div>
 
     <!-- AmneziaVPN-only manual import -->
     <div id="awgExtras" style="display:none">
         <p class="note" style="margin-top:1.2rem">Или скачайте файл конфигурации и импортируйте вручную:</p>
         <a id="awgDownloadBtn" href="#" class="connect-btn secondary">&#128229; Скачать .conf файл</a>
+        <a href="https://t.me/tiin_service_bot?start=awg" class="connect-btn secondary" style="background:#1e1b2e; border-color:#7c3aed; color:#d8b4fe;">📱 Получить .conf файл в Telegram-боте</a>
         <p class="note" style="margin-top:.6rem">Маршрутизация уже настроена в конфиге — российские сайты пойдут напрямую.</p>
     </div>
 

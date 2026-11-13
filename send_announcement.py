@@ -43,57 +43,84 @@ async def send_to_user(bot: Bot, user_id: int, name: str = ""):
         await bot.send_message(user_id, MESSAGE)
         print(f"✅ Отправлено {user_id} ({name})")
         try:
-            from api.db import log_message_sent
+            from api.db import execute_query, log_message_sent
+            execute_query("UPDATE users SET bot_blocked = 0 WHERE tg_id = %s AND bot_blocked = 1", (user_id,))
             log_message_sent(tg_id=user_id, source="announcement", status='sent',
                              message_text=MESSAGE[:500])
         except Exception:
             pass
         return True
     except Exception as e:
-        print(f"❌ Ошибка {user_id}: {e}")
+        err = str(e).lower()
+        is_block = "blocked" in err or "deactivated" in err
+        status = 'blocked' if is_block else 'failed'
+        print(f"{'🚫' if is_block else '❌'} {status.upper()} {user_id}: {e}")
+        if is_block:
+            try:
+                from api.db import execute_query
+                execute_query("UPDATE users SET bot_blocked = 1 WHERE tg_id = %s", (user_id,))
+            except Exception:
+                pass
         try:
             from api.db import log_message_sent
-            log_message_sent(tg_id=user_id, source="announcement", status='failed',
+            log_message_sent(tg_id=user_id, source="announcement", status=status,
                              error_text=str(e)[:255])
         except Exception:
             pass
         return False
 
 async def main():
+    from api.db import execute_query
+
     bot = Bot(token=BOT_TOKEN)
-    
+
     print("=" * 50)
     print("📨 НАЧАЛО РАССЫЛКИ")
     print("=" * 50)
-    
+
+    # Filter out users who blocked the bot
+    blocked_rows = execute_query(
+        "SELECT tg_id FROM users WHERE tg_id IN %s AND bot_blocked = 1",
+        (tuple(OTHER_USERS),),
+        fetch='all',
+    ) if OTHER_USERS else []
+    blocked_set = {r['tg_id'] for r in blocked_rows}
+
+    if blocked_set:
+        print(f"\n🚫 Skipping {len(blocked_set)} users who blocked the bot: {blocked_set}")
+
+    users_to_send = [uid for uid in OTHER_USERS if uid not in blocked_set]
+
     # 1. Сначала отправляем себе
     print("\n📤 Отправка себе...")
     await send_to_user(bot, YOUR_ID, "Вы")
-    
+
     # Ждём подтверждения от вас
     print("\n⏳ Проверьте, пришло ли сообщение. Если всё хорошо, отправляем остальным?")
-    response = input("Отправить остальным? (y/n): ").strip().lower()
-    
+    response = input(f"Отправить {len(users_to_send)} пользователям? (y/n): ").strip().lower()
+
     if response != 'y':
         print("❌ Рассылка отменена")
         await bot.session.close()
         return
-    
+
     # 2. Отправляем остальным
     print("\n📤 Отправка остальным пользователям...")
-    
+
     success_count = 0
-    for i, user_id in enumerate(OTHER_USERS, 1):
-        print(f"  [{i}/{len(OTHER_USERS)}] Отправка {user_id}...")
+    for i, user_id in enumerate(users_to_send, 1):
+        print(f"  [{i}/{len(users_to_send)}] Отправка {user_id}...")
         if await send_to_user(bot, user_id):
             success_count += 1
         await asyncio.sleep(0.5)  # Пауза между сообщениями
-    
+
     # 3. Итог
     print("\n" + "=" * 50)
-    print(f"📊 ИТОГ: {success_count}/{len(OTHER_USERS)} отправлено успешно")
+    print(f"📊 ИТОГ: {success_count}/{len(users_to_send)} отправлено успешно")
+    if blocked_set:
+        print(f"🚫 Пропущено (бот заблокирован): {len(blocked_set)}")
     print("=" * 50)
-    
+
     await bot.session.close()
 
 if __name__ == "__main__":

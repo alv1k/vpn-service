@@ -1,10 +1,12 @@
 import requests
 import json
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import subprocess
 from urllib.parse import quote
 import os
 import logging
-from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_TOTP_SECRET, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, VLESS_SID, VLESS_SID_LIST, VLESS_PBK, VLESS_SNI
+from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_TOTP_SECRET, VLESS_DOMAIN, VLESS_PORT, VLESS_PATH, VLESS_SID, VLESS_SID_LIST, VLESS_PBK, VLESS_SNI, VLESS_HTTP_PORT, VLESS_XHTTP_PBK, VLESS_XHTTP_SID, VLESS_XHTTP_SID_LIST
 
 logger = logging.getLogger(__name__)
 
@@ -18,23 +20,33 @@ class XUIClient:
         self.cookie_file = '/tmp/xui-cookie.txt'
         self._logged_in = False
 
-    def login(self) -> bool:
-        """Login через nginx"""
+    def _get_csrf_token(self) -> str:
+        """Get a fresh CSRF token from the panel."""
         try:
-            # Исправлено: используем self.host, нет base_path
-            login_url = f"{self.host}/login"
+            csrf_resp = self.session.get(f"{self.host}/csrf-token", timeout=4)
+            return csrf_resp.json().get("obj", "")
+        except Exception as e:
+            logger.debug(f"CSRF token fetch error: {e}")
+            return ""
+
+    def login(self) -> bool:
+        """Login to x-ui panel (v3.x with CSRF support)."""
+        try:
+            csrf_token = self._get_csrf_token()
+
             response = self.session.post(
-                login_url,
-                json={"username": self.username, "password": self.password},
-                headers={"Content-Type": "application/json"}
+                f"{self.host}/login",
+                data={"username": self.username, "password": self.password},
+                headers={"X-CSRF-Token": csrf_token},
+                timeout=4,
             )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success"):
-                    logger.info("✅ XUI login successful")
-                    self._logged_in = True
-                    return True
+
+            if response.status_code == 200 and response.json().get("success"):
+                logger.info("✅ XUI login successful")
+                self._logged_in = True
+                self._csrf_token = self._get_csrf_token()
+                return True
+            logger.warning(f"XUI login failed: {response.text}")
             return False
         except Exception as e:
             logger.error(f"Login error: {e}")
@@ -42,10 +54,28 @@ class XUIClient:
 
     def _request(self, method, url, **kwargs):
         """Выполняет запрос, при необходимости делает login/re-login."""
-        kwargs.setdefault('timeout', 10)
+        kwargs.setdefault('timeout', 15)
         if not self._logged_in:
-            self.login()  # Синхронный вызов, без await
+            self.login()
+
+        if method.upper() == "POST":
+            headers = kwargs.get("headers", {})
+            if "X-CSRF-Token" not in headers:
+                if not getattr(self, "_csrf_token", ""):
+                    self._csrf_token = self._get_csrf_token()
+                headers["X-CSRF-Token"] = self._csrf_token
+                kwargs["headers"] = headers
+
         response = self.session.request(method, url, **kwargs)
+
+        if response.status_code == 403 and method.upper() == "POST":
+            logger.info("XUI CSRF expired, refreshing token and retrying")
+            self._csrf_token = self._get_csrf_token()
+            headers = kwargs.get("headers", {})
+            headers["X-CSRF-Token"] = self._csrf_token
+            kwargs["headers"] = headers
+            response = self.session.request(method, url, **kwargs)
+
         content_type = response.headers.get('content-type', '')
         if response.status_code in (401, 404) or (
             'application/json' not in content_type and response.status_code == 200
@@ -53,7 +83,14 @@ class XUIClient:
             logger.info("XUI session expired, re-logging in")
             self._logged_in = False
             self.login()
+
+            if method.upper() == "POST":
+                headers = kwargs.get("headers", {})
+                headers["X-CSRF-Token"] = getattr(self, "_csrf_token", "")
+                kwargs["headers"] = headers
+
             response = self.session.request(method, url, **kwargs)
+
         return response
 
     def get_inbounds(self):  # Убран async
@@ -69,21 +106,44 @@ class XUIClient:
         for inbound in self.get_inbounds():
             protocol = inbound.get('protocol', '')
             stream = inbound.get('streamSettings', '{}')
-            if protocol == 'vless' and 'reality' in stream.lower():
+            if protocol == 'vless' and 'reality' in str(stream).lower():
                 return inbound['id']
         logger.warning(f"No VLESS Reality inbound found, using fallback={fallback_id}")
         return fallback_id
 
     def get_client_by_email(self, email):
-        """Найти клиента по email"""
+        """Найти клиента по email через новый API."""
+        try:
+            response = self._request("GET", f"{self.host}/panel/api/clients/get/{email}")
+            result = response.json()
+            if result.get('success') and result.get('obj'):
+                obj = result['obj']
+                client = obj.get('client', {})
+                inbound_ids = obj.get('inboundIds', [])
+                return {
+                    'inbound_id': inbound_ids[0] if inbound_ids else None,
+                    'inboundIds': inbound_ids,
+                    'client': client,
+                }
+        except Exception as e:
+            logger.error(f"Error getting client by email: {e}")
+
         inbounds = self.get_inbounds()
         for inbound in inbounds:
-            settings = json.loads(inbound.get('settings', '{}'))
+            raw_settings = inbound.get('settings', '{}')
+            if isinstance(raw_settings, str):
+                try:
+                    settings = json.loads(raw_settings)
+                except (json.JSONDecodeError, TypeError):
+                    settings = {}
+            else:
+                settings = raw_settings if isinstance(raw_settings, dict) else {}
             clients = settings.get('clients', [])
             for client in clients:
                 if client.get('email') == email:
                     return {
                         'inbound_id': inbound['id'],
+                        'inboundIds': [inbound['id']],
                         'client': client,
                         'inbound': inbound
                     }
@@ -99,7 +159,14 @@ class XUIClient:
                 return None
 
             for inbound in result.get('obj', []):
-                settings = json.loads(inbound.get('settings', '{}'))
+                raw_settings = inbound.get('settings', '{}')
+                if isinstance(raw_settings, str):
+                    try:
+                        settings = json.loads(raw_settings)
+                    except (json.JSONDecodeError, TypeError):
+                        settings = {}
+                else:
+                    settings = raw_settings if isinstance(raw_settings, dict) else {}
                 for client in settings.get('clients', []):
                     if str(client.get('tgId')) == str(tg_id) and not client.get('email', '').startswith('test-'):
                         return {
@@ -111,6 +178,46 @@ class XUIClient:
         except Exception as e:
             logger.error(f"Error searching client by tg_id: {e}")
             return None
+
+    def set_client_expiry(self, email, expiry_time_ms, enable=True):
+        """Установить точный срок действия (expiryTime) и активность (enable) клиента."""
+        try:
+            client_data = self.get_client_by_email(email)
+            if not client_data:
+                logger.error(f"set_client_expiry: Client with email={email} not found")
+                return False
+            
+            client = client_data.get('client', {})
+            payload = {
+                "email": email,
+                "totalGB": client.get('totalGB', 0),
+                "expiryTime": expiry_time_ms,
+                "tgId": client.get('tgId', 0),
+                "enable": bool(enable),
+                "limitIp": client.get('limitIp', 0),
+                "reset": client.get('reset', 0),
+                "flow": client.get('flow') or 'xtls-rprx-vision',
+            }
+
+            url = f"{self.host}/panel/api/clients/update/{email}"
+            logger.info(f"set_client_expiry: POST {url} with expiry={expiry_time_ms}, enable={enable}")
+
+            response = self._request("POST", url, json=payload, headers={"Content-Type": "application/json"})
+            result = response.json()
+            if result.get('success', False):
+                try:
+                    tg_id_val = client.get('tgId')
+                    if tg_id_val and str(tg_id_val).isdigit() and int(tg_id_val) > 0:
+                        from bot_xui.awg_manager import get_or_create_3xui_awg_client
+                        get_or_create_3xui_awg_client(tg_id=int(tg_id_val), expiry_ms=expiry_time_ms, client_name=f"awg_{tg_id_val}")
+                except Exception as awg_sync_err:
+                    logger.warning(f"set_client_expiry: failed to sync AWG Inbound 17: {awg_sync_err}")
+                return expiry_time_ms
+            logger.error(f"set_client_expiry: XUI returned success=False: {result}")
+            return False
+        except Exception as e:
+            logger.error(f"set_client_expiry: exception: {e}", exc_info=True)
+            return False
 
     def extend_client_expiry(self, inbound_id, client, duration_ms):
         """Продлить срок действия клиента на duration_ms миллисекунд."""
@@ -127,37 +234,50 @@ class XUIClient:
             base = current_expiry if current_expiry > now_ms else now_ms
             new_expiry = base + duration_ms
 
-            logger.info(f"duration_ms: {duration_ms}, new_expiry: {new_expiry}")
+            logger.info(f"extend_client_expiry: inbound_id={inbound_id}, duration_ms={duration_ms}, current_expiry={current_expiry}, new_expiry={new_expiry}")
 
-            client_id = client.get('id') or client.get('auth')
-            if not client_id:
-                logger.error(f"Client has no 'id' or 'auth' field: {client.get('email', 'unknown')}")
+            email = client.get('email')
+            if not email:
+                logger.error(f"extend_client_expiry: Client has no 'email' field, client keys: {list(client.keys())}")
                 return False
 
-            updated_client = {**client, 'expiryTime': new_expiry}
-            if not updated_client.get('flow'):
-                updated_client['flow'] = 'xtls-rprx-vision'
+            logger.info(f"extend_client_expiry: updating client email={email}")
 
             payload = {
-                "id": inbound_id,
-                "settings": json.dumps({"clients": [updated_client]})
+                "email": email,
+                "totalGB": client.get('totalGB', 0),
+                "expiryTime": new_expiry,
+                "tgId": client.get('tgId', 0),
+                "enable": True,
+                "limitIp": client.get('limitIp', 0),
+                "reset": client.get('reset', 0),
+                "flow": client.get('flow') or 'xtls-rprx-vision',
             }
 
-            response = self._request(
-                "POST",
-                f"{self.host}/panel/api/inbounds/updateClient/{client_id}",
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            )
+            url = f"{self.host}/panel/api/clients/update/{email}"
+            logger.info(f"extend_client_expiry: POST {url}")
+
+            response = self._request("POST", url, json=payload, headers={"Content-Type": "application/json"})
+
+            logger.info(f"extend_client_expiry: response status={response.status_code}")
 
             result = response.json()
-            logger.info(f"Extend expiry response: {result}")
+            logger.info(f"extend_client_expiry: response body={result}")
             if result.get('success', False):
+                # Also sync AmneziaWG (Inbound 17) expiry if user has tgId or awg client
+                try:
+                    tg_id_val = client.get('tgId')
+                    if tg_id_val and str(tg_id_val).isdigit() and int(tg_id_val) > 0:
+                        from bot_xui.awg_manager import get_or_create_3xui_awg_client
+                        get_or_create_3xui_awg_client(tg_id=int(tg_id_val), expiry_ms=new_expiry, client_name=f"awg_{tg_id_val}")
+                except Exception as awg_sync_err:
+                    logger.warning(f"extend_client_expiry: failed to sync AWG Inbound 17: {awg_sync_err}")
                 return new_expiry
+            logger.error(f"extend_client_expiry: XUI returned success=False: {result}")
             return False
 
         except Exception as e:
-            logger.error(f"Error extending client expiry: {e}", exc_info=True)
+            logger.error(f"extend_client_expiry: exception: {e}", exc_info=True)
             return False
 
     def add_or_extend_client(self, inbound_id, email, tg_id, uuid, expiry_time=0, total_gb=0, limit_ip=10, extend_ms=None):
@@ -184,81 +304,118 @@ class XUIClient:
         return self.add_client(inbound_id, email, tg_id, uuid, expiry_time, total_gb, limit_ip)
 
     def add_client(self, inbound_id, email, tg_id, uuid, expiry_time=0, total_gb=0, limit_ip=10, sub_id=None):
-        """Добавить клиента в inbound с учетом протокола (VLESS или Hysteria)"""
+        """Добавить клиента в inbound (legacy-обёртка для совместимости)."""
+        return self.create_client(email=email, tg_id=tg_id, expiry_time=expiry_time, total_gb=total_gb, limit_ip=limit_ip, inbound_ids=[inbound_id])
+
+    def create_client(self, email, tg_id, expiry_time=0, total_gb=0, limit_ip=10, inbound_ids=None):
+        """
+        Создать клиента через новый API 3x-ui (v3.x+).
+        POST /panel/api/clients/add
+        Body: {"client": {...}, "inboundIds": [id1, id2]}
+        Сервер сам генерирует UUID/auth и subId.
+        Возвращает dict с полями: success, subId, uuid, auth, msg
+        """
         import uuid as uuid_lib
-        
-        # 1. Сначала узнаем протокол инбаунда
-        protocol = "vless"
-        for ib in self.get_inbounds():
-            if ib['id'] == inbound_id:
-                protocol = ib.get('protocol', 'vless').lower()
-                break
 
-        final_sub_id = sub_id or str(uuid_lib.uuid4()).replace('-', '')[:16]
-        
-        # 2. Формируем данные клиента в зависимости от протокола
-        client_obj = {
-            "email": email,
-            "limitIp": limit_ip,
-            "totalGB": total_gb,
-            "expiryTime": expiry_time,
-            "enable": True,
-            "tgId": tg_id,
-            "subId": final_sub_id,
-            "reset": 0
+        if inbound_ids is None:
+            from config import ACTIVE_INBOUND_IDS
+            inbound_ids = list(ACTIVE_INBOUND_IDS)
+
+        payload = {
+            "client": {
+                "email": email,
+                "limitIp": limit_ip,
+                "totalGB": total_gb,
+                "expiryTime": expiry_time,
+                "enable": True,
+                "tgId": tg_id,
+                "reset": 0,
+                "flow": "xtls-rprx-vision",
+            },
+            "inboundIds": inbound_ids,
         }
 
-        if protocol == "hysteria":
-            client_obj["auth"] = uuid # Для Hysteria ID — это auth (password)
-        else:
-            client_obj["id"] = uuid
-            client_obj["flow"] = "xtls-rprx-vision"
-        
-        client_data = {
-            "id": inbound_id,
-            "settings": json.dumps({"clients": [client_obj]})
-        }
-        
         try:
-            logger.info(f"Sending addClient request ({protocol}) to: {self.host}/panel/api/inbounds/addClient")
-            
+            logger.info(f"Sending createClient request to: {self.host}/panel/api/clients/add for email={email}, inboundIds={inbound_ids}")
+
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/addClient",
-                json=client_data,
+                f"{self.host}/panel/api/clients/add",
+                json=payload,
                 headers={"Content-Type": "application/json"}
             )
-            
+
             result = response.json()
-            logger.info(f"api Response: {result}")
+            logger.info(f"createClient Response: {result}")
+
             if result.get('success', False):
-                return {"success": True, "subId": final_sub_id}
-            return {"success": False, "msg": result.get('msg')}
-            
+                # Ensure client_inbounds entries exist in /etc/x-ui/x-ui.db for 3x-ui 3.4+
+                try:
+                    import sqlite3, time
+                    db_path = '/etc/x-ui/x-ui.db'
+                    if os.path.exists(db_path):
+                        with sqlite3.connect(db_path, timeout=5) as db_conn:
+                            cur = db_conn.cursor()
+                            cur.execute("SELECT id FROM client_traffics WHERE email = ? ORDER BY id DESC LIMIT 1", (email,))
+                            row = cur.fetchone()
+                            if row:
+                                ct_id = row[0]
+                                now_ms = int(time.time() * 1000)
+                                for i_id in inbound_ids:
+                                    flow = 'xtls-rprx-vision' if i_id in (1, 10) else ''
+                                    cur.execute("""
+                                        INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id, flow_override, created_at)
+                                        VALUES (?, ?, ?, ?)
+                                    """, (ct_id, i_id, flow, now_ms))
+                                db_conn.commit()
+                except Exception as db_sync_err:
+                    logger.error(f"Failed to auto-sync client_inbounds for {email}: {db_sync_err}")
+
+                client_data = self.get_client_by_email(email)
+                if client_data:
+                    c = client_data['client']
+                    return {
+                        "success": True,
+                        "subId": c.get('subId') or str(uuid_lib.uuid4()).replace('-', '')[:16],
+                        "uuid": c.get('uuid') or c.get('id'),
+                        "auth": c.get('auth'),
+                        "inboundIds": client_data.get('inboundIds', inbound_ids),
+                    }
+                sub_id = str(uuid_lib.uuid4()).replace('-', '')[:16]
+                return {"success": True, "subId": sub_id, "uuid": None, "auth": None}
+            return {"success": False, "msg": result.get('msg', 'Unknown error')}
+
         except Exception as e:
-            logger.error(f"Error adding client: {e}")
-            return {"success": False}
+            logger.error(f"Error creating client: {e}")
+            return {"success": False, "msg": str(e)}
 
     def get_hysteria_inbound_id(self, fallback_id: int = 4) -> int:
         """Find the first Hysteria inbound id dynamically."""
         for inbound in self.get_inbounds():
             protocol = inbound.get('protocol', '')
-            if protocol == 'hysteria':
+            if protocol in ('hysteria', 'hysteria2'):
                 return inbound['id']
         logger.warning(f"No Hysteria inbound found, using fallback={fallback_id}")
         return fallback_id
 
     def deactivate_client(self, inbound_id, client):
         """Отключить клиента (enable=false)"""
-        client_to_update = {**client, 'enable': False}
+        email = client.get('email')
+        if not email:
+            return False
         payload = {
-            "id": inbound_id,
-            "settings": json.dumps({"clients": [client_to_update]})
+            "email": email,
+            "totalGB": client.get('totalGB', 0),
+            "expiryTime": client.get('expiryTime', 0),
+            "tgId": client.get('tgId', 0),
+            "enable": False,
+            "limitIp": client.get('limitIp', 0),
+            "reset": client.get('reset', 0),
         }
         try:
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/updateClient/{client['id']}",
+                f"{self.host}/panel/api/clients/update/{email}",
                 json=payload,
                 headers={"Content-Type": "application/json"}
             )
@@ -268,15 +425,11 @@ class XUIClient:
             return False
 
     def delete_client(self, inbound_id, client_email):
-        """Удалить клиента по email из inbound"""
-        client_info = self.get_client_by_email(client_email)
-        if not client_info:
-            return False
-            
+        """Удалить клиента по email"""
         try:
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/deleteClient/{client_info['client']['id']}",
+                f"{self.host}/panel/api/clients/del/{client_email}",
                 headers={"Content-Type": "application/json"}
             )
             return response.json().get('success', False)
@@ -284,12 +437,43 @@ class XUIClient:
             logger.error(f"Error deleting client: {e}")
             return False
 
+    def update_client_expiry(self, inbound_id: int, client: dict, expiry_ms: int, enable: bool = True) -> bool:
+        """Обновить время истечения и статус клиента"""
+        try:
+            email = client.get("email")
+            if not email:
+                return False
+            payload = {
+                "email": email,
+                "enable": bool(enable),
+                "expiryTime": expiry_ms,
+                "totalGB": client.get("totalGB", 0),
+                "limitIp": client.get("limitIp", 0),
+                "reset": client.get("reset", 0),
+                "tgId": client.get("tgId", 0),
+                "flow": client.get("flow") or "xtls-rprx-vision",
+            }
+            response = self._request(
+                "POST",
+                f"{self.host}/panel/api/clients/update/{email}",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            result = response.json()
+            if result.get("success", False):
+                return True
+            logger.warning(f"Failed to update client {email} expiry: {result}")
+            return False
+        except Exception as e:
+            logger.error(f"Error updating client expiry: {e}")
+            return False
+
     def reset_client_traffic(self, inbound_id, client_email):
         """Сбросить трафик клиента"""
         try:
             response = self._request(
                 "POST",
-                f"{self.host}/panel/api/inbounds/{inbound_id}/resetClientTraffic/{client_email}",
+                f"{self.host}/panel/api/clients/resetTraffic/{client_email}",
                 headers={"Content-Type": "application/json"}
             )
             return response.json().get('success', False)
@@ -315,7 +499,14 @@ class XUIClient:
             best_sub_id = None
             best_expiry = -1
             for inbound in result.get('obj', []):
-                settings = json.loads(inbound.get('settings', '{}'))
+                raw_settings = inbound.get('settings', '{}')
+                if isinstance(raw_settings, str):
+                    try:
+                        settings = json.loads(raw_settings)
+                    except (json.JSONDecodeError, TypeError):
+                        settings = {}
+                else:
+                    settings = raw_settings if isinstance(raw_settings, dict) else {}
                 for client in settings.get('clients', []):
                     if str(client.get('tgId')) == str(tg_id):
                         sub_id = client.get('subId')
@@ -327,11 +518,28 @@ class XUIClient:
                                 best_sub_id = sub_id
                                 best_expiry = expiry
             if best_sub_id:
-                return f"{XUI_SUB_PATH}/sub/{best_sub_id}"
+                return f"{XUI_SUB_PATH}/updates_ui/{best_sub_id}"
             return None
 
         except Exception as e:
             logger.error(f"Error getting client subscription url: {e}")
+            return None
+
+    def get_client_subscription_url_by_email(self, email: str):
+        """Получить ссылку подписки клиента по email (для web-пользователей с tg_id=0)."""
+        from config import XUI_SUB_PATH
+        if not XUI_SUB_PATH:
+            logger.warning("XUI_SUB_PATH not configured")
+            return None
+        try:
+            client_data = self.get_client_by_email(email)
+            if client_data:
+                sub_id = client_data['client'].get('subId')
+                if sub_id:
+                    return f"{XUI_SUB_PATH}/updates_ui/{sub_id}"
+            return None
+        except Exception as e:
+            logger.error(f"Error getting client subscription url by email: {e}")
             return None
 
 
@@ -347,26 +555,42 @@ def generate_vless_link(
     fp: str = "chrome",
     spx: str = "/",
     remark: str | None = None,
+    network: str = "tcp",
 ) -> str:
     import random
     from urllib.parse import quote
 
     # Ротация short ID: если передан один из списка, выбираем случайный
-    if VLESS_SID_LIST and sid in VLESS_SID_LIST:
-        sid = random.choice(VLESS_SID_LIST)
+    sid_list = VLESS_XHTTP_SID_LIST if network == "xhttp" else VLESS_SID_LIST
+    if sid_list and sid in sid_list:
+        sid = random.choice(sid_list)
 
-    # Формируем параметры в том же порядке, что и в панели
-    params = (
-        f"type=tcp"
-        f"&encryption=none"
-        f"&security=reality"
-        f"&pbk={pbk}"
-        f"&fp={fp}"
-        f"&sni={sni}"
-        f"&sid={sid}"
-        f"&spx={quote(spx, safe='')}"
-        f"&flow=xtls-rprx-vision"
-    )
+    if network == "xhttp":
+        params = (
+            f"type=xhttp"
+            f"&mode=stream-one"
+            f"&encryption=none"
+            f"&security=reality"
+            f"&pbk={pbk}"
+            f"&fp={fp}"
+            f"&sni={sni}"
+            f"&sid={sid}"
+            f"&spx={quote(spx, safe='')}"
+            f"&host={quote(sni, safe='')}"
+            f"&path={quote(path, safe='')}"
+        )
+    else:
+        params = (
+            f"type=tcp"
+            f"&encryption=none"
+            f"&security=reality"
+            f"&pbk={pbk}"
+            f"&fp={fp}"
+            f"&sni={sni}"
+            f"&sid={sid}"
+            f"&spx={quote(spx, safe='')}"
+            f"&flow=xtls-rprx-vision"
+        )
 
     display_name = remark if remark else client_name
     return f"vless://{client_id}@{domain}:{port}?{params}#{quote(display_name)}"

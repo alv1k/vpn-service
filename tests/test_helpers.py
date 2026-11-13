@@ -113,7 +113,7 @@ def test_make_proxy_file():
     content = buf.read().decode()
     assert "<!DOCTYPE html>" in content
     assert "tg://proxy" in content
-    assert "tiinservice.ru" in content
+    assert "тииҥ VPN" in content
 
 
 def test_make_proxy_file_has_both_links():
@@ -141,9 +141,8 @@ def test_main_menu_text():
 async def test_safe_edit_text_normal_message():
     from bot_xui.helpers import safe_edit_text
     query = MagicMock()
-    query.message.photo = None
-    query.message.video = None
-    query.message.document = None
+    for attr in ['photo', 'video', 'document', 'sticker', 'animation', 'poll', 'voice', 'video_note', 'audio', 'location', 'venue', 'contact', 'dice', 'game']:
+        setattr(query.message, attr, None)
     query.edit_message_text = AsyncMock()
     result = await safe_edit_text(query, "Hello")
     assert result is True

@@ -18,23 +18,6 @@ services:
     networks:
       - vpn_dev_net
 
-  phpmyadmin-dev:
-    image: phpmyadmin:latest
-    container_name: phpmyadmin_dev
-    environment:
-      PMA_HOST: mysql-dev
-      PMA_PORT: 3306
-      PMA_USER: root
-      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:-your_mysql_root_password_here}
-      UPLOAD_LIMIT: 50M
-    ports:
-      - "127.0.0.1:8082:80"
-    depends_on:
-      - mysql-dev
-    restart: unless-stopped
-    networks:
-      - vpn_dev_net
-
 volumes:
   mysql_data_dev:
 

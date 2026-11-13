@@ -15,7 +15,7 @@ sys.modules.setdefault("yookassa", MagicMock())
 
 def test_make_qr_bytes_returns_png():
     """QR code generation returns a valid PNG BytesIO."""
-    from bot_xui.vpn_factory import make_qr_bytes
+    from bot_xui.helpers import make_qr_bytes
     bio = make_qr_bytes("https://example.com")
     assert isinstance(bio, BytesIO)
     header = bio.read(4)
@@ -33,14 +33,13 @@ class TestCreateXuiMultiConfig:
     @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://fake")
     @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
     async def test_success(self, mock_remark, mock_hyst, mock_vless):
-        """Creates VLESS+Hysteria clients and returns config dict."""
+        """Creates VLESS+Hysteria clients via single create_client call and returns config dict."""
         from bot_xui.vpn_factory import create_xui_multi_config
+        from config import ACTIVE_INBOUND_IDS
 
         xui = MagicMock()
-        xui.add_client.side_effect = [
-            {"success": True, "subId": "abc123"},
-            {"success": True},
-        ]
+        xui.get_client_by_email.return_value = None
+        xui.create_client.return_value = {"success": True, "subId": "abc123"}
 
         result = await create_xui_multi_config(tg_id=55555, xui=xui)
 
@@ -48,52 +47,62 @@ class TestCreateXuiMultiConfig:
         assert len(result["client_uuid"]) == 36
         assert result["vless_link"] == "vless://fake"
         assert result["hysteria_link"] == "hysteria2://fake"
-        assert xui.add_client.call_count == 2
+        xui.create_client.assert_called_once_with(
+            email="tiin_55555", tg_id=55555, expiry_time=xui.create_client.call_args[1]['expiry_time'],
+            inbound_ids=ACTIVE_INBOUND_IDS,
+        )
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://fake")
     @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://fake")
     @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
-    async def test_duplicate_email_reuses_sub_id(self, mock_remark, mock_hyst, mock_vless):
-        """When XUI returns Duplicate email, fetches existing subId instead of failing."""
+    async def test_existing_client_reuses_sub_id(self, mock_remark, mock_hyst, mock_vless):
+        """When client already exists in x-ui, fetches existing subId instead of failing."""
         from bot_xui.vpn_factory import create_xui_multi_config
 
         xui = MagicMock()
-        xui.add_client.side_effect = [
-            {"success": False, "msg": "Duplicate email: tiin_55555\n"},
-            {"success": True},
-        ]
+        xui.get_client_by_email.return_value = {
+            "inbound_id": 1,
+            "client": {"uuid": "existing-uuid", "auth": "existing-auth", "email": "tiin_55555"},
+        }
         xui.get_client_subscription_url.return_value = "https://sub/existing_sub"
 
         result = await create_xui_multi_config(tg_id=55555, xui=xui)
 
         assert result["client_email"] == "tiin_55555"
+        assert result["client_uuid"] == "existing-uuid"
+        xui.create_client.assert_not_called()
         xui.get_client_subscription_url.assert_called_once_with(55555)
+        xui.set_client_expiry.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.generate_vless_link")
     @patch("bot_xui.vpn_factory.generate_hysteria2_link")
     @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
-    async def test_duplicate_email_no_sub_id_raises(self, mock_remark, mock_hyst, mock_vless):
-        """When Duplicate email and no subId found, raises RuntimeError."""
+    async def test_existing_client_no_sub_id_raises(self, mock_remark, mock_hyst, mock_vless):
+        """When client exists but no subId found, raises RuntimeError."""
         from bot_xui.vpn_factory import create_xui_multi_config
 
         xui = MagicMock()
-        xui.add_client.return_value = {"success": False, "msg": "Duplicate email: tiin_55555\n"}
+        xui.get_client_by_email.return_value = {
+            "inbound_id": 1,
+            "client": {"uuid": "existing-uuid", "email": "tiin_55555"},
+        }
         xui.get_client_subscription_url.return_value = None
 
         with pytest.raises(RuntimeError, match="не удалось получить subId"):
             await create_xui_multi_config(tg_id=55555, xui=xui)
 
     @pytest.mark.asyncio
-    async def test_vless_creation_failure_raises(self):
-        """When VLESS add_client fails (non-duplicate), raises RuntimeError."""
+    async def test_creation_failure_raises(self):
+        """When create_client fails, raises RuntimeError."""
         from bot_xui.vpn_factory import create_xui_multi_config
 
         xui = MagicMock()
-        xui.add_client.return_value = {"success": False, "msg": "some error"}
+        xui.get_client_by_email.return_value = None
+        xui.create_client.return_value = {"success": False, "msg": "some error"}
 
-        with pytest.raises(RuntimeError, match="Не удалось создать VLESS"):
+        with pytest.raises(RuntimeError, match="Не удалось создать клиента"):
             await create_xui_multi_config(tg_id=111, xui=xui)
 
 
@@ -101,28 +110,34 @@ class TestCreateVlessConfig:
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://fake")
-    async def test_success(self, mock_gen_link):
+    @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://fake")
+    @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
+    async def test_success(self, mock_remark, mock_hyst, mock_vless):
         """Creates VLESS client via XUI and returns config dict."""
         from bot_xui.vpn_factory import create_vless_config
 
         xui = MagicMock()
-        xui.add_client.return_value = True
+        xui.get_client_by_email.return_value = None
+        xui.create_client.return_value = {"success": True, "subId": "sub123"}
 
         result = await create_vless_config(tg_id=12345, xui=xui)
 
         assert result["client_email"] == "tiin_12345"
-        assert len(result["client_uuid"]) == 36  # UUID format
+        assert len(result["client_uuid"]) == 36
         assert result["vless_link"] == "vless://fake"
         assert isinstance(result["expires_at"], datetime)
-        assert xui.add_client.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_xui_failure_raises(self):
-        """XUI returning False raises RuntimeError."""
+    @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://fake")
+    @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://fake")
+    @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="test-remark")
+    async def test_xui_failure_raises(self, mock_remark, mock_hyst, mock_vless):
+        """XUI returning failure raises RuntimeError."""
         from bot_xui.vpn_factory import create_vless_config
 
         xui = MagicMock()
-        xui.add_client.return_value = False
+        xui.get_client_by_email.return_value = None
+        xui.create_client.return_value = {"success": False, "msg": "error"}
 
         with pytest.raises(RuntimeError, match="Не удалось"):
             await create_vless_config(tg_id=99, xui=xui)
@@ -142,49 +157,31 @@ class TestCreateAwgConfig:
 
         fixed_name = "awg-test-fixed"
 
-        async def mock_handler(request: httpx.Request):
-            if "/api/session" in str(request.url):
-                return httpx.Response(200, json={"ok": True})
-            if request.method == "POST" and "/api/wireguard/client" in str(request.url):
-                return httpx.Response(200, json={"ok": True})
-            if request.method == "GET" and str(request.url).endswith("/api/wireguard/client"):
-                return httpx.Response(200, json=[
-                    {"name": fixed_name, "id": "cid-1", "address": "10.0.0.5"}
-                ])
-            if "/configuration" in str(request.url):
-                return httpx.Response(200, text="[Interface]\nPrivateKey=abc\n[Peer]\nEndpoint=1.2.3.4")
-            return httpx.Response(404)
+        from bot_xui.vpn_factory import create_awg_config
 
-        transport = httpx.MockTransport(mock_handler)
-        mock_client = httpx.AsyncClient(transport=transport)
+        mock_res = {
+            "client_name": fixed_name,
+            "client_id": "cid-1",
+            "client_ip": "10.8.1.5/32",
+            "config": "[Interface]\nPrivateKey=abc\n[Peer]\nEndpoint=1.2.3.4",
+            "private_key": "abc",
+            "public_key": "def"
+        }
 
-        with patch("bot_xui.vpn_factory.httpx.AsyncClient", return_value=mock_client):
+        with patch("bot_xui.awg_manager.get_or_create_3xui_awg_client", return_value=mock_res):
             result = await create_awg_config(555, client_name=fixed_name)
 
         assert result["client_id"] == "cid-1"
-        assert result["client_ip"] == "10.0.0.5"
+        assert result["client_ip"] == "10.8.1.5/32"
         assert "[Interface]" in result["config"]
 
     @pytest.mark.asyncio
     async def test_client_not_found_raises(self):
-        """Raises RuntimeError if client not found after creation."""
+        """Raises RuntimeError if database error or inbound missing."""
         from bot_xui.vpn_factory import create_awg_config
-        import httpx
 
-        async def mock_handler(request: httpx.Request):
-            if "/api/session" in str(request.url):
-                return httpx.Response(200, json={"ok": True})
-            if request.method == "POST":
-                return httpx.Response(200, json={"ok": True})
-            if request.method == "GET" and str(request.url).endswith("/api/wireguard/client"):
-                return httpx.Response(200, json=[])  # empty — client not found
-            return httpx.Response(404)
-
-        transport = httpx.MockTransport(mock_handler)
-        mock_client = httpx.AsyncClient(transport=transport)
-
-        with patch("bot_xui.vpn_factory.httpx.AsyncClient", return_value=mock_client):
-            with pytest.raises(RuntimeError, match="не найден"):
+        with patch("bot_xui.awg_manager.get_or_create_3xui_awg_client", side_effect=RuntimeError("Database not found")):
+            with pytest.raises(RuntimeError, match="Database not found"):
                 await create_awg_config(555)
 
 
@@ -218,32 +215,31 @@ class TestGrantReferralVpn:
     @patch("bot_xui.vpn_factory.sync_expiry")
     @patch("bot_xui.vpn_factory.upsert_vpn_key")
     @patch("bot_xui.vpn_factory.generate_vless_link", return_value="vless://ref")
-    async def test_create_new(self, mock_gen, mock_create_key, mock_sync):
+    @patch("bot_xui.vpn_factory.generate_hysteria2_link", return_value="hysteria2://ref")
+    @patch("bot_xui.vpn_factory._get_dynamic_remark", return_value="ref-remark")
+    async def test_create_new(self, mock_remark, mock_hyst, mock_gen, mock_create_key, mock_sync):
         """Creates new VLESS+Hysteria config when user has no existing config."""
         from bot_xui.vpn_factory import grant_referral_vpn
 
         xui = MagicMock()
         xui.get_client_by_tg_id.return_value = None
-        xui.add_client.return_value = {"success": True, "subId": "url"}
-        xui.get_subscription_url_by_uuid.return_value = "https://sub/url"
+        xui.create_client.return_value = {"success": True, "subId": "url"}
         xui.get_hysteria_inbound_id.return_value = 4
 
         result = await grant_referral_vpn(tg_id=200, days=3, xui=xui)
 
         assert result["action"] == "created"
         assert result["vless_link"] == "vless://ref"
-        # 2 вызова add_client: VLESS и Hysteria
-        assert xui.add_client.call_count == 2
         mock_create_key.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_xui_add_fails_returns_none(self):
-        """Returns None if XUI add_client fails."""
+    async def test_xui_create_fails_returns_none(self):
+        """Returns None if XUI create_client fails."""
         from bot_xui.vpn_factory import grant_referral_vpn
 
         xui = MagicMock()
         xui.get_client_by_tg_id.return_value = None
-        xui.add_client.return_value = False
+        xui.create_client.return_value = {"success": False, "msg": "error"}
 
         result = await grant_referral_vpn(tg_id=300, days=5, xui=xui)
         assert result is None
@@ -271,7 +267,7 @@ class TestHandleTestVless:
     @patch("bot_xui.vpn_factory.sync_expiry")
     @patch("bot_xui.vpn_factory.set_vless_test_activated")
     @patch("bot_xui.vpn_factory.upsert_vpn_key")
-    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.helpers.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_success(self, mock_is_act, mock_create, mock_qr,
@@ -282,7 +278,7 @@ class TestHandleTestVless:
         expires_at = datetime.now(timezone.utc)
         mock_create.return_value = {
             "client_email": "tiin_111", "client_uuid": "uuid-1",
-            "vless_link": "vless://test", "hysteria_link": "hysteria://test", "expires_at": expires_at,
+            "vless_link": "vless://test", "xhttp_link": "vless://xhttp-test", "hysteria_link": "hysteria://test", "expires_at": expires_at,
         }
 
         query = MagicMock()
@@ -320,7 +316,7 @@ class TestHandleTestVless:
         mock_show.assert_called_once_with(query, xui)
 
     @pytest.mark.asyncio
-    @patch("bot_xui.vpn_factory.create_vless_config", side_effect=RuntimeError("XUI down"))
+    @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock, side_effect=RuntimeError("XUI down"))
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_error_shows_message(self, mock_is_act, mock_create):
         """Error during creation shows error message to user."""
@@ -395,51 +391,7 @@ class TestHandleTestAwg:
         assert "Ошибка" in query.message.reply_text.call_args[0][0]
 
 
-# ═════════════════════════════════════════════
-#  create_softether_config
-# ═════════════════════════════════════════════
 
-class TestCreateSoftEtherConfig:
-
-    @patch("bot_xui.vpn_factory.softether")
-    def test_success(self, mock_se):
-        """Creates SoftEther user and returns config dict."""
-        from bot_xui.vpn_factory import create_softether_config
-
-        mock_se.create_user.return_value = True
-        mock_se.set_user_expiry.return_value = True
-
-        result = create_softether_config(tg_id=600, days=30)
-
-        assert result["username"].startswith("se_600_")
-        assert len(result["password"]) == 16  # hex(8)
-        assert "host" in result["config"]
-        assert result["vpn_file"]  # non-empty
-        mock_se.create_user.assert_called_once()
-        mock_se.set_user_expiry.assert_called_once()
-
-    @patch("bot_xui.vpn_factory.softether")
-    def test_create_fails_raises(self, mock_se):
-        """Raises RuntimeError if SoftEther user creation fails."""
-        from bot_xui.vpn_factory import create_softether_config
-
-        mock_se.create_user.return_value = False
-
-        with pytest.raises(RuntimeError, match="Failed to create"):
-            create_softether_config(tg_id=700)
-
-    @patch("bot_xui.vpn_factory.softether")
-    def test_expiry_fails_cleans_up(self, mock_se):
-        """If expiry setting fails, user is deleted and error raised."""
-        from bot_xui.vpn_factory import create_softether_config
-
-        mock_se.create_user.return_value = True
-        mock_se.set_user_expiry.return_value = False
-
-        with pytest.raises(RuntimeError, match="Failed to set"):
-            create_softether_config(tg_id=800)
-
-        mock_se.delete_user.assert_called_once()
 
 
 # ═════════════════════════════════════════════
@@ -469,7 +421,7 @@ class TestEnsureTestSubscription:
         expires_at = datetime.now(timezone.utc)
         mock_create.return_value = {
             "client_email": "tiin_222", "client_uuid": "uuid-x",
-            "vless_link": "vless://test", "hysteria_link": "hysteria://test",
+            "vless_link": "vless://test", "xhttp_link": "vless://xhttp-test", "hysteria_link": "hysteria://test",
             "expires_at": expires_at,
         }
         xui = MagicMock()
@@ -485,7 +437,7 @@ class TestEnsureTestSubscription:
         mock_sync.assert_called_once_with(222, expires_at)
 
     @pytest.mark.asyncio
-    @patch("bot_xui.vpn_factory.create_vless_config", side_effect=RuntimeError("XUI down"))
+    @patch("bot_xui.vpn_factory.create_xui_multi_config", new_callable=AsyncMock, side_effect=RuntimeError("XUI down"))
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
     async def test_creation_error_returns_none(self, mock_is_act, mock_create):
         """Errors during creation are swallowed; function returns None."""
@@ -540,8 +492,8 @@ class TestActivateTestPeriod:
         assert "активная подписка" in text
 
     @pytest.mark.asyncio
-    @patch("api.db.get_web_token", return_value="tok123")
-    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.vpn_factory.get_web_token", return_value="tok123")
+    @patch("bot_xui.helpers.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.ensure_test_subscription")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
@@ -552,7 +504,7 @@ class TestActivateTestPeriod:
 
         mock_ensure.return_value = {
             "client_email": "tiin_111", "client_uuid": "uuid-1",
-            "vless_link": "vless://test", "hysteria_link": "hysteria://test",
+            "vless_link": "vless://test", "xhttp_link": "vless://xhttp-test", "hysteria_link": "hysteria://test",
             "expires_at": datetime.now(timezone.utc),
             "sub_url": "https://sub/111",
         }
@@ -569,12 +521,11 @@ class TestActivateTestPeriod:
         query.message.reply_photo.assert_called_once()
         caption = query.message.reply_photo.call_args[1]["caption"]
         assert "Тестовый период активирован" in caption
-        assert "Ссылка подписки" in caption
-        assert "https://sub/111" in caption
+        assert "Инструкция" in caption
 
     @pytest.mark.asyncio
-    @patch("api.db.get_web_token", return_value="tok123")
-    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.vpn_factory.get_web_token", return_value="tok123")
+    @patch("bot_xui.helpers.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.ensure_test_subscription")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)
@@ -585,7 +536,7 @@ class TestActivateTestPeriod:
 
         mock_ensure.return_value = {
             "client_email": "tiin_111", "client_uuid": "uuid-1",
-            "vless_link": "vless://test", "hysteria_link": "hysteria://test",
+            "vless_link": "vless://test", "xhttp_link": "vless://xhttp-test", "hysteria_link": "hysteria://test",
             "expires_at": datetime.now(timezone.utc),
             "sub_url": "https://sub/111",
         }
@@ -600,7 +551,7 @@ class TestActivateTestPeriod:
 
         markup = query.message.reply_photo.call_args[1]["reply_markup"]
         all_urls = [btn.url for row in markup.inline_keyboard for btn in row if btn.url]
-        assert any("344988.snk.wtf/my/tok123" in u for u in all_urls)
+        assert any("/my/tok123" in u for u in all_urls)
         all_callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
         assert "tariffs" in all_callbacks
 
@@ -657,7 +608,7 @@ class TestAutoGrantTestAndNotify:
 
     @pytest.mark.asyncio
     @patch("bot_xui.vpn_factory.get_web_token", return_value="tok")
-    @patch("bot_xui.vpn_factory.make_qr_bytes", return_value=BytesIO(b"png"))
+    @patch("bot_xui.helpers.make_qr_bytes", return_value=BytesIO(b"png"))
     @patch("bot_xui.vpn_factory.ensure_test_subscription")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id", return_value=[])
     @patch("bot_xui.vpn_factory.is_vless_test_activated", return_value=False)

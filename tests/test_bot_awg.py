@@ -81,7 +81,7 @@ def _make_vless_key(
 class TestShowConfigsAWG:
     """Проверка отображения AWG ключей в списке конфигов."""
 
-    @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
+    @patch("bot_xui.views.safe_edit_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @pytest.mark.asyncio
     async def test_awg_key_shown_in_list(self, mock_keys, mock_edit):
@@ -98,7 +98,7 @@ class TestShowConfigsAWG:
         assert "📱" in text
         assert "AmneziaWG" in text
 
-    @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
+    @patch("bot_xui.views.safe_edit_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @pytest.mark.asyncio
     async def test_awg_and_vless_shown_together(self, mock_keys, mock_edit):
@@ -114,7 +114,7 @@ class TestShowConfigsAWG:
         assert "AmneziaWG" in text
         assert "VLESS" in text
 
-    @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
+    @patch("bot_xui.views.safe_edit_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @pytest.mark.asyncio
     async def test_no_add_awg_button_when_awg_exists(self, mock_keys, mock_edit):
@@ -130,7 +130,7 @@ class TestShowConfigsAWG:
         all_buttons = [btn.text for row in markup.inline_keyboard for btn in row]
         assert "➕ AmneziaWG" not in all_buttons
 
-    @patch("bot_xui.views.safe_edit_text", new_callable=AsyncMock)
+    @patch("bot_xui.views.safe_edit_text_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @pytest.mark.asyncio
     async def test_add_awg_button_when_no_awg(self, mock_keys, mock_edit):
@@ -154,9 +154,10 @@ class TestShowConfigsAWG:
 class TestShowSingleConfigAWG:
     """Проверка отправки AWG .conf файла при нажатии на конфиг."""
 
+    @patch("bot_xui.views.reply_document_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @pytest.mark.asyncio
-    async def test_awg_sends_conf_document(self, mock_keys):
+    async def test_awg_sends_conf_document(self, mock_keys, mock_reply_doc):
         """AWG конфиг отправляется как .conf документ."""
         from bot_xui.views import show_single_config
 
@@ -167,15 +168,15 @@ class TestShowSingleConfigAWG:
         await show_single_config(query, "awg_123456", xui=None)
 
         query.message.delete.assert_called_once()
-        query.message.chat.send_document.assert_called_once()
-        call_kwargs = query.message.chat.send_document.call_args[1]
-        doc = call_kwargs["document"]
+        mock_reply_doc.assert_called_once()
+        doc = mock_reply_doc.call_args[0][1]
         assert doc.name.endswith(".conf")
-        assert "AmneziaVPN" in call_kwargs["caption"]
+        assert "AmneziaVPN" in mock_reply_doc.call_args[1]["caption"]
 
+    @patch("bot_xui.views.reply_document_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @pytest.mark.asyncio
-    async def test_awg_conf_contains_interface_section(self, mock_keys):
+    async def test_awg_conf_contains_interface_section(self, mock_keys, mock_reply_doc):
         """Отправленный .conf содержит секцию [Interface]."""
         from bot_xui.views import show_single_config
 
@@ -185,7 +186,7 @@ class TestShowSingleConfigAWG:
 
         await show_single_config(query, "awg_123456", xui=None)
 
-        doc = query.message.chat.send_document.call_args[1]["document"]
+        doc = mock_reply_doc.call_args[0][1]
         content = doc.read().decode("utf-8")
         assert "[Interface]" in content
         assert "[Peer]" in content
@@ -219,9 +220,10 @@ class TestShowSingleConfigAWG:
         query.answer.assert_called_once()
         assert "не найден" in query.answer.call_args[0][0]
 
+    @patch("bot_xui.views.reply_document_logged", new_callable=AsyncMock)
     @patch("bot_xui.views.get_keys_by_tg_id")
     @pytest.mark.asyncio
-    async def test_awg_expired_key_shows_status(self, mock_keys):
+    async def test_awg_expired_key_shows_status(self, mock_keys, mock_reply_doc):
         """Истекший AWG ключ — показывает статус Истек."""
         from bot_xui.views import show_single_config
 
@@ -232,7 +234,7 @@ class TestShowSingleConfigAWG:
 
         await show_single_config(query, "awg_123456", xui=None)
 
-        caption = query.message.chat.send_document.call_args[1]["caption"]
+        caption = mock_reply_doc.call_args[1]["caption"]
         assert "❌" in caption
 
 
@@ -271,9 +273,10 @@ class TestHandleGetAWGConfig:
         doc = query.message.reply_document.call_args[1]["document"]
         assert doc.name.endswith(".conf")
 
+    @patch("bot_xui.vpn_factory.safe_edit_text", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @pytest.mark.asyncio
-    async def test_already_has_awg_shows_message(self, mock_keys):
+    async def test_already_has_awg_shows_message(self, mock_keys, mock_edit):
         """Если AWG уже есть — сообщение без создания."""
         from bot_xui.vpn_factory import handle_get_awg_config
 
@@ -282,14 +285,15 @@ class TestHandleGetAWGConfig:
 
         await handle_get_awg_config(query)
 
-        query.edit_message_text.assert_called_once()
-        text = query.edit_message_text.call_args[0][0]
+        mock_edit.assert_called_once()
+        text = mock_edit.call_args[0][1]
         assert "уже есть" in text
 
+    @patch("bot_xui.vpn_factory.safe_edit_text", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.get_subscription_until")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @pytest.mark.asyncio
-    async def test_no_subscription_shows_error(self, mock_keys, mock_sub):
+    async def test_no_subscription_shows_error(self, mock_keys, mock_sub, mock_edit):
         """Без активной подписки — ошибка."""
         from bot_xui.vpn_factory import handle_get_awg_config
 
@@ -299,13 +303,14 @@ class TestHandleGetAWGConfig:
 
         await handle_get_awg_config(query)
 
-        text = query.edit_message_text.call_args[0][0]
+        text = mock_edit.call_args[0][1]
         assert "нет активной подписки" in text
 
+    @patch("bot_xui.vpn_factory.safe_edit_text", new_callable=AsyncMock)
     @patch("bot_xui.vpn_factory.get_subscription_until")
     @patch("bot_xui.vpn_factory.get_keys_by_tg_id")
     @pytest.mark.asyncio
-    async def test_no_subscription_at_all(self, mock_keys, mock_sub):
+    async def test_no_subscription_at_all(self, mock_keys, mock_sub, mock_edit):
         """subscription_until = None — ошибка."""
         from bot_xui.vpn_factory import handle_get_awg_config
 
@@ -315,7 +320,7 @@ class TestHandleGetAWGConfig:
 
         await handle_get_awg_config(query)
 
-        text = query.edit_message_text.call_args[0][0]
+        text = mock_edit.call_args[0][1]
         assert "нет активной подписки" in text
 
     @patch("bot_xui.vpn_factory.upsert_vpn_key")

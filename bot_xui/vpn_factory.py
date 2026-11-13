@@ -1,5 +1,5 @@
 """
-Фабрика VPN-конфигов: создание AWG и VLESS, сохранение в БД.
+Фабрика VPN-конфигов: создание AWG, VLESS, сохранение в БД.
 """
 import json
 import logging
@@ -10,7 +10,6 @@ import httpx
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
-import qrcode
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import (
@@ -18,17 +17,15 @@ from config import (
     VLESS_DOMAIN, VLESS_PORT, VLESS_PATH,
     VLESS_PBK, VLESS_SID, VLESS_SNI, VLESS_INBOUND_ID,
     HYSTERIA_PORT, HYSTERIA_SNI, HYSTERIA_INBOUND_ID,
-    SOFTETHER_CONNECT_HOST, SOFTETHER_CONNECT_PORT, SOFTETHER_HUB,
-    SERVER_LOCATION,
+    VLESS_HTTP_PORT, VLESS_XHTTP_PBK, VLESS_XHTTP_SID, VLESS_HTTP_INBOUND_ID, VLESS_WS_INBOUND_ID, VLESS_REALITY_V1_INBOUND_ID,
+    ACTIVE_INBOUND_IDS, SERVER_LOCATION,
 )
 from bot_xui.utils import XUIClient, generate_vless_link, generate_hysteria2_link
-from bot_xui.helpers import make_back_keyboard
-from bot_xui import softether
+from bot_xui.helpers import make_back_keyboard, _log_message, safe_edit_text, safe_edit_text_logged, make_qr_bytes, WEB_BASE_URL
 from bot_xui.tariffs import TARIFFS
 from api.db import (
     upsert_vpn_key, set_awg_test_activated, set_vless_test_activated,
     is_awg_test_activated, is_vless_test_activated,
-    set_softether_test_activated, is_softether_test_activated,
     get_keys_by_tg_id, sync_expiry, get_subscription_until,
     get_web_token,
 )
@@ -36,65 +33,14 @@ from api.db import (
 logger = logging.getLogger(__name__)
 
 
-def make_qr_bytes(data: str, box_size: int = 10, border: int = 5) -> BytesIO:
-    """Генерирует PNG QR-код и возвращает BytesIO."""
-    qr = qrcode.QRCode(version=1, box_size=box_size, border=border)
-    qr.add_data(data)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    bio = BytesIO()
-    bio.name = "qr.png"
-    img.save(bio, "PNG")
-    bio.seek(0)
-    return bio
 
-
-async def create_awg_config(tg_id: int, client_name: str = None) -> dict:
+async def create_awg_config(tg_id: int, client_name: str = None, expiry_ms: int = 0) -> dict:
     """
-    Создаёт клиента в AmneziaWG и возвращает dict с полями:
-        client_name, client_id, client_ip, config
-    Бросает RuntimeError при любой ошибке.
+    Создаёт или получает клиента AmneziaWG в 3x-ui (Inbound 17)
+    и возвращает dict с полями: client_name, client_id, client_ip, config
     """
-    if client_name is None:
-        client_name = f"test-{tg_id}-{uuid.uuid4().hex[:8]}"
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(
-            f"{AMNEZIA_WG_API_URL}/api/session",
-            json={"password": AMNEZIA_WG_API_PASSWORD},
-        )
-        r.raise_for_status()
-
-        r = await client.post(
-            f"{AMNEZIA_WG_API_URL}/api/wireguard/client",
-            json={"name": client_name},
-        )
-        r.raise_for_status()
-
-        r = await client.get(f"{AMNEZIA_WG_API_URL}/api/wireguard/client")
-        r.raise_for_status()
-
-        client_id = client_ip = None
-        for c in r.json():
-            if c.get("name") == client_name:
-                client_id = c["id"]
-                client_ip = c.get("address")
-                break
-
-        if not client_id:
-            raise RuntimeError("Клиент не найден после создания")
-
-        r = await client.get(
-            f"{AMNEZIA_WG_API_URL}/api/wireguard/client/{client_id}/configuration"
-        )
-        r.raise_for_status()
-
-        config_text = r.text
-        if not config_text:
-            raise RuntimeError("Пустая конфигурация AWG")
-
-    return {"client_name": client_name, "client_id": client_id,
-            "client_ip": client_ip, "config": config_text}
+    from bot_xui.awg_manager import get_or_create_3xui_awg_client
+    return get_or_create_3xui_awg_client(tg_id=tg_id, expiry_ms=expiry_ms, client_name=client_name)
 
 
 def _get_dynamic_remark(expires_at: datetime) -> str:
@@ -125,72 +71,59 @@ def _get_dynamic_remark(expires_at: datetime) -> str:
 
 async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) -> dict:
     """
-    Создаёт VLESS и Hysteria клиентов через XUI с единым subId.
+    Создаёт VLESS и Hysteria клиентов через новый API 3x-ui (v3.x+).
+    Один запрос /panel/api/clients/add создаёт клиента и привязывает к обоим inbounds.
     Возвращает dict с полями:
-        client_email, client_uuid, vless_link, hysteria_link, expires_at
-    Бросает RuntimeError при критической ошибке (VLESS).
+        client_email, client_uuid, vless_link, hysteria_link, expires_at, sub_id
+    Бросает RuntimeError при критической ошибке.
     """
     client_email = f"tiin_{tg_id}"
     client_uuid = str(uuid.uuid4())
     tz_tokyo = timezone(timedelta(hours=9))
-    
+
     if days is None:
         days_to_add = TARIFFS["test_24h"]["hours"] / 24
     else:
         days_to_add = days
-        
+
     raw_end = datetime.now(timezone.utc) + timedelta(days=days_to_add)
     end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
     expiry_ms = int(end_tokyo.timestamp() * 1000)
     expires_at = end_tokyo.astimezone(timezone.utc)
 
-    # 1. Создаем VLESS (основной)
-    res_vless_raw = xui.add_client(
-        inbound_id=int(VLESS_INBOUND_ID),
-        email=client_email,
-        tg_id=tg_id,
-        uuid=client_uuid,
-        expiry_time=expiry_ms,
-    )
-    # Преобразуем boolean результат в словарь для совместимости
-    if isinstance(res_vless_raw, dict):
-        res_vless = res_vless_raw
+    existing = xui.get_client_by_email(client_email)
+    if existing:
+        logger.info(f"Client for {client_email} already exists, reusing and updating expiry")
+        client_info = existing.get('client', {}) if isinstance(existing.get('client'), dict) else {}
+        raw_expiry = client_info.get('expiryTime', 0)
+        if isinstance(raw_expiry, (int, float)) and raw_expiry > 0:
+            target_expiry = max(int(raw_expiry), expiry_ms)
+        else:
+            target_expiry = expiry_ms
+        xui.set_client_expiry(client_email, target_expiry, enable=True)
+        if target_expiry > 0:
+            expires_at = datetime.fromtimestamp(target_expiry / 1000, tz=timezone.utc)
+        sub_url = xui.get_client_subscription_url(tg_id)
+        if sub_url:
+            sub_id = sub_url.split('/')[-1]
+        else:
+            raise RuntimeError(f"Клиент {client_email} уже существует, но не удалось получить subId")
+        client_uuid = client_info.get('uuid', client_uuid)
+        hysteria_auth = client_info.get('auth') or client_uuid
     else:
-        # Если метод вернул True (как раньше), пробуем найти subId через sub_url
-        if res_vless_raw:
-             # Это fallback для старых версий add_client, которые возвращали True
-             sub_url = xui.get_client_subscription_url(tg_id)
-             sub_id = sub_url.split('/')[-1] if sub_url else "legacy_sub"
-             res_vless = {"success": True, "subId": sub_id}
-        else:
-             res_vless = {"success": False}
-             
-    if not res_vless.get("success"):
-        msg = res_vless.get("msg", "")
-        if "Duplicate email" in msg:
-            # Клиент уже существует — просто получаем его subId
-            logger.info(f"VLESS client for {client_email} already exists, reusing")
-            sub_url = xui.get_client_subscription_url(tg_id)
-            if sub_url:
-                sub_id = sub_url.split('/')[-1]
-                res_vless = {"success": True, "subId": sub_id}
-            else:
-                raise RuntimeError(f"Клиент {client_email} уже существует, но не удалось получить subId")
-        else:
-            raise RuntimeError(f"Не удалось создать VLESS клиента: {msg}")
+        result = xui.create_client(
+            email=client_email,
+            tg_id=tg_id,
+            expiry_time=expiry_ms,
+            inbound_ids=ACTIVE_INBOUND_IDS,
+        )
 
-    sub_id = res_vless["subId"]
-
-    # 2. Создаем Hysteria (дополнительный) с тем же sub_id и паролем
-    # Используем суффикс _h для email, так как email должен быть уникальным
-    xui.add_client(
-        inbound_id=int(HYSTERIA_INBOUND_ID),
-        email=f"{client_email}_h",
-        tg_id=tg_id,
-        uuid=client_uuid, # Пароль для Hysteria такой же как UUID VLESS
-        expiry_time=expiry_ms,
-        sub_id=sub_id
-    )
+        if not result.get("success"):
+            raise RuntimeError(f"Не удалось создать клиента: {result.get('msg', '')}")
+        sub_id = result["subId"]
+        if result.get("uuid"):
+            client_uuid = result["uuid"]
+        hysteria_auth = result.get("auth") or client_uuid
 
     dynamic_remark = _get_dynamic_remark(expires_at)
 
@@ -209,7 +142,7 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
     )
 
     hysteria_link = generate_hysteria2_link(
-        auth=client_uuid,
+        auth=hysteria_auth,
         domain=VLESS_DOMAIN,
         port=HYSTERIA_PORT,
         client_name=dynamic_remark,
@@ -217,10 +150,40 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
         insecure=0
     )
 
+    xhttp_link = generate_vless_link(
+        client_id=client_uuid,
+        domain=VLESS_DOMAIN,
+        port=VLESS_HTTP_PORT,
+        path="/api/v1/updates",
+        client_name=client_email,
+        pbk=VLESS_XHTTP_PBK or VLESS_PBK,
+        sid=VLESS_XHTTP_SID or VLESS_SID,
+        sni=VLESS_SNI,
+        fp="firefox",
+        spx="/",
+        remark=dynamic_remark,
+        network="xhttp",
+    )
+
+    # Sync client to RU secondary node (gateway)
+    try:
+        from bot_xui.multi_node import sync_client_to_ru_node
+        sync_client_to_ru_node(
+            email=client_email,
+            expiry_ms=expiry_ms,
+            enable=True,
+            uuid_str=client_uuid,
+            sub_id=sub_id,
+            tg_id=tg_id,
+        )
+    except Exception as ru_err:
+        logger.warning(f"Failed to sync client {client_email} to RU node in create_xui_multi_config: {ru_err}")
+
     return {
         "client_email": client_email,
         "client_uuid": client_uuid,
         "vless_link": vless_link,
+        "xhttp_link": xhttp_link,
         "hysteria_link": hysteria_link,
         "expires_at": expires_at,
         "sub_id": sub_id,
@@ -282,6 +245,17 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
             new_expiry_dt = datetime.fromtimestamp(new_expiry_ms / 1000, tz=timezone.utc)
             sync_expiry(tg_id, new_expiry_dt)
 
+            try:
+                from bot_xui.multi_node import sync_client_to_ru_node
+                sync_client_to_ru_node(
+                    email=existing['client']['email'],
+                    expiry_ms=new_expiry_ms,
+                    enable=True,
+                    tg_id=tg_id,
+                )
+            except Exception as ru_err:
+                logger.warning(f"Failed to sync referral extension to RU node: {ru_err}")
+
             logger.info(f"Referral: extended VPN for {tg_id} by {days} days")
             return {"action": "extended", "days": days}
 
@@ -289,7 +263,7 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
         data = await create_xui_multi_config(tg_id, xui, days=days)
         if not data:
             return None
-        
+
         sub_url = xui.get_client_subscription_url(tg_id)
         expires_at = data["expires_at"]
 
@@ -301,7 +275,6 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
             subscription_link=sub_url,
         )
 
-        # Sync expiry to users.subscription_until + vpn_keys
         sync_expiry(tg_id, expires_at)
 
         logger.info(f"Referral: created new Multi-VPN for {tg_id}, {days} days")
@@ -312,12 +285,104 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
         return None
 
 
+
+
+
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Handlers — вызываются из button_handler
 # ──────────────────────────────────────────────────────────────────────────────
 
+async def send_awg_config_to_user(target, tg_id: int, query=None) -> bool:
+    """
+    Создаёт/получает конфиг AmneziaWG (Inbound 17) и отправляет .conf файл в Telegram.
+    target может быть update.message или context.bot/chat.
+    """
+    from io import BytesIO
+    from datetime import datetime, timezone, timedelta
+    from bot_xui.tariffs import TARIFFS
+
+    try:
+        # 1. Получаем срок подписки или активируем тест
+        sub_until = get_subscription_until(tg_id)
+        now_utc = datetime.now(timezone.utc)
+        
+        # Если нет активной подписки и тест не активирован — выдаем тестовый период
+        if not sub_until or (sub_until.tzinfo is None and sub_until < datetime.utcnow()) or (sub_until.tzinfo and sub_until < now_utc):
+            if not is_awg_test_activated(tg_id) and not is_vless_test_activated(tg_id):
+                test_hours = TARIFFS.get("test_24h", {}).get("hours", 72)
+                sub_until = now_utc + timedelta(hours=test_hours)
+                set_awg_test_activated(tg_id)
+                set_vless_test_activated(tg_id)
+                from api.db import sync_expiry
+                sync_expiry(tg_id, sub_until)
+
+        expiry_ms = int(sub_until.replace(tzinfo=timezone.utc).timestamp() * 1000) if sub_until and sub_until.tzinfo is None else (int(sub_until.timestamp() * 1000) if sub_until else 0)
+
+        # 2. Получаем или генерируем AWG-конфиг (Inbound 17)
+        client_name = f"awg_{tg_id}"
+        data = await create_awg_config(tg_id, client_name=client_name, expiry_ms=expiry_ms)
+
+        upsert_vpn_key(
+            tg_id=tg_id, payment_id=None,
+            client_id=data["client_id"], client_name=data["client_name"],
+            client_ip=data["client_ip"], client_public_key=data.get("public_key"),
+            vless_link=data["config"], expires_at=sub_until, vpn_type="awg",
+        )
+
+        conf_text = data["config"]
+        config_file = BytesIO(conf_text.encode("utf-8"))
+        config_file.name = f"amneziawg_{tg_id}.conf"
+
+        date_str = sub_until.strftime('%d.%m.%Y') if sub_until else "Активен"
+        caption = (
+            f"🛡 <b>Ваш файл настроек AmneziaVPN (AmneziaWG)</b>\n\n"
+            f"⏱ <b>Действует до:</b> {date_str}\n"
+            f"🌐 IP: <code>{data.get('client_ip', '10.8.1.x')}</code>\n\n"
+            f"📱 <b>Быстрое подключение:</b>\n"
+            f"1. Установите <a href='https://apps.apple.com/app/amneziavpn/id1600523882'>AmneziaVPN (App Store)</a> или <a href='https://play.google.com/store/apps/details?id=org.amnezia.vpn'>Google Play</a>\n"
+            f"2. Сохраните полученный файл <b>{config_file.name}</b>\n"
+            f"3. Откройте приложение ➔ <b>«+ ➔ Добавить файл с настройками»</b>\n"
+            f"4. Нажмите <b>«Подключиться»</b> 🚀\n\n"
+            f"<i>💡 Российские сайты, сервисы и банки работают напрямую на максимальной скорости.</i>"
+        )
+
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
+            [InlineKeyboardButton("◀️ Главное меню", callback_data="back_to_menu")],
+        ])
+
+        if hasattr(target, "reply_document"):
+            await target.reply_document(document=config_file, caption=caption, parse_mode="HTML", reply_markup=markup)
+        elif hasattr(target, "send_document"):
+            await target.send_document(chat_id=tg_id, document=config_file, caption=caption, parse_mode="HTML", reply_markup=markup)
+
+        if query:
+            try:
+                await query.answer("✅ Конфиг AmneziaVPN отправлен!")
+            except Exception:
+                pass
+
+        await _log_message(tg_id, "bot_menu", "awg_config_direct", f"sent document: {config_file.name}")
+        return True
+
+    except Exception as e:
+        logger.error(f"send_awg_config_to_user error for tg:{tg_id}: {e}", exc_info=True)
+        err_msg = "❌ Ошибка формирования конфига AmneziaWG. Попробуйте позже или напишите в поддержку."
+        if hasattr(target, "reply_text"):
+            await target.reply_text(err_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]]))
+        elif hasattr(target, "send_message"):
+            await target.send_message(chat_id=tg_id, text=err_msg)
+        return False
+
+
 async def handle_test_awg(query, xui: XUIClient):
     """Создаёт тестовый AWG конфиг и отправляет пользователю."""
+    from io import BytesIO
+    from datetime import datetime, timezone, timedelta
+    from bot_xui.tariffs import TARIFFS
+
     tg_id = query.from_user.id
     if is_awg_test_activated(tg_id):
         from bot_xui.views import show_configs
@@ -343,19 +408,21 @@ async def handle_test_awg(query, xui: XUIClient):
         config_file = BytesIO(data["config"].encode("utf-8"))
         config_file.name = f"amneziawg_test_{tg_id}.conf"
 
+        caption = (
+            f"🔵 <b>Тестовый AmneziaWG конфиг</b>\n\n"
+            f"👤 Клиент: <code>{data['client_name']}</code>\n"
+            f"🌐 IP: <code>{data['client_ip']}</code>\n"
+            f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
+            f"📱 <b>Инструкция:</b>\n"
+            f"1. Установите <a href='https://amnezia.org'>AmneziaVPN</a>\n"
+            f"2. Импортируйте файл конфигурации\n"
+            f"3. Подключитесь\n\n"
+            f"💬 Поддержка: кнопка «Написать нам» в меню"
+        )
+
         await query.message.reply_document(
             document=config_file,
-            caption=(
-                f"🔵 <b>Тестовый AmneziaWG конфиг</b>\n\n"
-                f"👤 Клиент: <code>{data['client_name']}</code>\n"
-                f"🌐 IP: <code>{data['client_ip']}</code>\n"
-                f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
-                f"📱 <b>Инструкция:</b>\n"
-                f"1. Установите <a href='https://amnezia.org'>AmneziaVPN</a>\n"
-                f"2. Импортируйте файл конфигурации\n"
-                f"3. Подключитесь\n\n"
-                f"💬 Поддержка: кнопка «Написать нам» в меню"
-            ),
+            caption=caption,
             parse_mode="HTML",
         )
 
@@ -367,6 +434,8 @@ async def handle_test_awg(query, xui: XUIClient):
                 [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")]
             ]),
         )
+
+        await _log_message(tg_id, "bot_menu", "test_awg_config", f"sent document: {config_file.name}")
 
     except Exception as e:
         logger.error(f"AWG config error: {e}")
@@ -380,13 +449,15 @@ async def handle_test_awg(query, xui: XUIClient):
 
 async def handle_get_awg_config(query):
     """Выдаёт AWG конфиг пользователю с активной VLESS подпиской (winback сценарий)."""
+    from io import BytesIO
+    from datetime import datetime, timezone
     tg_id = query.from_user.id
 
     # Проверяем, нет ли уже AWG ключа
     existing_keys = get_keys_by_tg_id(tg_id)
     has_awg = any(k['vpn_type'] == 'awg' for k in existing_keys)
     if has_awg:
-        await query.edit_message_text(
+        await safe_edit_text(query,
             "✅ У вас уже есть AmneziaWG конфиг.\n\n"
             "Нажмите «Мои конфиги» чтобы посмотреть.",
             reply_markup=InlineKeyboardMarkup([
@@ -397,8 +468,8 @@ async def handle_get_awg_config(query):
 
     # Проверяем активную подписку
     sub_until = get_subscription_until(tg_id)
-    if not sub_until or sub_until < datetime.utcnow():
-        await query.edit_message_text(
+    if not sub_until or (sub_until.tzinfo is None and sub_until < datetime.utcnow()) or (sub_until.tzinfo and sub_until < datetime.now(timezone.utc)):
+        await safe_edit_text(query,
             "❌ У вас нет активной подписки.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("💎 Тарифы", callback_data="tariffs")],
@@ -406,7 +477,7 @@ async def handle_get_awg_config(query):
         )
         return
 
-    await query.edit_message_text("⏳ Создаю AmneziaWG конфиг...")
+    await safe_edit_text(query, "⏳ Создаю AmneziaWG конфиг...")
 
     try:
         client_name = f"awg_{tg_id}"
@@ -437,13 +508,15 @@ async def handle_get_awg_config(query):
             parse_mode="HTML",
         )
 
-        await query.edit_message_text(
+        await safe_edit_text(query,
             "✅ AmneziaWG конфиг создан!\n\nПроверьте сообщение выше ☝️",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
                 [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")],
             ]),
         )
+
+        await _log_message(tg_id, "bot_menu", "awg_config", f"sent document: {config_file.name}")
 
     except Exception as e:
         logger.error(f"AWG config error (winback): {e}")
@@ -455,15 +528,15 @@ async def handle_get_awg_config(query):
         )
 
 
-async def handle_get_softether_config(query):
-    """Выдаёт SoftEther конфиг пользователю с активной подпиской (дополнительный протокол)."""
+async def handle_get_awg_config_v2(query):
+    """Выдаёт AWG 2.0 конфиг пользователю с истёкшей подпиской (winback)."""
     tg_id = query.from_user.id
 
     existing_keys = get_keys_by_tg_id(tg_id)
-    has_se = any(k['vpn_type'] == 'softether' for k in existing_keys)
-    if has_se:
-        await query.edit_message_text(
-            "✅ У вас уже есть SoftEther конфиг.\n\n"
+    has_awg = any(k['vpn_type'] == 'awg' for k in existing_keys)
+    if has_awg:
+        await safe_edit_text(query,
+            "✅ У вас уже есть AmneziaWG конфиг.\n\n"
             "Нажмите «Мои конфиги» чтобы посмотреть.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
@@ -471,72 +544,60 @@ async def handle_get_softether_config(query):
         )
         return
 
-    sub_until = get_subscription_until(tg_id)
-    if not sub_until or sub_until < datetime.utcnow():
-        await query.edit_message_text(
-            "❌ У вас нет активной подписки.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💎 Тарифы", callback_data="tariffs")],
-            ]),
-        )
-        return
-
-    await query.edit_message_text("⏳ Создаю SoftEther конфиг...")
+    await safe_edit_text(query, "⏳ Создаю AmneziaWG 2.0 конфиг...")
 
     try:
-        # Ensure sub_until has timezone info
-        if sub_until.tzinfo is None:
-            sub_until = sub_until.replace(tzinfo=timezone.utc)
-
-        remaining_days = max(1, (sub_until - datetime.now(timezone.utc)).days)
-
-        data = create_softether_config(tg_id, days=remaining_days)
+        client_name = f"awg2_{tg_id}"
+        data = await create_awg_config(tg_id, client_name=client_name)
+        sub_until = get_subscription_until(tg_id)
 
         upsert_vpn_key(
             tg_id=tg_id, payment_id=None,
-            client_id=data["username"], client_name=data["username"],
-            client_ip=None, client_public_key=None,
-            vless_link=data["config"], expires_at=sub_until,
-            vpn_type="softether",
-            vpn_file=data["vpn_file"],
+            client_id=data["client_id"], client_name=data["client_name"],
+            client_ip=data["client_ip"], client_public_key=None,
+            vless_link=data["config"], expires_at=sub_until, vpn_type="awg",
         )
 
-        vpn_file = _make_softether_vpn_file(data["username"], data["password"])
+        config_file = BytesIO(data["config"].encode("utf-8"))
+        config_file.name = f"amneziawg2_{tg_id}.conf"
+
         await query.message.reply_document(
-            document=vpn_file,
+            document=config_file,
             caption=(
-                f"🖥 <b>SoftEther VPN конфиг</b>\n\n"
-                f"Для Windows (включая XP/7/10/11).\n\n"
+                f"🔵 <b>AmneziaWG 2.0 конфиг</b>\n\n"
+                f"Новый протокол — улучшенная совместимость и стабильность.\n"
+                f"Лучше работает на нестабильных каналах и мобильном интернете.\n\n"
                 f"📱 <b>Инструкция:</b>\n"
-                f"1. Установите <b>SoftEther VPN Client</b>\n"
-                f"2. Импортируйте этот файл в клиент\n"
+                f"1. Установите <a href='https://amnezia.org'>AmneziaVPN</a>\n"
+                f"2. Импортируйте файл конфигурации\n"
                 f"3. Подключитесь\n\n"
-                f"⏱ Действует до: {sub_until.strftime('%d.%m.%Y')}"
+                f"💡 <i>Ваша подписка истекла — для полноценной работы рекомендуем продлить тариф.</i>"
             ),
             parse_mode="HTML",
         )
 
-        await query.message.reply_text(
-            _softether_credentials_text(data["username"], data["password"]),
-            parse_mode="HTML",
-        )
-
-        await query.edit_message_text(
-            "✅ SoftEther конфиг создан!\n\nПроверьте сообщение выше ☝️",
+        await safe_edit_text(query,
+            "✅ AmneziaWG 2.0 конфиг создан!\n\nПроверьте сообщение выше ☝️",
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 Продлить подписку", callback_data="tariffs")],
                 [InlineKeyboardButton("📱 Мои конфиги", callback_data="my_configs")],
                 [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")],
             ]),
         )
 
+        await _log_message(tg_id, "bot_menu", "awg2_config", f"sent document: {config_file.name}")
+
     except Exception as e:
-        logger.error(f"SoftEther config error (additional): {e}")
+        logger.error(f"AWG 2.0 config error: {e}")
         await query.message.reply_text(
             "❌ Ошибка создания конфига. Попробуйте позже или напишите в поддержку.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
             ]),
         )
+
+
+
 
 
 async def handle_test_vless(query, xui: XUIClient):
@@ -560,34 +621,46 @@ async def handle_test_vless(query, xui: XUIClient):
             tg_id=tg_id, payment_id=None,
             client_id=data["client_uuid"], client_name=data["client_email"],
             client_ip=None, client_public_key=None,
-            vless_link=data["vless_link"], hysteria_link=data["hysteria_link"], expires_at=data["expires_at"], vpn_type="vless",
+            vless_link=data["vless_link"], xhttp_link=data["xhttp_link"], hysteria_link=data["hysteria_link"], expires_at=data["expires_at"], vpn_type="vless",
             subscription_link=sub_url,
         )
-        bio = make_qr_bytes(sub_url)
+        web_token = get_web_token(tg_id)
+        qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+        bio = make_qr_bytes(qr_url) if qr_url else None
 
         from config import SERVER_LOCATION
+        instr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+        connect_url = f"{WEB_BASE_URL}/go-connect/{web_token}" if web_token else ""
+        buttons = []
+        if connect_url:
+            buttons.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=connect_url)])
+        if instr_url:
+            buttons.append([InlineKeyboardButton("👤 Личный кабинет", url=instr_url)])
+        buttons.append([InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")])
+
         await query.message.reply_photo(
             photo=bio,
             caption=(
                 f"🚀 <b>Тестовый период активирован!</b>\n\n"
                 f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n\n"
-                f"🟢 <b>VLESS + Reality</b>\n"
+                f"🟢 <b>VLESS + Reality (TCP)</b>\n"
                 f"   Стабильный протокол для всех платформ\n\n"
+                f"🟠 <b>VLESS + Reality (XHTTP)</b>\n"
+                f"   Оптимизирован для работы через HTTP\n\n"
                 f"🚀 <b>Hysteria 2</b>\n"
                 f"   Скоростной протокол для обхода блокировок\n\n"
                 f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
-                f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>\n\n'
+                f'📲 <a href="{instr_url}">Инструкция по подключению</a>\n\n'
                 f"💬 Поддержка: кнопка «Написать нам» в меню"
             ),
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{get_web_token(tg_id) or ''}")],
-                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
-            ]),
+            reply_markup=InlineKeyboardMarkup(buttons),
         )
 
         set_vless_test_activated(tg_id)
         sync_expiry(tg_id, data["expires_at"])
+
+        await _log_message(tg_id, "bot_menu", "test_vless_config", "sent photo: test_vless_qr")
 
     except Exception as e:
         logger.error(f"XUI multi-config error: {e}")
@@ -604,6 +677,8 @@ async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
     Создаёт тестовый Multi-XUI-конфиг, если пользователь ещё не активировал тест.
     Возвращает dict с данными конфига или None, если тест уже активирован либо возникла ошибка.
     """
+    if is_vless_test_activated(tg_id):
+        return None
     try:
         data = await create_xui_multi_config(tg_id, xui)
         sub_url = xui.get_client_subscription_url(tg_id)
@@ -611,7 +686,7 @@ async def ensure_test_subscription(tg_id: int, xui: XUIClient) -> dict | None:
             tg_id=tg_id, payment_id=None,
             client_id=data["client_uuid"], client_name=data["client_email"],
             client_ip=None, client_public_key=None,
-            vless_link=data["vless_link"], hysteria_link=data["hysteria_link"], expires_at=data["expires_at"], vpn_type="vless",
+            vless_link=data["vless_link"], xhttp_link=data["xhttp_link"], hysteria_link=data["hysteria_link"], expires_at=data["expires_at"], vpn_type="vless",
             subscription_link=sub_url,
         )
         set_vless_test_activated(tg_id)
@@ -640,7 +715,9 @@ async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_fun
     result = await ensure_test_subscription(tg_id, xui)
     if not result:
         return False
-    bio = make_qr_bytes(result["sub_url"])
+    web_token = get_web_token(tg_id)
+    qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+    bio = make_qr_bytes(qr_url) if qr_url else None
     from config import SERVER_LOCATION
     try:
         await reply_photo_func(
@@ -648,14 +725,14 @@ async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_fun
             caption=(
                 f"🎁 <b>Тестовый период активирован!</b>\n\n"
                 f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n"
-                f"🟢 VLESS + Reality · 🚀 Hysteria 2\n"
+                f"🟢 VLESS TCP · 🟠 VLESS XHTTP · 🚀 Hysteria 2\n"
                 f"👤 ID: {result['client_email']}\n"
                 f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
-                f"📎 Ссылка:\n<code>{result['sub_url']}</code>\n\n"
-                f'📲 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция по подключению</a>'
+                f'📲 <a href="https://344988.snk.wtf/my/{web_token}">Инструкция по подключению</a>'
             ),
             parse_mode="HTML",
         )
+        await _log_message(tg_id, "bot_menu", "auto_test_grant", "sent photo: auto_test_qr")
     except Exception as e:
         logger.warning(f"Failed to send auto-test notification: {e}")
     return True
@@ -664,12 +741,10 @@ async def auto_grant_test_and_notify(tg_id: int, xui: XUIClient, reply_photo_fun
 async def activate_test_period(query, xui):
     """Активирует тестовый период для пользователя"""
     from datetime import datetime
-    from bot_xui.vpn_factory import ensure_test_subscription, make_qr_bytes
-    from api.db import get_web_token
+    from bot_xui.vpn_factory import ensure_test_subscription
 
     tg_id = query.from_user.id
 
-    # Проверяем, не активирован ли уже тест
     if is_vless_test_activated(tg_id):
         try:
             await query.message.delete()
@@ -677,12 +752,11 @@ async def activate_test_period(query, xui):
             pass
         await query.message.chat.send_message(
             "❌ Тестовый период уже был активирован ранее.\n\n"
-            "Ты можешь приобрести тариф, чтобы продолжить пользоваться VPN.",
+            "Вы можете оформить тариф, чтобы продолжить пользоваться VPN.",
             reply_markup=make_back_keyboard()
         )
         return
 
-    # Проверяем, нет ли уже активного VLESS ключа
     keys = get_keys_by_tg_id(tg_id)
     now = datetime.utcnow()
     active_vless_keys = [k for k in keys if k.get("vpn_type") == "vless" and k.get("expires_at") and k["expires_at"] > now]
@@ -693,13 +767,12 @@ async def activate_test_period(query, xui):
         except Exception:
             pass
         await query.message.chat.send_message(
-            "✅ У тебя уже есть активная подписка!\n\n"
-            "Ты можешь посмотреть свои конфиги в разделе «🔑 Мои конфиги».",
+            "✅ У вас уже есть активная подписка!\n\n"
+            "Вы можете посмотреть свои конфигурации в разделе «🔑 Мои конфиги».",
             reply_markup=make_back_keyboard()
         )
         return
-    
-    # Отправляем сообщение о начале активации
+
     try:
         await query.message.delete()
     except Exception:
@@ -708,10 +781,9 @@ async def activate_test_period(query, xui):
         "🎁 Активируем тестовый период...\n\n"
         "⏳ Пожалуйста, подожди несколько секунд.",
     )
-    
-    # Создаем тестовую подписку
+
     result = await ensure_test_subscription(tg_id, xui)
-    
+
     if not result:
         await query.message.reply_text(
             "❌ Не удалось активировать тестовый период.\n\n"
@@ -719,232 +791,61 @@ async def activate_test_period(query, xui):
             reply_markup=make_back_keyboard()
         )
         return
-    
-    # Отправляем QR-код с конфигом
-    bio = make_qr_bytes(result["sub_url"])
-    
+
+    web_token = get_web_token(tg_id)
+    qr_url = f"{WEB_BASE_URL}/my/{web_token}" if web_token else ""
+    bio = make_qr_bytes(qr_url) if qr_url else None
+
     from config import SERVER_LOCATION
+    caption_text = (
+        f"🎉 <b>Тестовый период активирован!</b>\n\n"
+        f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n\n"
+        f"🟢 <b>VLESS + Reality TCP</b> — стабильный\n"
+        f"🟠 <b>VLESS + Reality XHTTP</b> — оптимизированный\n"
+        f"🚀 <b>Hysteria 2</b> — скоростной\n\n"
+        f"👤 ID: <code>{result['client_email']}</code>\n"
+        f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
+        f"📲 <b>Как подключиться:</b>\n"
+        f"Нажмите кнопку <b>«📖 Инструкция»</b> ниже — там пошагово показано, как настроить подключение для вашего устройства.\n\n"
+        f"💎 После окончания теста выберите тариф для продолжения."
+    )
+    fallback_text = (
+        f"🎉 <b>Тестовый период активирован!</b>\n\n"
+        f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n"
+        f"👤 ID: <code>{result['client_email']}</code>\n"
+        f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
+        f'📖 <a href="{WEB_BASE_URL}/my/{web_token}">Инструкция</a>'
+    )
     try:
+        connect_url = f"{WEB_BASE_URL}/go-connect/{web_token}" if web_token else ""
+        buttons = []
+        if connect_url:
+            buttons.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=connect_url)])
+        if web_token:
+            buttons.append([InlineKeyboardButton("👤 Личный кабинет", url=f"{WEB_BASE_URL}/my/{web_token}")])
+        buttons.append([InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")])
+        buttons.append([InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")])
+
         await query.message.reply_photo(
             photo=bio,
-            caption=(
-                f"🎉 <b>Тестовый период активирован!</b>\n\n"
-                f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n\n"
-                f"🟢 <b>VLESS + Reality</b> — стабильный\n"
-                f"🚀 <b>Hysteria 2</b> — скоростной\n\n"
-                f"👤 ID: <code>{result['client_email']}</code>\n"
-                f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
-                f"📎 Ссылка подписки:\n<code>{result['sub_url']}</code>\n\n"
-                f"📲 <b>Как подключиться:</b>\n"
-                f"1. Скачай приложение (кнопка 👇)\n"
-                f"2. Скопируй <b>ссылку подписки</b> или отсканируй <b>QR</b>\n"
-                f"3. Вставь в приложение нажав «+»\n"
-                f"4. Подключись! ✅\n\n"
-                f"💎 После окончания теста выбери тариф для продолжения."
-            ),
+            caption=caption_text,
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📖 Инструкция", url=f"https://344988.snk.wtf/my/{get_web_token(tg_id) or ''}")],
-                [InlineKeyboardButton("💎 Выбрать тариф", callback_data="tariffs")],
-                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")],
-            ])
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
+        sent_text = caption_text
     except Exception as e:
         logger.error(f"Failed to send test config: {e}")
         await query.message.reply_text(
-            f"🎉 <b>Тестовый период активирован!</b>\n\n"
-            f"🌍 Сервер: <b>{SERVER_LOCATION}</b>\n"
-            f"👤 ID: <code>{result['client_email']}</code>\n"
-            f"⏱ Действует: {TARIFFS['test_24h']['period']}\n\n"
-            f"🔗 <b>Ссылка подписки:</b>\n"
-            f"<code>{result['sub_url']}</code>\n\n"
-            f'📖 <a href="https://344988.snk.wtf/my/{get_web_token(tg_id) or ""}">Инструкция</a>',
+            fallback_text,
             parse_mode="HTML",
             reply_markup=make_back_keyboard("💎 Выбрать тариф", "tariffs")
         )
+        sent_text = fallback_text
+
+    await _log_message(tg_id, "bot_menu", "test_activation", sent_text)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SoftEther
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _softether_credentials_text(username: str, password: str) -> str:
-    """Форматирует данные подключения SoftEther."""
-    return (
-        f"🖥 <b>Данные для подключения SoftEther VPN</b>\n\n"
-        f"┌─────────────────────\n"
-        f"│ 🌐 Сервер: <code>{SOFTETHER_CONNECT_HOST}</code>\n"
-        f"│ 🔌 Порт: <code>{SOFTETHER_CONNECT_PORT}</code>\n"
-        f"│ 🏠 Hub: <code>{SOFTETHER_HUB}</code>\n"
-        f"│ 👤 Логин: <code>{username}</code>\n"
-        f"│ 🔑 Пароль123: <code>{password}</code>\n"
-        f"└─────────────────────\n"
-    )
 
 
-def _make_softether_vpn_file(username: str, password: str) -> BytesIO:
-    """Генерирует .vpn файл для импорта в SoftEther VPN Client."""
-    import hashlib
-    # SoftEther хранит пароль как SHA-0 хеш, но для import connection
-    # используется открытый текст с HashedPassword + Plain password
-    content = f"""# VPN Client VPN Connection Setting File
-#
-# This file is exported by SoftEther VPN Client.
-# The contents of this file can be edited by a text editor.
-#
-
-declare root
-{{
-	bool CheckServerCert false
-	uint64 CreateDateTime 0
-	uint64 LastConnectDateTime 0
-	bool StartupAccount false
-	uint64 UpdateDateTime 0
-
-	declare ClientAuth
-	{{
-		uint AuthType 1
-		string Username {username}
-		byte HashedPassword {hashlib.new('sha1', password.encode()).hexdigest()}
-		string PlainPassword {password}
-	}}
-
-	declare ClientOption
-	{{
-		string AccountName TIIN_VPN
-		uint AdditionalConnectionInterval 1
-		uint ConnectionDisconnectSpan 0
-		string DeviceName VPN
-		bool DisableQoS false
-		bool HalfConnection false
-		bool HideNicInfoWindow false
-		bool HideStatusWindow false
-		string Hostname {SOFTETHER_CONNECT_HOST}
-		string HubName {SOFTETHER_HUB}
-		uint MaxConnection 1
-		bool NoRoutingTracking false
-		uint NumRetry 4294967295
-		uint Port {SOFTETHER_CONNECT_PORT}
-		uint RetryInterval 15
-		bool UseCompress false
-		bool UseEncrypt true
-	}}
-}}
-"""
-    bio = BytesIO(content.encode("utf-8"))
-    bio.name = f"tiin_vpn_{username}.vpn"
-    return bio
 
 
-def create_softether_config(tg_id: int, days: int = None, hours: int = None) -> dict:
-    """Создаёт пользователя SoftEther и возвращает данные подключения."""
-    username = f"se_{tg_id}_{uuid.uuid4().hex[:8]}"
-    password = secrets.token_hex(8)
-
-    success = softether.create_user(username, password)
-    if not success:
-        raise RuntimeError("Failed to create SoftEther user")
-
-    tz_tokyo = timezone(timedelta(hours=9))
-    if days:
-        raw_end = datetime.now(timezone.utc) + timedelta(days=days)
-    elif hours:
-        raw_end = datetime.now(timezone.utc) + timedelta(hours=hours)
-    else:
-        raw_end = datetime.now(timezone.utc) + timedelta(days=30)
-
-    end_tokyo = raw_end.astimezone(tz_tokyo).replace(hour=23, minute=59, second=59, microsecond=0)
-    expires_at = end_tokyo.astimezone(timezone.utc)
-
-    # Set expiry in SoftEther (date-only granularity)
-    expiry_date_str = end_tokyo.strftime("%Y/%m/%d")
-    if not softether.set_user_expiry(username, expiry_date_str):
-        softether.delete_user(username)
-        raise RuntimeError("Failed to set SoftEther user expiry")
-
-    vpn_file_bio = _make_softether_vpn_file(username, password)
-    vpn_file_content = vpn_file_bio.getvalue().decode("utf-8")
-
-    config_json = json.dumps({
-        "host": SOFTETHER_CONNECT_HOST,
-        "port": SOFTETHER_CONNECT_PORT,
-        "hub": SOFTETHER_HUB,
-        "username": username,
-        "password": password,
-    })
-
-    return {
-        "username": username,
-        "password": password,
-        "config": config_json,
-        "vpn_file": vpn_file_content,
-        "expires_at": expires_at,
-    }
-
-
-async def handle_test_softether(query):
-    """Создаёт тестовый SoftEther конфиг и отправляет пользователю."""
-    tg_id = query.from_user.id
-    if is_softether_test_activated(tg_id):
-        from bot_xui.views import show_configs
-        await show_configs(query, xui)
-        return
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-    await query.message.chat.send_message("⏳ Создаю тестовый SoftEther конфиг...")
-
-    try:
-        data = create_softether_config(tg_id, hours=TARIFFS["test_24h"]["hours"])
-
-        create_vpn_key(
-            tg_id=tg_id, payment_id=None,
-            client_id=data["username"], client_name=data["username"],
-            client_ip=None, client_public_key=None,
-            vless_link=data["config"], expires_at=data["expires_at"],
-            vpn_type="softether",
-            vpn_file=data["vpn_file"],
-        )
-
-        # Отправляем .vpn файл
-        vpn_file = _make_softether_vpn_file(data["username"], data["password"])
-        caption = (
-            f"🖥 <b>Тестовый SoftEther VPN конфиг</b>\n\n"
-            f"⏱ Действителен: {TARIFFS['test_24h']['period']}\n\n"
-            f"<b>📱 Инструкция:</b>\n"
-            f"1. Установите <b>SoftEther VPN Client</b>\n"
-            f"2. Импортируйте этот файл в клиент\n"
-            f"3. Подключитесь\n\n"
-            f"💬 Поддержка: кнопка «Написать нам» в меню"
-        )
-        await query.message.reply_document(
-            document=vpn_file,
-            caption=caption,
-            parse_mode="HTML",
-        )
-
-        # Также отправляем текстом на случай ручного ввода
-        await query.message.reply_text(
-            _softether_credentials_text(data["username"], data["password"]),
-            parse_mode="HTML",
-        )
-
-        set_softether_test_activated(tg_id)
-
-        await query.message.reply_text(
-            "✅ Конфиг создан! Выберите действие:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📑 Инструкция и ссылки", url=f"https://344988.snk.wtf/my/{get_web_token(tg_id) or ''}")],
-                [InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_menu")],
-            ]),
-        )
-
-    except Exception as e:
-        logger.error(f"SoftEther config error: {e}")
-        await query.message.reply_text(
-            "❌ Ошибка создания конфига\n\nПопробуйте позже.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ В меню", callback_data="back_to_menu")]
-            ]),
-        )
