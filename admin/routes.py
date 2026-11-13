@@ -2414,7 +2414,9 @@ async def admin_create_user(request: Request):
 
     existing = xui.get_client_by_email(client_name)
     if existing:
-        client_uuid = existing['client']['id']
+        client_uuid = existing['client'].get('uuid') or existing['client'].get('id')
+        if isinstance(client_uuid, int) or (isinstance(client_uuid, str) and client_uuid.isdigit()):
+            client_uuid = existing['client'].get('uuid') or str(client_uuid)
         sub_id = existing['client'].get('subId')
         xui.extend_client_expiry(existing['inbound_id'], existing['client'], days * 86400 * 1000)
         # Also sync Inbound 17 (AmneziaWG)
