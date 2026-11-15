@@ -163,6 +163,11 @@ def update_user_subscription_by_id(user_id: int, subscription_until):
 
 
 def get_user_by_web_token(token: str) -> dict | None:
+    if not token or not isinstance(token, str):
+        return None
+    token = token.strip()
+    if not token:
+        return None
     return execute_query(
         "SELECT * FROM users WHERE web_token = %s",
         (token,), fetch='one'

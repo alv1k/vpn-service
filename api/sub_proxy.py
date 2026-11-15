@@ -123,6 +123,29 @@ def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
                 }
             }
 
+        if parsed.scheme in ("tuic", "tuic5"):
+            user_host_port = parsed.netloc
+            auth_part, host_port = user_host_port.split('@', 1) if '@' in user_host_port else ('', user_host_port)
+            uuid, password = auth_part.split(':', 1) if ':' in auth_part else (auth_part, auth_part)
+            server, port_str = host_port.rsplit(':', 1) if ':' in host_port else (host_port, '8445')
+            params = dict(urllib.parse.parse_qsl(parsed.query))
+            sni = params.get('sni', server)
+            congestion = params.get('congestion_control', 'bbr')
+            return {
+                "type": "tuic",
+                "tag": remark or "TUIC v5",
+                "server": server,
+                "server_port": int(port_str),
+                "uuid": uuid,
+                "password": password,
+                "congestion_control": congestion,
+                "tls": {
+                    "enabled": True,
+                    "server_name": sni,
+                    "alpn": ["h3"]
+                }
+            }
+
         if parsed.scheme != "vless":
             return None
         user_host_port = parsed.netloc
@@ -211,7 +234,7 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
         eu_tags = [t for t in outbound_tags if not any(x in t for x in ('🇷🇺', 'Шлюз', 'RU', 'ru-server', 'Selectel', 'Доступ в РФ'))]
         ru_tags = [t for t in outbound_tags if any(x in t for x in ('🇷🇺', 'Шлюз', 'RU', 'ru-server', 'Selectel', 'Доступ в РФ'))]
         ru_proxy = ru_tags[0] if ru_tags else None
-        yt_preferred = [t for t in eu_tags if any(k in t for k in ('Turbo', 'Hysteria', 'Vision'))] or eu_tags or outbound_tags
+        yt_preferred = [t for t in eu_tags if any(k in t for k in ('Turbo', 'Hysteria', 'Vision', 'TUIC', 'Hyper'))] or eu_tags or outbound_tags
         yt_fallback_chain = list(yt_preferred) + [t for t in outbound_tags if t not in yt_preferred]
 
         auto_outbound = {
@@ -791,6 +814,7 @@ async def _fetch_xui(url: str) -> bytes:
 @sub_router.get("/go-happ/{token}", response_class=HTMLResponse)
 async def go_happ_redirect(token: str, request: Request = None):
     """Редирект на happ:// deep link для Telegram кнопок."""
+    token = token.strip() if token else ""
     user = get_user_by_web_token(token)
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
@@ -988,6 +1012,7 @@ function copyUrl(url, btn, method) {{
 @sub_router.get("/go-connect/{token}", response_class=HTMLResponse)
 async def go_connect_smart_redirect(token: str, request: Request = None):
     """Универсальная страница быстрого подключения и импорта в 1 клик для всех ОС."""
+    token = token.strip() if token else ""
     user = get_user_by_web_token(token)
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1448,6 +1473,7 @@ function copySub() {{
 @sub_router.post("/go-connect/{token}/event")
 async def track_go_connect_event(token: str, req: WebEventRequest, request: Request):
     """Слушатель событий на странице Подключить в 1 клик."""
+    token = token.strip() if token else ""
     extra = req.extra_data or {}
     if not isinstance(extra, dict):
         extra = {"raw": str(extra)}
@@ -1474,6 +1500,7 @@ async def track_go_connect_event(token: str, req: WebEventRequest, request: Requ
 @sub_router.api_route("/sub/{token}", methods=["GET", "HEAD"])
 async def proxy_subscription(token: str, request: Request = None):
     """Эндпоинт подписки – проксирует ответ от XUI и склеивает с Hysteria."""
+    token = token.strip() if token else ""
     req_client = getattr(request, "client", None) if request else None
     client_ip = (request.headers.get("x-real-ip") or (req_client.host if req_client else "unknown")) if request else "unknown"
     ua = request.headers.get("user-agent", "") if request else ""
@@ -1537,7 +1564,7 @@ async def proxy_subscription(token: str, request: Request = None):
     is_browser = "text/html" in accept
 
     # Detect if client requests sing-box or Clash Meta format
-    wants_singbox = any(k in ua.lower() for k in ["sing-box", "hiddify", "karing", "incy"])
+    wants_singbox = any(k in ua.lower() for k in ["sing-box", "hiddify", "karing"])
     q_params = getattr(request, "query_params", None)
     fmt = q_params.get("format") if q_params else None
     wants_clash = any(k in ua.lower() for k in ["clash", "flclash", "mihomo", "stash"]) or (fmt == "clash")
@@ -1707,15 +1734,16 @@ async def proxy_subscription(token: str, request: Request = None):
         def _server_sort_key(entry):
             _, remark = entry
             if "Hysteria2 • Turbo" in remark: return 1
-            if "Reality • Vision" in remark: return 2
-            if "xHTTP • Armor" in remark: return 3
-            if "xHTTP • Stream" in remark: return 4
-            if "Reality • Standard" in remark: return 5
-            if "Hysteria2 • Armor" in remark: return 6
-            if "AmneziaWG" in remark: return 7
-            if "Hysteria2" in remark: return 8
-            if "Reality" in remark: return 9
-            if "xHTTP" in remark: return 10
+            if "TUIC" in remark: return 2
+            if "Reality • Vision" in remark: return 3
+            if "xHTTP • Armor" in remark: return 4
+            if "xHTTP • Stream" in remark: return 5
+            if "Reality • Standard" in remark: return 6
+            if "Hysteria2 • Armor" in remark: return 7
+            if "AmneziaWG" in remark: return 8
+            if "Hysteria2" in remark: return 9
+            if "Reality" in remark: return 10
+            if "xHTTP" in remark: return 11
             return 20
         vless_entries.sort(key=_server_sort_key)
         new_lines = [f"{link}#{remark}" for link, remark in vless_entries]
@@ -1760,6 +1788,13 @@ async def proxy_subscription(token: str, request: Request = None):
             new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
             vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
 
+            # Скоростной TUIC v5 (QUIC) — на этапе тестирования доступен СТРОГО для администратора
+            if is_admin:
+                tuic_link = f"tuic://{client_uuid}:{client_auth}@344988.snk.wtf:8445?congestion_control=bbr&alpn=h3&sni=344988.snk.wtf"
+                tuic_remark = "🇩🇪 ⚡ TUIC v5 • Hyper (Админ-тест)"
+                new_lines.append(f"{tuic_link}#{tuic_remark}")
+                vless_entries.append((tuic_link, tuic_remark))
+
         if wants_clash:
             clash_cfg = _build_clash_config(vless_entries)
             raw_body = clash_cfg.encode('utf-8')
@@ -1767,7 +1802,7 @@ async def proxy_subscription(token: str, request: Request = None):
             singbox_cfg = _build_singbox_config(vless_entries)
             raw_body = json.dumps(singbox_cfg, ensure_ascii=False, indent=2).encode('utf-8')
         else:
-            if routing_link:
+            if routing_link and "happ" in ua.lower():
                 new_lines.append(routing_link)
             decoded_sub = "\n".join(new_lines)
             raw_body = base64.b64encode(decoded_sub.encode('utf-8'))

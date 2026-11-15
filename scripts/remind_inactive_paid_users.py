@@ -69,6 +69,34 @@ def get_xui_client_traffic_map():
             traffic_map[email]["total"] += r["total"] or 0
             traffic_map[email]["last_online"] = max(traffic_map[email]["last_online"], r["last_online"] or 0)
             traffic_map[email]["last_sub_fetch"] = max(traffic_map[email]["last_sub_fetch"], r["last_sub_fetch"] or 0)
+
+        # Merge traffic from RU-нода (Selectel SPB)
+        try:
+            from bot_xui.multi_node import get_ru_xui_client
+            ru_xui = get_ru_xui_client()
+            if ru_xui and ru_xui.login():
+                ru_inbounds = ru_xui.get_inbounds()
+                for ib in ru_inbounds:
+                    for cs in ib.get('clientStats', []):
+                        em = cs.get('email')
+                        if not em:
+                            continue
+                        if em not in traffic_map:
+                            traffic_map[em] = {
+                                "up": 0,
+                                "down": 0,
+                                "total": 0,
+                                "last_online": 0,
+                                "last_sub_fetch": 0,
+                            }
+                        traffic_map[em]["up"] += cs.get("up", 0) or 0
+                        traffic_map[em]["down"] += cs.get("down", 0) or 0
+                        traffic_map[em]["total"] += cs.get("total", 0) or 0
+                        traffic_map[em]["last_online"] = max(traffic_map[em]["last_online"], cs.get("lastOnline", 0) or 0)
+                        traffic_map[em]["last_sub_fetch"] = max(traffic_map[em]["last_sub_fetch"], cs.get("lastSubFetch", 0) or 0)
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to collect RU node traffic: {e}")
+
         return traffic_map
     except Exception as e:
         logger.error(f"❌ Error reading x-ui.db: {e}")
@@ -192,9 +220,9 @@ async def process_reminders(send_messages: bool = False):
         web_token = user.get("web_token")
         paid_at = user.get("paid_at")
 
-        # Check traffic in x-ui
+        # Check traffic in x-ui (both DE and RU nodes)
         email = f"tiin_{tg_id}"
-        tr = traffic_map.get(email, {"up": 0, "down": 0, "total": 0, "last_online": 0, "last_sub_fetch": 0})
+        tr = traffic_map.get(email) or traffic_map.get(f"vless_{tg_id}") or {"up": 0, "down": 0, "total": 0, "last_online": 0, "last_sub_fetch": 0}
         total_traffic = tr["up"] + tr["down"]
 
         if total_traffic >= MIN_ACTIVE_TRAFFIC_BYTES:

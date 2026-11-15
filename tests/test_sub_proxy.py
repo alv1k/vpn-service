@@ -442,5 +442,163 @@ class TestSubscriptionDeduplication:
         assert "Способ 1: Основной" in html
         assert "Способ 2: Резервный РФ" in html
 
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy.log_user_platform")
+    @patch("api.sub_proxy._log_webpage_event")
+    async def test_proxy_subscription_strips_leading_trailing_whitespace(self, mock_event, mock_plat, mock_pick, mock_user):
+        from api.sub_proxy import proxy_subscription
+        mock_user.return_value = {"id": 1, "tg_id": 12345}
+        future = datetime.utcnow() + timedelta(days=20)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+            "client_id": "test-uuid",
+        }
+        mock_req = MagicMock()
+        mock_req.method = "HEAD"
+        mock_req.client.host = "213.129.43.167"
+        mock_req.headers = {"user-agent": "Happ/2.9.0/Windows/2604171131503"}
+
+        # Token with leading and trailing space (e.g. %20 from copy-paste)
+        resp = await proxy_subscription("  _MuFsrdJZeCrHrwVS9cIwA \n", request=mock_req)
+        assert resp.status_code == 200
+        mock_user.assert_called_with("_MuFsrdJZeCrHrwVS9cIwA")
+
+    def test_get_user_by_web_token_sanitization(self):
+        from api.db import get_user_by_web_token
+        with patch("api.db.execute_query") as mock_exec:
+            mock_exec.return_value = {"id": 1}
+            # Test with spaces and tabs
+            res = get_user_by_web_token("  valid_token \t\n")
+            assert res == {"id": 1}
+            mock_exec.assert_called_once_with(
+                "SELECT * FROM users WHERE web_token = %s",
+                ("valid_token",), fetch='one'
+            )
+
+        with patch("api.db.execute_query") as mock_exec:
+            # Test empty or whitespace-only token
+            assert get_user_by_web_token("   ") is None
+            assert get_user_by_web_token("") is None
+            assert get_user_by_web_token(None) is None
+            mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy._fetch_xui")
+    @patch("api.sub_proxy.log_user_platform")
+    @patch("api.sub_proxy._log_webpage_event")
+    async def test_incy_receives_base64_without_happ_routing(self, mock_event, mock_plat, mock_fetch, mock_pick, mock_user):
+        from api.sub_proxy import proxy_subscription
+        mock_user.return_value = {"id": 1, "tg_id": 12345}
+        future = datetime.utcnow() + timedelta(days=20)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+            "client_id": "test-uuid-1234",
+        }
+        mock_fetch.return_value = (
+            b"vless://test-uuid-1234@344988.snk.wtf:7443?security=reality&sni=example.com#test1\n"
+        )
+        mock_req = MagicMock()
+        mock_req.method = "GET"
+        mock_req.client.host = "1.2.3.4"
+        mock_req.headers = {"user-agent": "INCY/3.7.0/android Dalvik/2.1.0"}
+        mock_req.query_params = {}
+
+        resp = await proxy_subscription("test_token", request=mock_req)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/plain")
+
+        decoded = base64.b64decode(resp.body).decode("utf-8")
+        assert "vless://" in decoded
+        # Verify happ:// routing link is NOT in the base64 node list for INCY
+        assert "happ://routing/add" not in decoded
+
+
+class TestTuicSingboxOutbound:
+
+    def test_tuic_link_parsed_correctly(self):
+        from api.sub_proxy import _vless_to_singbox_outbound
+        tuic_link = "tuic://my-uuid-1234:my-secret-pass@344988.snk.wtf:8445?congestion_control=bbr&alpn=h3&sni=344988.snk.wtf"
+        remark = "🇩🇪 ⚡ TUIC v5 • Hyper (QUIC)"
+        out = _vless_to_singbox_outbound(tuic_link, remark)
+
+        assert out is not None
+        assert out["type"] == "tuic"
+        assert out["tag"] == remark
+        assert out["server"] == "344988.snk.wtf"
+        assert out["server_port"] == 8445
+        assert out["uuid"] == "my-uuid-1234"
+        assert out["password"] == "my-secret-pass"
+        assert out["congestion_control"] == "bbr"
+        assert out["tls"]["enabled"] is True
+        assert out["tls"]["server_name"] == "344988.snk.wtf"
+        assert out["tls"]["alpn"] == ["h3"]
+
+    def test_singbox_config_includes_tuic_group(self):
+        from api.sub_proxy import _build_singbox_config
+        entries = [
+            ("vless://uid1@srv:7443?security=reality&sni=example.com", "🇩🇪 👁️ Reality • Vision"),
+            ("tuic://uid1:pass1@344988.snk.wtf:8445?congestion_control=bbr&alpn=h3&sni=344988.snk.wtf", "🇩🇪 ⚡ TUIC v5 • Hyper (QUIC)")
+        ]
+        cfg = _build_singbox_config(entries)
+        outbound_tags = [o["tag"] for o in cfg["outbounds"]]
+        assert "🇩🇪 ⚡ TUIC v5 • Hyper (QUIC)" in outbound_tags
+        assert "⚡ Автовыбор узла" in outbound_tags
+        assert "🔴 YouTube & Видео (Безлимит DE)" in outbound_tags
+
+        # Verify TUIC is included in youtube group outbounds
+        yt_out = next(o for o in cfg["outbounds"] if o["tag"] == "🔴 YouTube & Видео (Безлимит DE)")
+        assert "🇩🇪 ⚡ TUIC v5 • Hyper (QUIC)" in yt_out["outbounds"]
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy._fetch_xui")
+    @patch("api.sub_proxy.log_user_platform")
+    @patch("api.sub_proxy._log_webpage_event")
+    async def test_tuic_issued_to_admin_only(self, mock_event, mock_plat, mock_fetch, mock_pick, mock_user):
+        from api.sub_proxy import proxy_subscription
+        from config import ADMIN_TG_ID
+
+        future = datetime.utcnow() + timedelta(days=20)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+            "client_id": "test-uuid-admin",
+        }
+        mock_fetch.return_value = (
+            b"vless://test-uuid-admin@344988.snk.wtf:7443?security=reality&sni=example.com#test1\n"
+        )
+        mock_req = MagicMock()
+        mock_req.method = "GET"
+        mock_req.client.host = "1.2.3.4"
+        mock_req.headers = {"user-agent": "Happ/4.8.0/Android"}
+        mock_req.query_params = {}
+
+        # 1. Admin user -> TUIC should be present
+        mock_user.return_value = {"id": 1, "tg_id": ADMIN_TG_ID}
+        admin_resp = await proxy_subscription("admin_token", request=mock_req)
+        assert admin_resp.status_code == 200
+        decoded_admin = base64.b64decode(admin_resp.body).decode("utf-8")
+        assert "tuic://" in decoded_admin
+        assert "TUIC v5 • Hyper (Админ-тест)" in decoded_admin
+
+        # 2. Regular user -> TUIC should NOT be present
+        mock_user.return_value = {"id": 2, "tg_id": 999999999}
+        user_resp = await proxy_subscription("regular_token", request=mock_req)
+        assert user_resp.status_code == 200
+        decoded_user = base64.b64decode(user_resp.body).decode("utf-8")
+        assert "tuic://" not in decoded_user
+        assert "TUIC v5" not in decoded_user
+
+
+
+
+
 
 
