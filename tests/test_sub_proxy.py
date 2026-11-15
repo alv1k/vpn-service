@@ -596,6 +596,120 @@ class TestTuicSingboxOutbound:
         assert "tuic://" not in decoded_user
         assert "TUIC v5" not in decoded_user
 
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy._fetch_xui")
+    @patch("api.sub_proxy.log_user_platform")
+    @patch("api.sub_proxy._log_webpage_event")
+    async def test_hiddify_receives_valid_singbox_json(self, mock_event, mock_plat, mock_fetch, mock_pick, mock_user):
+        from api.sub_proxy import proxy_subscription
+        from config import ADMIN_TG_ID
+        import json
+        import subprocess
+
+        future = datetime.utcnow() + timedelta(days=20)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+            "client_id": "3f58cc74-9661-438c-b577-a231048bc6be",
+        }
+        mock_fetch.return_value = (
+            b"vless://3f58cc74-9661-438c-b577-a231048bc6be@344988.snk.wtf:7443?security=reality&pbk=r1fUWPaAGAwcABiphByGRejrX75uFLktsQvU4rxlSHQ&sid=0fe737f978&sni=tile.openstreetmap.org#test1\n"
+            b"vless://3f58cc74-9661-438c-b577-a231048bc6be@344988.snk.wtf:17443?type=grpc&serviceName=grpc-stream&security=reality&pbk=r1fUWPaAGAwcABiphByGRejrX75uFLktsQvU4rxlSHQ&sid=0fe737f978&sni=www.uni-frankfurt.de#test-grpc\n"
+        )
+        mock_user.return_value = {"id": 1, "tg_id": ADMIN_TG_ID}
+        mock_req = MagicMock()
+        mock_req.method = "GET"
+        mock_req.client.host = "1.2.3.4"
+        mock_req.headers = {"user-agent": "HiddifyNext/5.5.5 (android) like ClashMeta v2ray sing-box"}
+        mock_req.query_params = {}
+
+        resp = await proxy_subscription("admin_hiddify_tok", request=mock_req)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/json; charset=utf-8"
+
+        cfg = json.loads(resp.body.decode("utf-8"))
+        assert "dns" in cfg
+        assert "inbounds" in cfg
+        assert "outbounds" in cfg
+        assert "route" in cfg
+
+        # Verify gRPC and TUIC are present for admin in outbounds
+        tags = [o["tag"] for o in cfg["outbounds"]]
+        assert any("Reality • gRPC" in t for t in tags)
+        assert any("TUIC v5" in t for t in tags)
+
+        # Validate with official sing-box binary
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=True) as tmp:
+            json.dump(cfg, tmp)
+            tmp.flush()
+            chk = subprocess.run(["/usr/local/bin/sing-box", "check", "-c", tmp.name], capture_output=True, text=True)
+            assert chk.returncode == 0, f"sing-box check failed: {chk.stderr}"
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    @patch("api.sub_proxy._pick_vless_key")
+    @patch("api.sub_proxy._fetch_xui")
+    @patch("api.sub_proxy.log_user_platform")
+    @patch("api.sub_proxy._log_webpage_event")
+    async def test_grpc_inbound_isolated_to_admin(self, mock_event, mock_plat, mock_fetch, mock_pick, mock_user):
+        from api.sub_proxy import proxy_subscription
+        from config import ADMIN_TG_ID
+
+        future = datetime.utcnow() + timedelta(days=20)
+        mock_pick.return_value = {
+            "subscription_link": "https://xui.example/sub/abc",
+            "expires_at": future,
+            "client_id": "test-uuid",
+        }
+        mock_fetch.return_value = (
+            b"vless://test-uuid@344988.snk.wtf:7443?security=reality&sni=example.com#vision\n"
+            b"vless://test-uuid@344988.snk.wtf:17443?type=grpc&serviceName=grpc-stream&security=reality&sni=www.uni-frankfurt.de#grpc\n"
+        )
+        mock_req = MagicMock()
+        mock_req.method = "GET"
+        mock_req.client.host = "1.2.3.4"
+        mock_req.headers = {"user-agent": "Happ/4.8.0/Android"}
+        mock_req.query_params = {}
+
+        # 1. Admin gets 17443 gRPC
+        mock_user.return_value = {"id": 1, "tg_id": ADMIN_TG_ID}
+        admin_resp = await proxy_subscription("admin_tok_grpc", request=mock_req)
+        decoded_admin = base64.b64decode(admin_resp.body).decode("utf-8")
+        assert ":17443" in decoded_admin
+        assert "Reality • gRPC" in decoded_admin
+
+        # 2. Regular user does NOT get 17443 gRPC
+        mock_user.return_value = {"id": 2, "tg_id": 123456789}
+        user_resp = await proxy_subscription("user_tok_grpc", request=mock_req)
+        decoded_user = base64.b64decode(user_resp.body).decode("utf-8")
+        assert ":17443" not in decoded_user
+        assert "Reality • gRPC" not in decoded_user
+
+    def test_grpc_outbound_conversion(self):
+        from api.sub_proxy import _vless_to_singbox_outbound, _vless_to_clash_proxy
+
+        link = "vless://test-uuid@344988.snk.wtf:17443?type=grpc&serviceName=grpc-stream&security=reality&pbk=r1fUWPaAGAwcABiphByGRejrX75uFLktsQvU4rxlSHQ&sid=0fe737f978&sni=www.uni-frankfurt.de&fp=firefox"
+        remark = "🇩🇪 ⚡ Reality • gRPC (Uni-Frankfurt)"
+
+        # Sing-box conversion
+        sb = _vless_to_singbox_outbound(link, remark)
+        assert sb is not None
+        assert sb["type"] == "vless"
+        assert sb["transport"]["type"] == "grpc"
+        assert sb["transport"]["service_name"] == "grpc-stream"
+        assert sb["tls"]["reality"]["public_key"] == "r1fUWPaAGAwcABiphByGRejrX75uFLktsQvU4rxlSHQ"
+
+        # Clash conversion
+        clash = _vless_to_clash_proxy(link, remark)
+        assert clash is not None
+        assert clash["type"] == "vless"
+        assert clash["network"] == "grpc"
+        assert clash["grpc-opts"]["grpc-service-name"] == "grpc-stream"
+
+
 
 
 
