@@ -91,37 +91,82 @@ def get_all_payments():
         payments_by_tg.setdefault(r['tg_id'], []).append(r)
     return payments_by_tg
 
-def _add_traffic(traffic, tg_id, upload, download, enabled=True, last_online=0):
-    existing = traffic.get(tg_id, {'upload': 0, 'download': 0, 'enabled': True, 'last_online': 0})
+def _add_traffic(traffic, tg_id, upload, download, enabled=True, last_online=0, last_sub_fetch=0):
+    existing = traffic.get(tg_id, {
+        'upload': 0,
+        'download': 0,
+        'enabled': True,
+        'last_online': 0,
+        'last_sub_fetch': 0,
+    })
     existing['upload'] += upload
     existing['download'] += download
     if not enabled:
         existing['enabled'] = False
     if last_online > existing.get('last_online', 0):
         existing['last_online'] = last_online
+    if last_sub_fetch > existing.get('last_sub_fetch', 0):
+        existing['last_sub_fetch'] = last_sub_fetch
     traffic[tg_id] = existing
+
+def _resolve_tg_id(email: str, email_to_tg: dict) -> int | None:
+    if not email:
+        return None
+    if email in email_to_tg:
+        return email_to_tg[email]
+    import re
+    m = re.match(r'^(?:tiin|vless|awg)_(\d+)$', email)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            pass
+    return None
 
 def get_traffic_from_panel(xui):
     traffic = {}
     try:
+        # Build mapping from MySQL vpn_keys first
+        rows = execute_query("SELECT client_name, tg_id FROM vpn_keys", fetch='all') or []
+        email_to_tg = {r['client_name']: r['tg_id'] for r in rows if r.get('client_name') and r.get('tg_id')}
+
         inbounds = xui.get_inbounds()
-        email_to_tg = {}
         for ib in inbounds:
             settings = ib.get('settings', {})
             if isinstance(settings, str):
-                settings = json.loads(settings)
+                try:
+                    settings = json.loads(settings)
+                except Exception:
+                    settings = {}
             for client in settings.get('clients', []):
-                if client.get('tgId'):
-                    email_to_tg[client.get('email')] = int(client['tgId'])
+                c_email = client.get('email')
+                c_tg = client.get('tgId')
+                if c_email and c_tg and int(c_tg) > 0:
+                    email_to_tg[c_email] = int(c_tg)
 
         for ib in inbounds:
             for cs in ib.get('clientStats', []):
-                tg_id = email_to_tg.get(cs.get('email'))
+                tg_id = _resolve_tg_id(cs.get('email'), email_to_tg)
                 if tg_id:
                     _add_traffic(traffic, tg_id, cs.get('up', 0), cs.get('down', 0),
-                                 cs.get('enable', True), cs.get('lastOnline', 0))
+                                 cs.get('enable', True), cs.get('lastOnline', 0), cs.get('lastSubFetch', 0))
     except Exception as e:
         log.warning(f"3x-ui traffic collection error: {e}")
+
+    # RU Node Traffic (Selectel SPB)
+    try:
+        from bot_xui.multi_node import get_ru_xui_client
+        ru_xui = get_ru_xui_client()
+        if ru_xui and ru_xui.login():
+            ru_inbounds = ru_xui.get_inbounds()
+            for ib in ru_inbounds:
+                for cs in ib.get('clientStats', []):
+                    tg_id = _resolve_tg_id(cs.get('email'), email_to_tg)
+                    if tg_id:
+                        _add_traffic(traffic, tg_id, cs.get('up', 0), cs.get('down', 0),
+                                     cs.get('enable', True), cs.get('lastOnline', 0), cs.get('lastSubFetch', 0))
+    except Exception as e:
+        log.warning(f"RU 3x-ui traffic collection error: {e}")
 
     # AWG Traffic
     try:
@@ -343,6 +388,13 @@ def classify_funnel(users, keys_by_tg, payments_by_tg, traffic):
                 last_online_dt = datetime.utcfromtimestamp(last_online_ms / 1000)
                 days_offline = (NOW - last_online_dt).days
                 if days_offline >= 7:
+                    # Проверяем, запрашивал ли клиент подписку недавно (lastSubFetch)
+                    last_sub_ms = user_traffic.get('last_sub_fetch', 0)
+                    if last_sub_ms > 0:
+                        last_sub_dt = datetime.utcfromtimestamp(last_sub_ms / 1000)
+                        days_since_sub = (NOW - last_sub_dt).days
+                        if days_since_sub < 3:
+                            continue
                     candidates.append({**info, 'scenario': 'protocol_inactive_7d', 'days_offline': days_offline, 'priority': 4})
                     continue
 

@@ -11,6 +11,8 @@ sys.modules.setdefault("yookassa", MagicMock())
 from scripts.win_back_users import (
     classify_funnel,
     get_buttons_for_scenario,
+    _add_traffic,
+    _resolve_tg_id,
     NOW,
     MB,
     MESSAGES,
@@ -281,6 +283,44 @@ class TestProtocolInactive7d:
 
         candidates = classify_funnel([user], keys, {}, traffic)
         assert len(candidates) == 0
+
+    def test_active_sub_offline_on_de_but_online_on_ru(self):
+        """User offline on DE for 15 days, but active on RU node -> skip."""
+        user = _make_user(tg_id=404, sub_until=NOW + timedelta(days=20))
+        keys = {404: [_make_key(404)]}
+        traffic = {}
+        # DE traffic: 15 days ago
+        de_last_online = (NOW - timedelta(days=15)).timestamp() * 1000
+        _add_traffic(traffic, 404, upload=10 * MB, download=10 * MB, last_online=de_last_online)
+        # RU traffic: 1 hour ago
+        ru_last_online = (NOW - timedelta(hours=1)).timestamp() * 1000
+        _add_traffic(traffic, 404, upload=50 * MB, download=200 * MB, last_online=ru_last_online)
+
+        candidates = classify_funnel([user], keys, {}, traffic)
+        assert len(candidates) == 0
+
+    def test_active_sub_recent_sub_fetch_skips_winback(self):
+        """User last_online was 8 days ago, but fetched subscription 1 day ago -> skip."""
+        user = _make_user(tg_id=405, sub_until=NOW + timedelta(days=20))
+        keys = {405: [_make_key(405)]}
+        traffic = {}
+        last_online = (NOW - timedelta(days=8)).timestamp() * 1000
+        last_sub_fetch = (NOW - timedelta(days=1)).timestamp() * 1000
+        _add_traffic(traffic, 405, upload=10 * MB, download=10 * MB, last_online=last_online, last_sub_fetch=last_sub_fetch)
+
+        candidates = classify_funnel([user], keys, {}, traffic)
+        assert len(candidates) == 0
+
+
+class TestMultiNodeResolution:
+    def test_resolve_tg_id(self):
+        email_map = {"custom_client": 99999}
+        assert _resolve_tg_id("custom_client", email_map) == 99999
+        assert _resolve_tg_id("tiin_7339555199", {}) == 7339555199
+        assert _resolve_tg_id("vless_6335998601", {}) == 6335998601
+        assert _resolve_tg_id("awg_12345", {}) == 12345
+        assert _resolve_tg_id("unknown_user", {}) is None
+        assert _resolve_tg_id(None, {}) is None
 
 
 # ═════════════════════════════════════════════
