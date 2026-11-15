@@ -189,12 +189,9 @@ def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
                 }
             outbound["tls"] = tls_cfg
 
-        if transport_type == "xhttp":
-            outbound["transport"] = {
-                "type": "xhttp",
-                "host": params.get("host", ""),
-                "path": params.get("path", "/"),
-            }
+        if transport_type in ("xhttp", "splithttp"):
+            # Sing-box does not support Xray-core proprietary xhttp (SplitHTTP) transport
+            return None
         elif transport_type == "grpc":
             outbound["transport"] = {
                 "type": "grpc",
