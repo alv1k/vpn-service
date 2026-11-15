@@ -195,6 +195,11 @@ def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
                 "host": params.get("host", ""),
                 "path": params.get("path", "/"),
             }
+        elif transport_type == "grpc":
+            outbound["transport"] = {
+                "type": "grpc",
+                "service_name": params.get("serviceName", "grpc-stream"),
+            }
         elif transport_type == "ws":
             outbound["transport"] = {
                 "type": "ws",
@@ -234,7 +239,7 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
         eu_tags = [t for t in outbound_tags if not any(x in t for x in ('🇷🇺', 'Шлюз', 'RU', 'ru-server', 'Selectel', 'Доступ в РФ'))]
         ru_tags = [t for t in outbound_tags if any(x in t for x in ('🇷🇺', 'Шлюз', 'RU', 'ru-server', 'Selectel', 'Доступ в РФ'))]
         ru_proxy = ru_tags[0] if ru_tags else None
-        yt_preferred = [t for t in eu_tags if any(k in t for k in ('Turbo', 'Hysteria', 'Vision', 'TUIC', 'Hyper'))] or eu_tags or outbound_tags
+        yt_preferred = [t for t in eu_tags if any(k in t for k in ('Turbo', 'Hysteria', 'Vision', 'TUIC', 'gRPC', 'Hyper'))] or eu_tags or outbound_tags
         yt_fallback_chain = list(yt_preferred) + [t for t in outbound_tags if t not in yt_preferred]
 
         auto_outbound = {
@@ -271,14 +276,13 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
     all_outbounds = proxy_groups + outbounds + [
         {"type": "direct", "tag": "direct"},
         {"type": "block", "tag": "block"},
-        {"type": "dns", "tag": "dns-out"},
     ]
 
     return {
         "dns": {
             "servers": [
-                {"tag": "dns-remote", "address": "8.8.8.8", "detour": default_proxy},
-                {"tag": "dns-direct", "address": "77.88.8.8", "detour": "direct"},
+                {"tag": "dns-remote", "type": "udp", "server": "8.8.8.8", "detour": default_proxy},
+                {"tag": "dns-direct", "type": "udp", "server": "77.88.8.8", "detour": "direct"},
             ],
             "rules": [
                 {"ip_is_private": True, "server": "dns-direct"},
@@ -297,26 +301,23 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
                     "server": "dns-direct"
                 },
             ],
-            "hosts": {
-                "344988.snk.wtf": ["91.132.161.112"],
-                "ru-server.tiinservice.online": ["139.100.207.18"]
-            },
             "final": "dns-remote",
         },
         "inbounds": [
             {
                 "type": "tun",
                 "tag": "tun-in",
-                "inet4_address": "172.19.0.1/30",
+                "address": ["172.19.0.1/30"],
                 "auto_route": True,
                 "strict_route": True,
-                "sniff": True,
             }
         ],
         "outbounds": all_outbounds,
         "route": {
+            "default_domain_resolver": "dns-direct",
             "rules": [
-                {"protocol": "dns", "outbound": "dns-out"},
+                {"action": "sniff"},
+                {"protocol": "dns", "action": "hijack-dns"},
                 {"ip_is_private": True, "outbound": "direct"},
                 # Мгновенный 0мс фоллбэк на TCP для устранения таймаутов QUIC в браузерах
                 {"network": "udp", "port": [443], "outbound": "block"},
@@ -484,7 +485,9 @@ def _vless_to_clash_proxy(vless_link: str, remark: str) -> dict | None:
         if sec == "reality":
             proxy["tls"] = True
             proxy["servername"] = params.get("sni", "")
-            proxy["flow"] = params.get("flow", "xtls-rprx-vision")
+            flow_val = params.get("flow", "")
+            if flow_val:
+                proxy["flow"] = flow_val
             proxy["client-fingerprint"] = params.get("fp", "chrome")
             proxy["reality-opts"] = {
                 "public-key": params.get("pbk", ""),
@@ -503,6 +506,11 @@ def _vless_to_clash_proxy(vless_link: str, remark: str) -> dict | None:
             }
             if params.get("host"):
                 proxy["ws-opts"]["headers"] = {"Host": params.get("host")}
+        elif transport_type == "grpc":
+            proxy["network"] = "grpc"
+            proxy["grpc-opts"] = {
+                "grpc-service-name": params.get("serviceName", "grpc-stream")
+            }
         elif transport_type in ("xhttp", "httpupgrade"):
             proxy["network"] = "xhttp"
             proxy["xhttp-opts"] = {
@@ -1564,10 +1572,11 @@ async def proxy_subscription(token: str, request: Request = None):
     is_browser = "text/html" in accept
 
     # Detect if client requests sing-box or Clash Meta format
-    wants_singbox = any(k in ua.lower() for k in ["sing-box", "hiddify", "karing"])
+    is_hiddify = "hiddify" in ua.lower()
+    wants_singbox = any(k in ua.lower() for k in ["sing-box", "karing"]) or is_hiddify
     q_params = getattr(request, "query_params", None)
     fmt = q_params.get("format") if q_params else None
-    wants_clash = any(k in ua.lower() for k in ["clash", "flclash", "mihomo", "stash"]) or (fmt == "clash")
+    wants_clash = (not is_hiddify) and (any(k in ua.lower() for k in ["clash", "flclash", "mihomo", "stash"]) or (fmt == "clash"))
 
     # If expired and VPN client → return expired message
     if is_expired and not is_browser:
@@ -1581,14 +1590,14 @@ async def proxy_subscription(token: str, request: Request = None):
         return Response(content=raw_body, headers=headers)
 
     routing_link = _happ_routing_deeplink()
-    headers = _build_headers(expires_at, is_json=wants_singbox, is_clash=wants_clash, routing_link=routing_link)
+    headers = _build_headers(expires_at, is_json=wants_singbox, is_clash=(wants_clash and not wants_singbox), routing_link=routing_link)
 
     # Fast 200 OK response for client connectivity/HEAD checks
     if getattr(request, "method", "GET") == "HEAD":
         return Response(content=b"", headers=headers)
 
     now = time.time()
-    cache_key = f"{token}_{'clash' if wants_clash else ('json' if wants_singbox else 'b64')}"
+    cache_key = f"{token}_{'json' if wants_singbox else ('clash' if wants_clash else 'b64')}"
     async with _CACHE_LOCK:
         cached = _CACHE.get(cache_key)
         if cached:
@@ -1615,12 +1624,16 @@ async def proxy_subscription(token: str, request: Request = None):
         else:
             status_emoji = "❌"
 
+        is_admin = bool(user and user.get("tg_id") == ADMIN_TG_ID)
         vless_entries = []
         new_lines = []
         seen_remarks = set()
         seen_links = set()
         for line in decoded_sub.splitlines():
             if not line.strip():
+                continue
+            # Inbound 20 (gRPC) — на этапе тестирования доступен СТРОГО для администратора
+            if (":17443" in line or "type=grpc" in line) and not is_admin:
                 continue
             if '#' in line:
                 parts = line.split('#')
@@ -1659,8 +1672,8 @@ async def proxy_subscription(token: str, request: Request = None):
                 remark = "🇩🇪 🌐 TUIC"
             elif line.startswith("ss://"):
                 remark = "🇩🇪 🛡️ Shadowsocks"
-            elif "type=grpc" in line:
-                remark = "🇩🇪 🟣 VLESS • gRPC"
+            elif "type=grpc" in line or ":17443" in line:
+                remark = "🇩🇪 ⚡ Reality • gRPC (Uni-Frankfurt)"
             elif ":8081" in line or "amd.com" in line:
                 import re
                 base_link = base_link.replace(":8081", ":443")
@@ -1736,14 +1749,15 @@ async def proxy_subscription(token: str, request: Request = None):
             if "Hysteria2 • Turbo" in remark: return 1
             if "TUIC" in remark: return 2
             if "Reality • Vision" in remark: return 3
-            if "xHTTP • Armor" in remark: return 4
-            if "xHTTP • Stream" in remark: return 5
-            if "Reality • Standard" in remark: return 6
-            if "Hysteria2 • Armor" in remark: return 7
-            if "AmneziaWG" in remark: return 8
-            if "Hysteria2" in remark: return 9
-            if "Reality" in remark: return 10
-            if "xHTTP" in remark: return 11
+            if "Reality • gRPC" in remark or "gRPC" in remark: return 4
+            if "xHTTP • Armor" in remark: return 5
+            if "xHTTP • Stream" in remark: return 6
+            if "Reality • Standard" in remark: return 7
+            if "Hysteria2 • Armor" in remark: return 8
+            if "AmneziaWG" in remark: return 9
+            if "Hysteria2" in remark: return 10
+            if "Reality" in remark: return 11
+            if "xHTTP" in remark: return 12
             return 20
         vless_entries.sort(key=_server_sort_key)
         new_lines = [f"{link}#{remark}" for link, remark in vless_entries]
@@ -1783,7 +1797,6 @@ async def proxy_subscription(token: str, request: Request = None):
             vless_entries.insert(0, (ru_hy2_link, ru_hy2_remark))
 
             ru_vless_link = f"vless://{client_uuid}@ru-server.tiinservice.online:8443?type=ws&security=tls&sni=ru-server.tiinservice.online&path=%2Fapi%2Fv1%2Fws"
-            is_admin = bool(user and user.get("tg_id") == ADMIN_TG_ID)
             ru_vless_remark = "🇷🇺 🛡️ VLESS • Шлюз (РФ ➔ DE)" if is_admin else "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
             new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
             vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
@@ -1795,12 +1808,12 @@ async def proxy_subscription(token: str, request: Request = None):
                 new_lines.append(f"{tuic_link}#{tuic_remark}")
                 vless_entries.append((tuic_link, tuic_remark))
 
-        if wants_clash:
-            clash_cfg = _build_clash_config(vless_entries)
-            raw_body = clash_cfg.encode('utf-8')
-        elif wants_singbox:
+        if wants_singbox:
             singbox_cfg = _build_singbox_config(vless_entries)
             raw_body = json.dumps(singbox_cfg, ensure_ascii=False, indent=2).encode('utf-8')
+        elif wants_clash:
+            clash_cfg = _build_clash_config(vless_entries)
+            raw_body = clash_cfg.encode('utf-8')
         else:
             if routing_link and "happ" in ua.lower():
                 new_lines.append(routing_link)
