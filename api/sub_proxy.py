@@ -1671,19 +1671,6 @@ async def proxy_subscription(token: str, request: Request = None):
                 remark = "🇩🇪 🛡️ Shadowsocks"
             elif "type=grpc" in line or ":17443" in line:
                 remark = "🇩🇪 ⚡ Reality • gRPC (Uni-Frankfurt)"
-            elif ":8081" in line or "amd.com" in line:
-                import re
-                base_link = base_link.replace(":8081", ":443")
-                base_link = re.sub(r'sni=[^&]+', 'sni=swscan.apple.com', base_link)
-                base_link = re.sub(r'host=[^&]+', 'host=swscan.apple.com', base_link)
-                base_link = re.sub(r'spx=[^&]+', 'spx=%2F', base_link)
-                base_link = re.sub(r'mode=[^&]+', 'mode=stream-one', base_link)
-                base_link = re.sub(r'flow=[^&]+&?', '', base_link)
-                base_link = re.sub(r'extra=[^&]+&?', '', base_link)
-                base_link = re.sub(r'fm=[^&]+&?', '', base_link)
-                base_link = re.sub(r'&+', '&', base_link)
-                base_link = base_link.rstrip('?&')
-                remark = "🇩🇪 🛡️ xHTTP • 443 (Admin Test)"
             elif ":48745" in line or ("type=xhttp" in line and ("swscan.apple.com" in line or "update.microsoft.com" in line)):
                 active_sni_15 = _get_active_sni("15")
                 import re
@@ -1704,20 +1691,31 @@ async def proxy_subscription(token: str, request: Request = None):
                     import re
                     base_link = re.sub(r'sni=[^&]+', f'sni={active_sni_10}', base_link)
                 remark = "🇩🇪 🛡️ Reality • Standard (Bahn)"
-            elif ":47447" in line or ("type=xhttp" in line and ("nvidia.com" in line or "samsung.com" in line)):
-                active_sni_2 = _get_active_sni("2")
+            elif ":47447" in line or ("type=xhttp" in line and ("nvidia.com" in line or "samsung.com" in line or "mr-empeche" in line)):
                 import re
+                base_link = base_link.replace(":47447", ":443")
                 if "sni=" in base_link:
-                    base_link = re.sub(r'sni=[^&]+', f'sni={active_sni_2}', base_link)
+                    base_link = re.sub(r'sni=[^&]+', 'sni=mr-empeche.tiinservice.online', base_link)
                 else:
-                    base_link = f"{base_link}&sni={active_sni_2}"
+                    base_link = f"{base_link}&sni=mr-empeche.tiinservice.online"
                 if "host=" in base_link:
-                    base_link = re.sub(r'host=[^&]+', f'host={active_sni_2}', base_link)
+                    base_link = re.sub(r'host=[^&]+', 'host=mr-empeche.tiinservice.online', base_link)
                 else:
-                    base_link = f"{base_link}&host={active_sni_2}"
-                # Сброс несовместимого flow и post-quantum encryption
+                    base_link = f"{base_link}&host=mr-empeche.tiinservice.online"
+                if "path=" in base_link:
+                    base_link = re.sub(r'path=[^&]+', 'path=%2Fapi%2Fv1%2Fsync', base_link)
+                else:
+                    base_link = f"{base_link}&path=%2Fapi%2Fv1%2Fsync"
+                if "mode=" in base_link:
+                    base_link = re.sub(r'mode=[^&]+', 'mode=stream-one', base_link)
+                else:
+                    base_link = f"{base_link}&mode=stream-one"
+                base_link = re.sub(r'spx=[^&]+', 'spx=%2F', base_link)
                 base_link = re.sub(r'flow=[^&]+&?', '', base_link)
                 base_link = re.sub(r'encryption=[^&]+', 'encryption=none', base_link)
+                base_link = re.sub(r'extra=[^&]+&?', '', base_link)
+                base_link = re.sub(r'fm=[^&]+&?', '', base_link)
+                base_link = re.sub(r'&+', '&', base_link)
                 base_link = base_link.rstrip('?&')
                 remark = "🇩🇪 🌊 xHTTP • Stream (МегаФон)"
             elif ":28745" in line or ("type=xhttp" in line and "google.com" in line):

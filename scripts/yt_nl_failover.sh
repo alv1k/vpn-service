@@ -20,11 +20,11 @@ LOG_FILE="/home/alvik/vpn-service/logs/yt-failover.log"
 ENV_FILE="/home/alvik/vpn-service/.env"
 LOCK_FILE="/home/alvik/vpn-service/data/yt_nl_failover.lock"
 NL_HOST="2.26.76.210"
-NL_PORT="15687"
-NL_UUID="a498b8a6-4a13-4f00-8c53-a895320cfc6e"
-NL_PUBKEY="Yhi1GGSsXkbS0BpLHnQ8APwKB_QUb4ARYpHdUMuSMmA"
-NL_SNI="www.amazon.com"
-NL_SHORTID="f0cb56672673"
+NL_PORT="443"
+NL_UUID="5f02a856-bd1d-4a4e-9063-78fdb3cefddc"
+NL_PUBKEY="C6vq2sIrgbNuIgeKioqhGrtEkjqy9pouxR6ZzDPMQHM"
+NL_SNI="baza-stroi.tiinservice.online"
+NL_SHORTID="120a04598efbb8eb"
 
 FAIL_THRESHOLD=2
 RECOVER_THRESHOLD=2

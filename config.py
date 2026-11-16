@@ -79,7 +79,7 @@ VLESS_WS_INBOUND_ID = int(os.getenv("VLESS_WS_INBOUND_ID", "9"))
 VLESS_REALITY_V1_INBOUND_ID = int(os.getenv("VLESS_REALITY_V1_INBOUND_ID", "10"))
 
 # Centralized active inbound IDs list for client provisioning
-_DEFAULT_ACTIVE_INBOUNDS = "1,2,4,10,14"
+_DEFAULT_ACTIVE_INBOUNDS = "1,2,4"
 _RAW_ACTIVE_INBOUNDS = os.getenv("ACTIVE_INBOUND_IDS", _DEFAULT_ACTIVE_INBOUNDS)
 ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_ACTIVE_INBOUNDS.split(",") if x.strip().isdigit()]
 
