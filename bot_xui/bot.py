@@ -2304,7 +2304,18 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 def main():
     validate_config()
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .connect_timeout(15.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(15.0)
+        .get_updates_connect_timeout(15.0)
+        .get_updates_read_timeout(30.0)
+        .build()
+    )
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, process_successful_stars_payment))
     app.add_handler(CommandHandler("start",     start))
