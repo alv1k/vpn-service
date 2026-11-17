@@ -14,7 +14,7 @@ from io import BytesIO
 
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, Response, JSONResponse
+from fastapi.responses import HTMLResponse, Response, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from config import MTPROTO_SERVER, MTPROTO_PORT, MTPROTO_SECRET, TELEGRAM_BOT_TOKEN, ADMIN_TG_ID, PORTAL_BASE_URL, SUB_BASE_URL, AWG_ENDPOINT, AWG_PORT
 # from awg_api.config import SERVER_ENDPOINT as AWG_SERVER_HOST, LISTEN_PORT as AWG_LISTEN_PORT
@@ -309,17 +309,102 @@ TIIN_ROUTING_CONFIG = {
 HAPP_ROUTING_CONFIG = TIIN_ROUTING_CONFIG
 
 
+def _happ_routing_b64() -> str:
+    return base64.b64encode(json_mod.dumps(TIIN_ROUTING_CONFIG, ensure_ascii=False).encode()).decode()
+
+
 def _happ_routing_deeplink() -> str:
-    b64 = base64.b64encode(json_mod.dumps(TIIN_ROUTING_CONFIG, ensure_ascii=False).encode()).decode()
-    return f"happ://routing/add/{b64}"
+    return f"happ://routing/add/{_happ_routing_b64()}"
 
 
 @web_router.get("/happ-routing", response_class=HTMLResponse)
 async def happ_routing_redirect():
-    deeplink = _happ_routing_deeplink()
-    b64 = deeplink.split("happ://routing/onadd/")[1]
+    b64 = _happ_routing_b64()
+    deeplink = f"happ://routing/add/{b64}"
     fallback_link = f"happ://routing/add/{b64}"
-    intent_link = f"intent://routing/onadd/{b64}#Intent;scheme=happ;end"
+    intent_link = f"intent://routing/add/{b64}#Intent;scheme=happ;end"
+    return f"""<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TIIN — Умная маршрутизация</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 40px 20px; background: #0f0d19; color: #f8fafc; }}
+  .card {{ max-width: 460px; margin: 0 auto; background: #1a162b; border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 16px; padding: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }}
+  .title {{ font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 8px; }}
+  .badge {{ display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; background: rgba(168, 85, 247, 0.2); color: #c084fc; margin-bottom: 16px; }}
+  .desc {{ font-size: 14px; color: #94a3b8; line-height: 1.5; margin-bottom: 24px; }}
+  .btn {{ display: block; width: 100%; box-sizing: border-box; padding: 14px 20px; background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%); color: white;
+          border-radius: 12px; text-decoration: none; font-size: 16px; font-weight: 600; margin-bottom: 12px; box-shadow: 0 4px 14px rgba(124, 58, 237, 0.4); }}
+  .btn-alt {{ display: block; width: 100%; box-sizing: border-box; padding: 12px 20px; background: #25203b; color: #cbd5e1; border: 1px solid #3e3859;
+          border-radius: 12px; text-decoration: none; font-size: 14px; font-weight: 500; }}
+  .features {{ text-align: left; margin: 20px 0; padding: 12px 16px; background: rgba(255,255,255,0.03); border-radius: 10px; font-size: 13px; color: #cbd5e1; }}
+  .features li {{ margin-bottom: 6px; }}
+</style>
+</head><body>
+<div class="card">
+  <div class="title">🛡 TIIN · Умная маршрутизация</div>
+  <div class="badge">Для приложения Happ</div>
+  <p class="desc">Правила раздельного туннелирования: российские банки, госуслуги и маркетплейсы работают напрямую на максимальной скорости, а заблокированные ресурсы — через защищённый туннель.</p>
+  
+  <div class="features">
+    <div>✅ Сбербанк, Т-Банк, ВТБ, СБП — напрямую</div>
+    <div>✅ Госуслуги, Налог, ЕМИАС — без ошибок 403</div>
+    <div>✅ Ozon, Wildberries, Авито, Яндекс — на полной скорости</div>
+    <div>✅ YouTube, Instagram, X — через скоростной сервер</div>
+  </div>
+
+  <a class="btn" id="openBtn" href="{deeplink}">📲 Включить правила в Happ</a>
+  <a class="btn-alt" href="{fallback_link}">Резервная ссылка (если не открылось)</a>
+</div>
+
+<script>
+  var dl = "{deeplink}";
+  var intentDl = "{intent_link}";
+  var isAndroid = /android/i.test(navigator.userAgent);
+  if (isAndroid) {{
+    document.getElementById('openBtn').href = intentDl;
+  }}
+  setTimeout(function() {{
+    window.location.href = isAndroid ? intentDl : dl;
+  }}, 400);
+</script>
+</body></html>"""
+
+
+@web_router.get("/download/happ/{platform}")
+async def download_happ_platform(platform: str, request: Request = None):
+    """Прямое скачивание дистрибутивов Happ."""
+    plat = platform.lower()
+    host = request.headers.get("host", "") if request else ""
+    base = "https://ru-server.tiinservice.online" if "ru-server" in host else PORTAL_BASE_URL
+    if plat in ("android", "apk"):
+        return RedirectResponse(f"{base}/apps/Happ.apk")
+    elif plat in ("windows", "exe", "win"):
+        return RedirectResponse(f"{base}/apps/setup-Happ.x64.exe")
+    elif plat in ("macos", "dmg", "mac"):
+        return RedirectResponse(f"{base}/apps/Happ.macOS.universal.dmg")
+    elif plat in ("ios", "apple", "iphone"):
+        return RedirectResponse("https://apps.apple.com/app/happ-proxy-utility/id6504287215")
+    return RedirectResponse(f"{base}/apps/Happ.apk")
+
+
+@web_router.get("/download/happ")
+@web_router.get("/happ")
+async def download_happ_auto(request: Request = None):
+    """Автоопределение устройства и перенаправление на загрузку Happ."""
+    ua = (request.headers.get("user-agent", "") if request else "").lower()
+    host = request.headers.get("host", "") if request else ""
+    base = "https://ru-server.tiinservice.online" if "ru-server" in host else PORTAL_BASE_URL
+    if "android" in ua:
+        return RedirectResponse(f"{base}/apps/Happ.apk")
+    elif any(x in ua for x in ("iphone", "ipad", "ipod")):
+        return RedirectResponse("https://apps.apple.com/app/happ-proxy-utility/id6504287215")
+    elif "windows" in ua:
+        return RedirectResponse(f"{base}/apps/setup-Happ.x64.exe")
+    elif "mac" in ua or "darwin" in ua:
+        return RedirectResponse(f"{base}/apps/Happ.macOS.universal.dmg")
+    return RedirectResponse(f"{base}/apps/Happ.apk")
     return f"""<!DOCTYPE html>
 <html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -766,7 +851,7 @@ const AWG_DOWNLOAD_LINK = {json_mod.dumps(awg_download_link)};
 
 const APPS = {{
     android: [
-        {{ name: 'Happ', desc: '⚡ Простой и быстрый (Рекомендуется)', icon: '⚡', store: 'https://play.google.com/store/apps/details?id=com.happproxy&hl=ru', scheme: 'happ://add/' }},
+        {{ name: 'Happ', desc: '⚡ Простой и быстрый (Рекомендуется)', icon: '⚡', store: 'https://ru-server.tiinservice.online/apps/Happ.apk', storeAlt: 'https://play.google.com/store/apps/details?id=com.happproxy&hl=ru', isDirect: true, scheme: 'happ://add/' }},
         {{ name: 'INCY', desc: '🔮 Умный и быстрый (Новинка)', icon: '🔮', store: 'https://play.google.com/store/apps/details?id=cc.incy.app', scheme: 'incy://import/' }},
         {{ name: 'Hiddify', desc: '🔷 Популярный, много функций', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
         {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://github.com/KaringX/karing/releases', scheme: 'karing://install-config?url=' }},
@@ -774,29 +859,30 @@ const APPS = {{
         {{ name: 'FlClashX', desc: '⚔️ Быстрый Clash Meta / Mihomo', icon: '⚔️', store: 'https://github.com/pluralplay/FlClashX/releases', scheme: 'clash://install-config?url=' }},
     ],
     ios: [
-        {{ name: 'INCY', desc: '🔮 Бесплатно в App Store (Рекомендуется)', icon: '🔮', store: 'https://apps.apple.com/app/incy/id6737525381', scheme: 'incy://import/' }},
-        {{ name: 'Happ', desc: '⚡ Простой и быстрый', icon: '⚡', store: 'https://apps.apple.com/app/happ-proxy-utility/id6504287215', scheme: 'happ://add/' }},
+        {{ name: 'Happ', desc: '⚡ Бесплатно в App Store РФ (Рекомендуется)', icon: '⚡', store: 'https://apps.apple.com/app/happ-proxy-utility/id6504287215', scheme: 'happ://add/' }},
+        {{ name: 'INCY', desc: '🔮 Бесплатно в App Store', icon: '🔮', store: 'https://apps.apple.com/app/incy/id6737525381', scheme: 'incy://import/' }},
         {{ name: 'Karing', desc: '🔵 Бесплатно в App Store (Универсальный)', icon: '🔵', store: 'https://apps.apple.com/app/karing/id6472431552', scheme: 'karing://install-config?url=' }},
         {{ name: 'AmneziaVPN', desc: '🛡 Бесплатно в App Store (Доступен в РФ)', icon: '🛡', store: 'https://apps.apple.com/app/amneziavpn/id1600523882', useAwgLink: true }},
         {{ name: 'Shadowrocket', desc: '🚀 Лучший для iOS (В App Store, 249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},
         {{ name: 'Hiddify', desc: '🔷 Бесплатный (нужен не-RU Apple ID)', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
     ],
     windows: [
-        {{ name: 'Happ', desc: '⚡ Простой и быстрый', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
+        {{ name: 'Happ', desc: '⚡ Простой и быстрый (Рекомендуется)', icon: '⚡', store: 'https://ru-server.tiinservice.online/apps/setup-Happ.x64.exe', storeAlt: 'https://happproxy.com', isDirect: true, scheme: 'happ://add/' }},
         {{ name: 'FlClashX', desc: '⚔️ Мощный клиент Clash Meta', icon: '⚔️', store: 'https://github.com/pluralplay/FlClashX/releases', scheme: 'clash://install-config?url=' }},
         {{ name: 'INCY', desc: '🔮 Удобный и стильный', icon: '🔮', store: 'https://github.com/INCY-DEV/incy-platforms/releases', scheme: 'incy://import/' }},
         {{ name: 'Hiddify', desc: '🔷 Для Windows и macOS', icon: '🔷', store: 'https://github.com/hiddify/hiddify-app/releases', scheme: 'hiddify://import/' }},
         {{ name: 'Karing', desc: '🔵 Современный и удобный', icon: '🔵', store: 'https://github.com/KaringX/karing/releases', scheme: 'karing://install-config?url=' }},
     ],
     macos: [
+        {{ name: 'Happ', desc: '⚡ Для macOS (Рекомендуется)', icon: '⚡', store: 'https://ru-server.tiinservice.online/apps/Happ.macOS.universal.dmg', storeAlt: 'https://happproxy.com', isDirect: true, scheme: 'happ://add/' }},
         {{ name: 'INCY', desc: '🔮 Бесплатно в App Store', icon: '🔮', store: 'https://apps.apple.com/app/incy/id6737525381', scheme: 'incy://import/' }},
-        {{ name: 'Happ', desc: '⚡ Скачать с сайта', icon: '⚡', store: 'https://happproxy.com', scheme: 'happ://add/' }},
         {{ name: 'FlClashX', desc: '⚔️ Для macOS (Mihomo)', icon: '⚔️', store: 'https://github.com/pluralplay/FlClashX/releases', scheme: 'clash://install-config?url=' }},
         {{ name: 'Hiddify', desc: '🔷 Бесплатно в App Store', icon: '🔷', store: 'https://apps.apple.com/app/hiddify-proxy-vpn/id6596777532', scheme: 'hiddify://import/' }},
         {{ name: 'Karing', desc: '🔵 Бесплатно в App Store', icon: '🔵', store: 'https://apps.apple.com/app/karing/id6472431552', scheme: 'karing://install-config?url=' }},
         {{ name: 'Shadowrocket', desc: '🚀 Популярный, App Store (249₽)', icon: '🚀', store: 'https://apps.apple.com/app/shadowrocket/id932747118', scheme: 'shadowrocket://add/sub://' }},
     ],
     tv: [
+        {{ name: 'Happ', desc: '⚡ Прямой APK для Android TV / приставок', icon: '⚡', store: 'https://ru-server.tiinservice.online/apps/Happ.apk', isDirect: true, scheme: 'happ://add/' }},
         {{ name: 'VPN4TV', desc: '📺 Для Android TV', icon: '📺', store: 'https://play.google.com/store/apps/details?id=com.vpn4tv.hiddify', scheme: 'hiddify://import/' }},
         {{ name: 'Hiddify', desc: '🔷 Универсальный', icon: '🔷', store: 'https://play.google.com/store/apps/details?id=app.hiddify.com', scheme: 'hiddify://import/' }},
         {{ name: 'Karing', desc: '🔵 Для Android TV / приставок', icon: '🔵', store: 'https://github.com/KaringX/karing/releases', scheme: 'karing://install-config?url=' }},
@@ -847,7 +933,29 @@ function selectDevice(device) {{
 function selectApp(index) {{
     selectedApp = APPS[selectedDevice][index];
     document.getElementById('chosenAppName').textContent = selectedApp.name;
-    document.getElementById('downloadLink').href = selectedApp.store;
+    var dl = document.getElementById('downloadLink');
+    dl.href = selectedApp.store;
+    if (selectedApp.isDirect) {{
+        dl.textContent = '📥 Скачать напрямую (Зеркало TIIN, без блокировок)';
+        dl.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+        dl.style.color = '#fff';
+    }} else {{
+        dl.textContent = 'Скачать приложение';
+        dl.style.background = '';
+        dl.style.color = '';
+    }}
+
+    var altBox = document.getElementById('downloadAltBox');
+    if (altBox) {{
+        if (selectedApp.storeAlt) {{
+            altBox.style.display = 'block';
+            var altLink = document.getElementById('downloadAltLink');
+            altLink.href = selectedApp.storeAlt;
+            altLink.textContent = (selectedDevice === 'android') ? '🌐 Или открыть страницу в Google Play' : '🌐 Или скачать с сайта happproxy.com';
+        }} else {{
+            altBox.style.display = 'none';
+        }}
+    }}
 
     var vlessExtras = document.getElementById('vlessExtras');
     var awgExtras = document.getElementById('awgExtras');
@@ -1214,6 +1322,9 @@ def _render_wizard(sub_url, happ_routing_link="", awg_link="", awg_download_link
 
     <p class="note">1. Скачайте <b><span id="chosenAppName"></span></b> если ещё не установлено:</p>
     <a id="downloadLink" href="#" target="_blank" class="connect-btn secondary">Скачать приложение</a>
+    <div id="downloadAltBox" style="display:none; text-align:center; margin-top:8px;">
+        <a id="downloadAltLink" href="#" target="_blank" style="color:#94a3b8; font-size:0.8rem; text-decoration:underline;"></a>
+    </div>
 
     <p class="note" style="margin-top:1.2rem">2. Нажмите для автоматической настройки:</p>
     <a id="autoConnectBtn" href="#" class="connect-btn primary">Подключить VPN</a>

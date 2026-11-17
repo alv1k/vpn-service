@@ -1060,7 +1060,7 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
     happ_routing_btn = f'''
     <a class="btn" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white;" id="btn-happ-routing" data-app="Happ Routing" href="{routing_link}">
       <span>🔀</span> Включить обход РФ в Happ (Госуслуги напрямую)
-    </a>''' if is_admin else ""
+    </a>'''
 
     import json as json_mod
 
@@ -1292,6 +1292,22 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
     <a class="btn btn-secondary" id="btn-streisand" data-app="Streisand" href="{streisand_link}">
       <span>🛡️</span> Открыть в Streisand
     </a>
+  </div>
+
+  <div style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 16px; padding: 14px 16px; margin: 16px 0; text-align: left;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 6px;">
+      <span style="font-size: 13px; font-weight: 700; color: #fff;">📥 Ещё не установили Happ?</span>
+      <span style="font-size: 10px; background: #10b981; color: #fff; padding: 2px 8px; border-radius: 10px; font-weight: 600;">Зеркало TIIN</span>
+    </div>
+    <p style="font-size: 11px; color: #94a3b8; line-height: 1.4; margin-bottom: 10px;">
+      Скачайте клиент напрямую с нашего скоростного сервера в РФ без блокировок и без Google Play:
+    </p>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+      <a href="https://ru-server.tiinservice.online/apps/Happ.apk" style="display:flex; align-items:center; justify-content:center; gap:6px; padding:8px 10px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:10px; font-size:12px; font-weight:600; color:#e2e8f0; text-decoration:none;">🤖 Android (APK)</a>
+      <a href="https://apps.apple.com/app/happ-proxy-utility/id6504287215" target="_blank" style="display:flex; align-items:center; justify-content:center; gap:6px; padding:8px 10px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:10px; font-size:12px; font-weight:600; color:#e2e8f0; text-decoration:none;">🍏 iOS (App Store)</a>
+      <a href="https://ru-server.tiinservice.online/apps/setup-Happ.x64.exe" style="display:flex; align-items:center; justify-content:center; gap:6px; padding:8px 10px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:10px; font-size:12px; font-weight:600; color:#e2e8f0; text-decoration:none;">💻 Windows (.exe)</a>
+      <a href="https://ru-server.tiinservice.online/apps/Happ.macOS.universal.dmg" style="display:flex; align-items:center; justify-content:center; gap:6px; padding:8px 10px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:10px; font-size:12px; font-weight:600; color:#e2e8f0; text-decoration:none;">🖥 macOS (.dmg)</a>
+    </div>
   </div>
 
   <div class="divider"><span>или скопируйте ссылку</span></div>
