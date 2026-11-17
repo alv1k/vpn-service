@@ -1535,8 +1535,11 @@ async def proxy_subscription(token: str, request: Request = None):
 
     _check_retry_burst(f"{token}_{client_ip}", client_ip, ua, user.get("tg_id"))
 
+    req_host = (request.headers.get("host") or "").lower() if request else ""
+    is_internal = client_ip in ("127.0.0.1", "::1", "localhost", "testclient") or (req_host and "127.0.0.1" in req_host)
+
     platform, app, ver = detect_platform(ua)
-    if platform != 'unknown' or app:
+    if not is_internal and (platform != 'unknown' or app):
         log_user_platform(
             tg_id=user.get("tg_id"), user_id=user.get("id"),
             platform=platform, client_app=app, client_version=ver,
@@ -1545,18 +1548,18 @@ async def proxy_subscription(token: str, request: Request = None):
         )
 
     # Логируем фактический импорт подписки клиентом (различаем шлюз Selectel SPB и Германию)
-    req_host = (request.headers.get("host") or "").lower() if request else ""
     fetch_method = "ru" if "ru-server" in req_host else "de"
     user_token = (user.get("web_token") if user and user.get("web_token") else token) or ""
-    _log_webpage_event(
-        web_token=user_token,
-        event_type="sub_import_fetch",
-        element_id=fetch_method,
-        element_text=req_host or "344988.snk.wtf",
-        extra_data={"method": fetch_method, "host": req_host, "client_app": app or "unknown"},
-        ip=client_ip if client_ip != "unknown" else None,
-        user_agent=ua,
-    )
+    if not is_internal:
+        _log_webpage_event(
+            web_token=user_token,
+            event_type="sub_import_fetch",
+            element_id=fetch_method,
+            element_text=req_host or "344988.snk.wtf",
+            extra_data={"method": fetch_method, "host": req_host, "client_app": app or "unknown"},
+            ip=client_ip if client_ip != "unknown" else None,
+            user_agent=ua,
+        )
 
     xui_url = key["subscription_link"]
     expires_at = key.get("expires_at")
