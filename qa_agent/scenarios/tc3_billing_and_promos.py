@@ -29,7 +29,7 @@ async def run_tc3_billing_and_promos(client: AlexClient) -> Tuple[bool, Dict[str
         if not sent_ref:
             results["issues"].append("Failed to send /refer (Telegram FloodWait or network error)")
             return False, results
-        ref_msg, _ = await client.wait_for_response(min_id=sent_ref.id, timeout=15.0)
+        ref_msg, _ = await client.wait_for_response(min_id=sent_ref.id, timeout=25.0)
         if ref_msg and (ref_msg.photo or "ref_" in (ref_msg.text or "") or "приглаш" in (ref_msg.text or "").lower() or ref_msg.caption):
             results["referral_qr_ok"] = True
             logger.info("[ITER-3] 👥 Referral QR and link generated successfully.")

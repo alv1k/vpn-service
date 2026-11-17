@@ -44,12 +44,22 @@ def _log_webpage_event(web_token: str, event_type: str, element_id: str | None =
     user = get_user_by_web_token(web_token)
     user_id = user.get("id") if user else None
     tg_id = user.get("tg_id") if user else None
+    token_to_log = (user.get("web_token") if user and user.get("web_token") else web_token) or ""
     try:
         execute_query(
             "INSERT INTO webpage_events (web_token, user_id, tg_id, event_type, element_id, element_text, extra_data, ip, user_agent) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (web_token, user_id, tg_id, event_type, element_id, element_text,
-             json_mod.dumps(extra_data) if extra_data else None, ip, user_agent[:512] if user_agent else None),
+            (
+                str(token_to_log)[:64],
+                user_id,
+                tg_id,
+                str(event_type or "")[:50],
+                str(element_id)[:100] if element_id is not None else None,
+                str(element_text)[:255] if element_text is not None else None,
+                json_mod.dumps(extra_data) if extra_data else None,
+                str(ip)[:45] if ip else None,
+                str(user_agent)[:512] if user_agent else None
+            ),
         )
     except Exception as e:
         logger.warning(f"Failed to log webpage event: {e}")

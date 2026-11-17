@@ -46,19 +46,33 @@ async def log_and_reply_text(update_or_query, text: str, scenario: str = "bot",
 
 async def log_and_reply_photo(update_or_query, photo, caption: str = None, scenario: str = "bot",
                                reply_markup=None, parse_mode: str = "HTML", **kwargs):
-    """Reply with photo and log to database."""
-    if hasattr(update_or_query, 'message') and update_or_query.message:
-        result = await update_or_query.message.reply_photo(photo, caption=caption,
+    """Reply with photo and log to database. Falls back to text on NetworkError/Timeout."""
+    try:
+        if hasattr(update_or_query, 'message') and update_or_query.message:
+            result = await update_or_query.message.reply_photo(photo, caption=caption,
+                                                               reply_markup=reply_markup,
+                                                               parse_mode=parse_mode, **kwargs)
+        elif hasattr(update_or_query, 'chat'):
+            result = await update_or_query.chat.send_photo(photo, caption=caption,
                                                            reply_markup=reply_markup,
                                                            parse_mode=parse_mode, **kwargs)
-    elif hasattr(update_or_query, 'chat'):
-        result = await update_or_query.chat.send_photo(photo, caption=caption,
+        else:
+            result = await update_or_query.reply_photo(photo, caption=caption,
                                                        reply_markup=reply_markup,
                                                        parse_mode=parse_mode, **kwargs)
-    else:
-        result = await update_or_query.reply_photo(photo, caption=caption,
-                                                   reply_markup=reply_markup,
-                                                   parse_mode=parse_mode, **kwargs)
+    except Exception as e:
+        logger.warning(f"log_and_reply_photo: photo send failed ({e}), falling back to text")
+        fallback_text = caption or "Фотография недоступна."
+        if hasattr(update_or_query, 'message') and update_or_query.message:
+            result = await update_or_query.message.reply_text(fallback_text, reply_markup=reply_markup,
+                                                              parse_mode=parse_mode)
+        elif hasattr(update_or_query, 'chat'):
+            result = await update_or_query.chat.send_message(fallback_text, reply_markup=reply_markup,
+                                                             parse_mode=parse_mode)
+        else:
+            result = await update_or_query.reply_text(fallback_text, reply_markup=reply_markup,
+                                                      parse_mode=parse_mode)
+
     tg_id = _get_tg_id(update_or_query)
     if tg_id:
         await _log_message(tg_id, "bot", scenario, caption or "")
@@ -379,9 +393,16 @@ async def reply_text_logged(chat, text: str, scenario: str, reply_markup=None,
 
 async def reply_photo_logged(chat, photo, scenario: str, caption: str = None,
                               reply_markup=None, parse_mode: str = "HTML", **kwargs):
-    """chat.send_photo + log to message_log."""
-    result = await chat.send_photo(photo, caption=caption, reply_markup=reply_markup,
-                                   parse_mode=parse_mode, **kwargs)
+    """chat.send_photo + log to message_log. Falls back to text on NetworkError/Timeout."""
+    try:
+        result = await chat.send_photo(photo, caption=caption, reply_markup=reply_markup,
+                                       parse_mode=parse_mode, **kwargs)
+    except Exception as e:
+        logger.warning(f"reply_photo_logged: photo send failed ({e}), falling back to text")
+        fallback_text = caption or "Изображение недоступно."
+        result = await chat.send_message(fallback_text, reply_markup=reply_markup,
+                                         parse_mode=parse_mode)
+
     tg_id = chat.id if hasattr(chat, 'id') else None
     if tg_id:
         log_text = caption or "sent photo"

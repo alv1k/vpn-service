@@ -1547,8 +1547,9 @@ async def proxy_subscription(token: str, request: Request = None):
     # Логируем фактический импорт подписки клиентом (различаем шлюз Selectel SPB и Германию)
     req_host = (request.headers.get("host") or "").lower() if request else ""
     fetch_method = "ru" if "ru-server" in req_host else "de"
+    user_token = (user.get("web_token") if user and user.get("web_token") else token) or ""
     _log_webpage_event(
-        web_token=token,
+        web_token=user_token,
         event_type="sub_import_fetch",
         element_id=fetch_method,
         element_text=req_host or "344988.snk.wtf",
@@ -1658,10 +1659,28 @@ async def proxy_subscription(token: str, request: Request = None):
                 else:
                     base_link = f"{base_link}&sni={active_sni}"
                 remark = "🇩🇪 👁️ Reality • Vision (МТС / РТК)"
+
+                # Параллельно добавляем скрытный IPv6 Self-SNI узел на 443 порту
+                import re
+                ipv6_link = re.sub(r'@[^:]+:7443', '@szm6.tiinservice.online:443', base_link)
+                ipv6_link = re.sub(r'sni=[^&]+', 'sni=szm6.tiinservice.online', ipv6_link)
+                ipv6_remark = "🇩🇪 🚀 Reality • IPv6 (МТС / РТК)"
+                if ipv6_remark not in seen_remarks and ipv6_link not in seen_links:
+                    seen_remarks.add(ipv6_remark)
+                    seen_links.add(ipv6_link)
+                    vless_entries.append((ipv6_link, ipv6_remark))
             elif line.startswith("hysteria2://") or line.startswith("hysteria://"):
                 if ":35443" in line:
                     remark = "🇩🇪 ⚔️ Hysteria2 • Armor-M1"
                 elif ":4443" in line:
+                    import re
+                    if "sni=" in base_link:
+                        base_link = re.sub(r'sni=[^&]+', 'sni=duda-tasks.tiinservice.online', base_link)
+                    else:
+                        base_link = f"{base_link}&sni=duda-tasks.tiinservice.online"
+                    # Подменяем адрес подключения на прямой серверный IP 91.132.161.112:4443,
+                    # чтобы UDP 4443 трафик не уходил на Cloudflare CDN (который не пропускает произвольный UDP)
+                    base_link = re.sub(r'@[^:]+:4443', '@91.132.161.112:4443', base_link)
                     remark = "🇩🇪 🚀 Hysteria2 • Turbo (Быстрый)"
                 else:
                     remark = "🇩🇪 🚀 Hysteria2"
@@ -1742,9 +1761,10 @@ async def proxy_subscription(token: str, request: Request = None):
         def _server_sort_key(entry):
             _, remark = entry
             if "Hysteria2 • Turbo" in remark: return 1
-            if "TUIC" in remark: return 2
-            if "Reality • Vision" in remark: return 3
-            if "Reality • gRPC" in remark or "gRPC" in remark: return 4
+            if "Reality • Vision" in remark: return 2
+            if "Reality • IPv6" in remark: return 3
+            if "TUIC" in remark: return 4
+            if "Reality • gRPC" in remark or "gRPC" in remark: return 5
             if "xHTTP • Armor" in remark: return 5
             if "xHTTP • Stream" in remark: return 6
             if "Reality • Standard" in remark: return 7

@@ -112,13 +112,60 @@ def get_or_create_3xui_awg_client(tg_id: int, expiry_ms: int = 0, client_name: s
             if str(cl.get("tgId")) == str(tg_id) or cl.get("email") == email:
                 existing_client = cl
 
+        now_ms = int(time.time() * 1000)
+
         if existing_client:
             # Обновляем срок действия, если передан
             if expiry_ms > 0:
                 existing_client["expiryTime"] = expiry_ms
                 existing_client["enable"] = True
                 c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), AWG_INBOUND_ID))
-                conn.commit()
+
+            # Синхронизируем с таблицей clients и client_inbounds (3x-ui v3 requirement)
+            c.execute("SELECT id, wg_private_key, wg_public_key, wg_allowed_ips FROM clients WHERE email = ?", (email,))
+            crow = c.fetchone()
+            if crow:
+                cid, cur_priv, cur_pub, cur_ips = crow
+                upd_fields = ["enable = 1", "updated_at = ?"]
+                params = [now_ms]
+                if expiry_ms > 0:
+                    upd_fields.append("expiry_time = ?")
+                    params.append(expiry_ms)
+                if not cur_priv and existing_client.get("privateKey"):
+                    upd_fields.append("wg_private_key = ?")
+                    params.append(existing_client.get("privateKey"))
+                if not cur_pub and existing_client.get("publicKey"):
+                    upd_fields.append("wg_public_key = ?")
+                    params.append(existing_client.get("publicKey"))
+                if not cur_ips and existing_client.get("allowedIPs"):
+                    upd_fields.append("wg_allowed_ips = ?")
+                    params.append(existing_client.get("allowedIPs")[0])
+                params.append(cid)
+                c.execute(f"UPDATE clients SET {', '.join(upd_fields)} WHERE id = ?", tuple(params))
+                client_db_id = cid
+            else:
+                client_uuid = existing_client.get("id") or str(uuid.uuid4())
+                c.execute(
+                    """INSERT INTO clients (
+                        email, sub_id, uuid, password, auth, flow, limit_ip, total_gb,
+                        expiry_time, enable, tg_id, comment, reset, created_at, updated_at,
+                        wg_private_key, wg_public_key, wg_allowed_ips
+                    ) VALUES (?, ?, ?, ?, ?, '', 0, 0, ?, 1, ?, '', 0, ?, ?, ?, ?, ?)""",
+                    (
+                        email, str(uuid.uuid4()), client_uuid, client_uuid, client_uuid,
+                        expiry_ms or existing_client.get("expiryTime", 0), tg_id, now_ms, now_ms,
+                        existing_client.get("privateKey", ""), existing_client.get("publicKey", ""),
+                        existing_client.get("allowedIPs", [""])[0]
+                    )
+                )
+                client_db_id = c.lastrowid
+
+            c.execute(
+                "INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id, flow_override, created_at) VALUES (?, ?, '', ?)",
+                (client_db_id, AWG_INBOUND_ID, now_ms)
+            )
+
+            conn.commit()
 
             conf_text = build_awg_conf(existing_client, server, port)
             return {
@@ -143,7 +190,6 @@ def get_or_create_3xui_awg_client(tg_id: int, expiry_ms: int = 0, client_name: s
 
         priv_b64, pub_b64 = generate_keypair()
         client_uuid = str(uuid.uuid4())
-        now_ms = int(time.time() * 1000)
 
         new_client = {
             "id": client_uuid,
@@ -173,6 +219,38 @@ def get_or_create_3xui_awg_client(tg_id: int, expiry_ms: int = 0, client_name: s
                 "VALUES (?, 1, ?, 0, 0, ?, 0, 0)",
                 (AWG_INBOUND_ID, email, expiry_ms)
             )
+
+        # Синхронизируем с таблицей clients и client_inbounds (3x-ui v3 requirement)
+        c.execute("SELECT id FROM clients WHERE email = ?", (email,))
+        crow = c.fetchone()
+        if crow:
+            client_db_id = crow[0]
+            c.execute(
+                """UPDATE clients SET
+                    wg_private_key = ?, wg_public_key = ?, wg_allowed_ips = ?,
+                    enable = 1, expiry_time = ?, updated_at = ?
+                WHERE id = ?""",
+                (priv_b64, pub_b64, new_ip, expiry_ms, now_ms, client_db_id)
+            )
+        else:
+            c.execute(
+                """INSERT INTO clients (
+                    email, sub_id, uuid, password, auth, flow, limit_ip, total_gb,
+                    expiry_time, enable, tg_id, comment, reset, created_at, updated_at,
+                    wg_private_key, wg_public_key, wg_allowed_ips
+                ) VALUES (?, ?, ?, ?, ?, '', 0, 0, ?, 1, ?, '', 0, ?, ?, ?, ?, ?)""",
+                (
+                    email, str(uuid.uuid4()), client_uuid, client_uuid, client_uuid,
+                    expiry_ms, tg_id, now_ms, now_ms,
+                    priv_b64, pub_b64, new_ip
+                )
+            )
+            client_db_id = c.lastrowid
+
+        c.execute(
+            "INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id, flow_override, created_at) VALUES (?, ?, '', ?)",
+            (client_db_id, AWG_INBOUND_ID, now_ms)
+        )
 
         conn.commit()
 
