@@ -1390,24 +1390,51 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "info_apps":
         text = (
             "📱 <b>Приложения для всех платформ (РФ)</b>\n\n"
+            "⚡ <b>Основное рекомендуемое приложение: Happ Proxy</b>\n"
+            "<i>(Импорт в 1 клик, автонастройка обхода блокировок РФ, банки и Госуслуги работают напрямую)</i>\n\n"
             "<b>🍏 iOS (iPhone / iPad):</b>\n"
-            "• <b>Happ Proxy</b> — доступен в RU App Store\n"
-            "• <b>Karing</b> — доступен в RU App Store\n"
+            "• <b>Happ Proxy</b> — доступен в РФ App Store (Рекомендуется)\n"
+            "• <b>Karing</b> — доступен в РФ App Store\n"
             "• <b>Shadowrocket / Streisand</b> — через не-RU Apple ID\n\n"
             "<b>🤖 Android:</b>\n"
-            "• <b>Happ Proxy</b> — в Google Play / APK\n"
-            "• <b>v2rayNG / NekoBox</b> — прямой APK (без Google Play)\n"
+            "• <b>Happ Proxy</b> — прямой APK с зеркала TIIN / Google Play (Рекомендуется)\n"
+            "• <b>v2rayNG / NekoBox</b> — альтернативный APK\n"
             "• <b>AmneziaWG</b> — RuStore / прямой APK\n\n"
-            "<b>📺 Android TV / Smart TV:</b>\n"
-            "• <b>v2rayNG (TV mode)</b> — удобное управление с пульта (ставится через Downloader / флешку)\n\n"
             "<b>💻 Windows / macOS:</b>\n"
-            "• <b>Hiddify / NekoRay / v2rayN / AmneziaVPN</b> — прямые инсталляторы (.exe / .dmg)\n\n"
-            "💡 <i>Все ссылки и быстрая настройка доступны в разделе «🔑 Мои конфиги» ➔ Личный кабинет.</i>"
+            "• <b>Happ Proxy</b> — прямые установщики (.exe / .dmg) с зеркала TIIN (Рекомендуется)\n"
+            "• <b>Hiddify / v2rayN / AmneziaVPN</b> — альтернативные клиенты\n\n"
+            "<b>📺 Android TV / Smart TV:</b>\n"
+            "• <b>Happ Proxy / v2rayNG</b> — прямой APK для пульта и флешки\n\n"
+            "💡 <i>Нажмите «📥 Скачать Happ» ниже для быстрой загрузки без блокировок.</i>"
         )
         await safe_edit_text_logged(query, text, "info_apps",
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Скачать Happ (Зеркало TIIN)", callback_data="download_happ")],
                 [InlineKeyboardButton("❓ Частые вопросы", callback_data="info_faq")],
                 [InlineKeyboardButton("◀️ Назад в информацию", callback_data="info_menu")],
+            ]),
+        )
+
+    elif data == "download_happ":
+        text = (
+            "📥 <b>Скачать Happ Proxy (Прямое зеркало TIIN)</b>\n\n"
+            "Если у вас не открывается официальный сайт или GitHub, скачайте установщик напрямую с нашего выделенного сервера в Санкт-Петербурге (Selectel) на максимальной скорости:\n\n"
+            "🤖 <b>Android:</b>\n"
+            "• <a href=\"https://ru-server.tiinservice.online/apps/Happ.apk\">Скачать прямой Happ.apk</a> <i>(без Google Play)</i>\n"
+            "• <a href=\"https://play.google.com/store/apps/details?id=com.happproxy&hl=ru\">Открыть в Google Play</a>\n\n"
+            "🍏 <b>iPhone / iPad (iOS):</b>\n"
+            "• <a href=\"https://apps.apple.com/app/happ-proxy-utility/id6504287215\">Установить из App Store РФ</a> <i>(без смены региона)</i>\n\n"
+            "💻 <b>Windows:</b>\n"
+            "• <a href=\"https://ru-server.tiinservice.online/apps/setup-Happ.x64.exe\">Скачать установщик Windows (.exe)</a>\n\n"
+            "🖥 <b>macOS:</b>\n"
+            "• <a href=\"https://ru-server.tiinservice.online/apps/Happ.macOS.universal.dmg\">Скачать образ macOS (.dmg)</a>\n\n"
+            "💡 <i>После установки вернитесь в бот («🔑 Мои конфиги») и нажмите «⚡ Подключить в 1 клик».</i>"
+        )
+        await safe_edit_text_logged(query, text, "download_happ",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔀 Настройка обхода РФ в Happ", callback_data="split_tunneling")],
+                [InlineKeyboardButton("🔑 Мои конфиги", callback_data="my_configs")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="info_apps")],
             ]),
         )
 

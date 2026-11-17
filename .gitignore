@@ -83,6 +83,8 @@ data/*.lock
 data/yt_nl_proxy_state
 data/active_sni.json
 data/ruleset/
+data/happ_versions.json
+static/apps/
 
 # Temporary, orig & MCP ignores
 .socraticodeignore

@@ -557,7 +557,10 @@ async def show_single_config(query, client_name: str, xui):
         keyboard.append([InlineKeyboardButton("⚡ Подключить в 1 клик", url=f"{WEB_BASE_URL}/go-connect/{web_token}")])
         keyboard.append([InlineKeyboardButton("🔗 Ссылки подписки (2 способа)", callback_data=f"sub_links_{web_token}")])
         keyboard.append([InlineKeyboardButton("👤 Личный кабинет и инструкции", url=f"{WEB_BASE_URL}/my/{web_token}")])
-    keyboard.append([InlineKeyboardButton("🔀 Split tunneling (Happ)", callback_data="split_tunneling")])
+    keyboard.append([
+        InlineKeyboardButton("📥 Скачать Happ", callback_data="download_happ"),
+        InlineKeyboardButton("🔀 Обход РФ в Happ", callback_data="split_tunneling"),
+    ])
     if is_test_tariff:
         keyboard.append([InlineKeyboardButton("⚡️ Безлимит трафик — от 199 ₽", callback_data="tariffs")])
     keyboard.append([InlineKeyboardButton("🔙 К списку", callback_data="my_configs")])
