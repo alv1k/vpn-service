@@ -41,6 +41,10 @@ class WebEventRequest(BaseModel):
 def _log_webpage_event(web_token: str, event_type: str, element_id: str | None = None,
                        element_text: str | None = None, extra_data: dict | None = None,
                        ip: str | None = None, user_agent: str | None = None):
+    # Игнорируем внутренние системные вызовы / проверки localhost и healthcheck
+    if ip in ("127.0.0.1", "::1", "localhost", "testclient") or (element_text and "127.0.0.1" in str(element_text)):
+        return
+
     user = get_user_by_web_token(web_token)
     user_id = user.get("id") if user else None
     tg_id = user.get("tg_id") if user else None
