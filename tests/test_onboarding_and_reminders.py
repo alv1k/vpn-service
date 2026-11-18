@@ -48,7 +48,7 @@ class TestOneClickConnecting:
         html = resp.text
         
         # Check title & headings
-        assert "Подключение • тииҥ VPN" in html
+        assert "Подключение к тииҥ VPN" in html
         assert "Быстрый старт в 1 клик" in html
         
         # Check platform deep links with proxy subscription link (from cabinet)

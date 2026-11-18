@@ -529,7 +529,7 @@ class SwitchTracker:
 
     def process_blocked_event(self, timestamp_str: str, client_ip: str, target: str, email: str):
         """Threat Sentinel: фиксация попыток зондирования / атак и алерт в Telegram при превышении порога."""
-        if not email or email in ("api", "none", "bwd2scof", "test_awg_user_01", "test_awg_user") or client_ip in ("127.0.0.1", "::1"):
+        if not email or email in ("api", "none", "bwd2scof", "test_awg_user_01", "test_awg_user", "tiin_tg_rescue") or client_ip in ("127.0.0.1", "::1"):
             return
 
         # Игнорируем домашние и приватные LAN-адреса (192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12),
@@ -539,6 +539,10 @@ class SwitchTracker:
 
         # Игнорируем легитимный QUIC/HTTP-3 (udp:*:443), намеренно сбрасываемый Xray в blocked для мгновенного TCP-фоллбэка
         if target.startswith("udp:") and target.endswith(":443"):
+            return
+
+        # Игнорируем стандартный DNS (порт 53), чтобы клиентские DNS-запросы не считались сканированием
+        if target.endswith(":53"):
             return
 
         now = time.time()
