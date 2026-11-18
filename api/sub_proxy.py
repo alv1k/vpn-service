@@ -72,23 +72,15 @@ from pathlib import Path
 
 
 def _get_active_sni(inbound_key: str = "1") -> str:
-    """Возвращает текущий активный и проверенный SNI для конкретного инбаунда."""
+    """Возвращает текущий активный и проверенный self-hosted SNI для конкретного инбаунда."""
     defaults = {
-        "1": "tile.openstreetmap.org",
-        "2": "www.speedtest.net",
-        "10": "www.amazon.com",
-        "14": "www.speedtest.net",
-        "15": "swscan.apple.com",
+        "1": "de-gateway.tiinservice.online",
+        "2": "mr-empeche.tiinservice.online",
+        "10": "de-gateway.tiinservice.online",
+        "14": "mr-empeche.tiinservice.online",
+        "15": "mr-empeche.tiinservice.online",
     }
-    try:
-        state_file = Path(__file__).resolve().parent.parent / "data" / "active_sni.json"
-        if state_file.exists():
-            with open(state_file, "r", encoding="utf-8") as sf:
-                data = json.load(sf)
-                return data.get(f"active_sni_{inbound_key}") or defaults.get(inbound_key, "tile.openstreetmap.org")
-    except Exception:
-        pass
-    return defaults.get(inbound_key, "tile.openstreetmap.org")
+    return defaults.get(inbound_key, "de-gateway.tiinservice.online")
 
 
 def _get_active_reality_sni() -> str:
@@ -1714,17 +1706,17 @@ async def proxy_subscription(token: str, request: Request = None):
                 continue  # xHTTP • Ultra (дублирует и сбоит на МТС/Мегафон)
 
             if ":7443" in line:
-                active_sni = _get_active_reality_sni()
+                import re
+                # Переводим Reality Vision на 100% self-hosted de-gateway.tiinservice.online и стандартный порт 443
+                base_link = re.sub(r'@[^:]+:7443', '@de-gateway.tiinservice.online:443', base_link)
                 if "sni=" in base_link:
-                    import re
-                    base_link = re.sub(r'sni=[^&]+', f'sni={active_sni}', base_link)
+                    base_link = re.sub(r'sni=[^&]+', 'sni=de-gateway.tiinservice.online', base_link)
                 else:
-                    base_link = f"{base_link}&sni={active_sni}"
+                    base_link = f"{base_link}&sni=de-gateway.tiinservice.online"
                 remark = "🇩🇪 👁️ Reality • Vision (МТС / РТК)"
 
                 # Параллельно добавляем скрытный IPv6 Self-SNI узел на 443 порту
-                import re
-                ipv6_link = re.sub(r'@[^:]+:7443', '@szm6.tiinservice.online:443', base_link)
+                ipv6_link = re.sub(r'@[^:]+:443', '@szm6.tiinservice.online:443', base_link)
                 ipv6_link = re.sub(r'sni=[^&]+', 'sni=szm6.tiinservice.online', ipv6_link)
                 ipv6_remark = "🇩🇪 🚀 Reality • IPv6 (МТС / РТК)"
                 if ipv6_remark not in seen_remarks and ipv6_link not in seen_links:
@@ -1736,13 +1728,12 @@ async def proxy_subscription(token: str, request: Request = None):
                     remark = "🇩🇪 ⚔️ Hysteria2 • Armor-M1"
                 elif ":4443" in line:
                     import re
+                    # Переводим Hysteria 2 Turbo на self-hosted de-gateway.tiinservice.online и стандартный alt-HTTPS порт 8443 (Nginx UDP)
+                    base_link = re.sub(r'@[^:]+:4443', '@de-gateway.tiinservice.online:8443', base_link)
                     if "sni=" in base_link:
-                        base_link = re.sub(r'sni=[^&]+', 'sni=duda-tasks.tiinservice.online', base_link)
+                        base_link = re.sub(r'sni=[^&]+', 'sni=de-gateway.tiinservice.online', base_link)
                     else:
-                        base_link = f"{base_link}&sni=duda-tasks.tiinservice.online"
-                    # Подменяем адрес подключения на прямой серверный IP 91.132.161.112:4443,
-                    # чтобы UDP 4443 трафик не уходил на Cloudflare CDN (который не пропускает произвольный UDP)
-                    base_link = re.sub(r'@[^:]+:4443', '@91.132.161.112:4443', base_link)
+                        base_link = f"{base_link}&sni=de-gateway.tiinservice.online"
                     remark = "🇩🇪 🚀 Hysteria2 • Turbo (Быстрый)"
                 else:
                     remark = "🇩🇪 🚀 Hysteria2"
@@ -1891,13 +1882,19 @@ async def proxy_subscription(token: str, request: Request = None):
             # 2. DE xHTTP на 443 порту (стойкий прямой TCP)
             # 3. DE IPv6 на szm6 (прямой выход по IPv6)
             filtered_entries = []
+            has_ru_hy2 = False
+            has_de_xhttp = False
+            has_de_reality = False
             for link, remark in vless_entries:
-                if "ru-server" in link and ("hysteria2" in link or "35443" in link):
+                if not has_ru_hy2 and "ru-server" in link and ("hysteria2" in link or "35443" in link):
                     filtered_entries.append((link, "🇷🇺 ⚡ Hysteria2"))
-                elif "xhttp" in link.lower() and ("mr-empeche" in link or ":443" in link or ":47447" in link):
+                    has_ru_hy2 = True
+                elif not has_de_xhttp and "xhttp" in link.lower() and ("mr-empeche" in link or ":443" in link or ":47447" in link):
                     filtered_entries.append((link, "🇩🇪 🛡️ xHTTP"))
-                elif "szm6.tiinservice.online" in link or "IPv6" in remark:
+                    has_de_xhttp = True
+                elif not has_de_reality and link.startswith("vless://") and ("de-gateway.tiinservice.online" in link or "szm6.tiinservice.online" in link or "Reality" in remark):
                     filtered_entries.append((link, "🇩🇪 🚀 Reality"))
+                    has_de_reality = True
             
             order_map = {"🇷🇺 ⚡ Hysteria2": 1, "🇩🇪 🛡️ xHTTP": 2, "🇩🇪 🚀 Reality": 3}
             filtered_entries.sort(key=lambda x: order_map.get(x[1], 10))

@@ -36,23 +36,18 @@ INBOUND_POOLS = {
     "1": {
         "name": "Inbound #1 (Reality TCP Vision)",
         "port": 7443,
-        "default": "www.uni-frankfurt.de",
+        "default": "de-gateway.tiinservice.online",
         "candidates": [
-            {"sni": "www.uni-frankfurt.de", "desc": "Frankfurt University"},
-            {"sni": "distfiles.gentoo.org", "desc": "Gentoo Software Mirror"},
-            {"sni": "ftp.fau.de", "desc": "FAU University Mirror"},
-            {"sni": "tile.openstreetmap.org", "desc": "OpenStreetMap Tiles"},
+            {"sni": "de-gateway.tiinservice.online", "desc": "TIIN DE Gateway (Self-Hosted)"},
+            {"sni": "szm6.tiinservice.online", "desc": "TIIN SZM6 (Self-Hosted)"},
         ]
     },
     "2": {
         "name": "Inbound #2 (xHTTP Stream)",
         "port": 47447,
-        "default": "www.samsung.com",
+        "default": "mr-empeche.tiinservice.online",
         "candidates": [
-            {"sni": "www.samsung.com", "desc": "Samsung Global Portal"},
-            {"sni": "www.asus.com", "desc": "ASUS Global Portal"},
-            {"sni": "www.lenovo.com", "desc": "Lenovo Global Portal"},
-            {"sni": "www.microsoft.com", "desc": "Microsoft CDN"},
+            {"sni": "mr-empeche.tiinservice.online", "desc": "TIIN Video Studio (Self-Hosted)"},
         ]
     },
     "10": {
