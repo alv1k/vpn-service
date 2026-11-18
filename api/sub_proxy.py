@@ -719,11 +719,13 @@ async def shadowrocket_rules():
     )
 
 
-def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash: bool = False, routing_link: str | None = None) -> dict[str, str]:
+def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash: bool = False, routing_link: str | None = None, custom_title: str | None = None, hide_expire: bool = False, web_page_url: str | None = None) -> dict[str, str]:
     expire_ts = int(expires_at.timestamp()) if expires_at else 0
     now_dt = datetime.utcnow()
     
-    if not expires_at:
+    if custom_title:
+        title = custom_title
+    elif not expires_at:
         title = "🐿 TIIN"
     elif expires_at <= now_dt:
         title = "🐿 TIIN  ❌ Истекла"
@@ -748,13 +750,16 @@ def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash:
         content_type = "application/json; charset=utf-8"
     else:
         content_type = "text/plain; charset=utf-8"
+    userinfo = "upload=0; download=0; total=0" if hide_expire else f"upload=0; download=0; total=0; expire={expire_ts}"
     headers = {
-        "subscription-userinfo": f"upload=0; download=0; total=0; expire={expire_ts}",
+        "subscription-userinfo": userinfo,
         "profile-update-interval": str(SUB_UPDATE_INTERVAL_HOURS),
         "profile-title": f"base64:{title_b64}",
         "content-type": content_type,
         "Cache-Control": "private, max-age=60",
     }
+    if web_page_url:
+        headers["profile-web-page-url"] = web_page_url
     if routing_link:
         headers["routing"] = routing_link
         headers["routing-enable"] = "true"
@@ -844,6 +849,21 @@ async def go_happ_redirect(token: str, request: Request = None):
     happ_link_de = f"happ://add/{de_sub_url}"
     happ_link_ru = f"happ://add/{ru_sub_url}"
     routing_link = _happ_routing_deeplink()
+    is_rescue = bool(token in ("tg", "tg_rescue") or (user and user.get("web_token") == "tg_rescue"))
+    page_title = "Подключение к Telegram" if is_rescue else "Подключение к тииҥ VPN"
+    page_badge = "✈️ Вход в Telegram" if is_rescue else "🚀 Быстрый старт в 1 клик"
+    page_subtitle = "Вспомогательный доступ для входа в Telegram. Нажмите кнопку установленного приложения:" if is_rescue else "Выберите способ подключения и нажмите кнопку установленного приложения:"
+    tg_step2_block = '''
+  <div style="margin-top: 18px; padding: 14px; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 12px; text-align: center;">
+    <div style="font-size: 13px; font-weight: 600; color: #93c5fd; margin-bottom: 8px;">Шаг 2 (после включения VPN):</div>
+    <a href="https://t.me/tiin_vpn_bot" target="_blank" style="display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; box-sizing: border-box; padding: 12px; background: #2563eb; color: #fff; border-radius: 10px; font-weight: 700; font-size: 14px; text-decoration: none;">
+      <span>✈️</span> Открыть бота @tiin_vpn_bot
+    </a>
+    <div style="margin-top: 8px; font-size: 12px;">
+      <a href="https://t.me/tiin_vpn_bot" target="_blank" style="color: #93c5fd; text-decoration: underline;">https://t.me/tiin_vpn_bot</a>
+    </div>
+  </div>''' if is_rescue else ""
+
     is_admin = bool(user and user.get("tg_id") == ADMIN_TG_ID)
 
     if is_admin:
@@ -943,7 +963,7 @@ function copyUrl(url, btn, method) {{
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Открыть в Happ</title>
+<title>{page_title} • Happ</title>
 <style>
   body{{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;
         align-items:center;min-height:100vh;margin:0;background:#0a0a0a;color:#fff;text-align:center;padding:16px}}
@@ -956,14 +976,15 @@ function copyUrl(url, btn, method) {{
 </style>
 </head><body>
 <div class="c">
-  <h2>Открыть в Happ</h2>
-  <p style="color:#94a3b8;font-size:14px;margin-top:6px">Выберите подходящий способ подключения:</p>
+  <h2>{page_title}</h2>
+  <p style="color:#94a3b8;font-size:14px;margin-top:6px">{page_subtitle}</p>
   <a class="btn" href="{happ_link_de}" onclick="trackHapp('de', this)">⚡ Способ 1: Германия (Основной)</a>
   <a class="btn btn-ru" href="{happ_link_ru}" onclick="trackHapp('ru', this)">🇷🇺 Способ 2: Россия (Selectel)</a>
   <div style="margin-top:12px;display:flex;gap:8px">
     <button class="btn" style="margin:0;padding:10px;font-size:12px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15)" onclick="copyUrl('{de_sub_url}', this, 'de')">📋 Копия 1 (DE)</button>
     <button class="btn" style="margin:0;padding:10px;font-size:12px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15)" onclick="copyUrl('{ru_sub_url}', this, 'ru')">📋 Копия 2 (RU)</button>
   </div>
+  {tg_step2_block}
   <div class="note">Если кнопка не открыла приложение — скопируйте ссылку вручную:
   <br><b>Способ 1:</b> <code>{de_sub_url}</code>
   <b>Способ 2:</b> <code>{ru_sub_url}</code></div>
@@ -1062,6 +1083,21 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
     singbox_link = f"sing-box://import-remote-profile?url={urllib.parse.quote(sub_url, safe='')}#%F0%9F%90%BF%20TIIN%20VPN"
     cabinet_link = f"{PORTAL_BASE_URL}/my/{token}"
     routing_link = _happ_routing_deeplink()
+    is_rescue = bool(token in ("tg", "tg_rescue") or (user and user.get("web_token") == "tg_rescue"))
+    page_title = "Подключение к Telegram" if is_rescue else "Подключение к тииҥ VPN"
+    page_badge = "✈️ Вход в Telegram" if is_rescue else "🚀 Быстрый старт в 1 клик"
+    page_subtitle = "Вспомогательный доступ для входа в Telegram. Нажмите кнопку установленного приложения:" if is_rescue else "Выберите способ подключения и нажмите кнопку установленного приложения:"
+    tg_step2_block = '''
+  <div style="margin-top: 18px; padding: 14px; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 12px; text-align: center;">
+    <div style="font-size: 13px; font-weight: 600; color: #93c5fd; margin-bottom: 8px;">Шаг 2 (после включения VPN):</div>
+    <a href="https://t.me/tiin_vpn_bot" target="_blank" style="display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; box-sizing: border-box; padding: 12px; background: #2563eb; color: #fff; border-radius: 10px; font-weight: 700; font-size: 14px; text-decoration: none;">
+      <span>✈️</span> Открыть бота @tiin_vpn_bot
+    </a>
+    <div style="margin-top: 8px; font-size: 12px;">
+      <a href="https://t.me/tiin_vpn_bot" target="_blank" style="color: #93c5fd; text-decoration: underline;">https://t.me/tiin_vpn_bot</a>
+    </div>
+  </div>''' if is_rescue else ""
+
     is_admin = bool(user and user.get("tg_id") == ADMIN_TG_ID)
     happ_routing_btn = f'''
     <a class="btn" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white;" id="btn-happ-routing" data-app="Happ Routing" href="{routing_link}">
@@ -1075,7 +1111,7 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Подключение • тииҥ VPN 🐿</title>
+<title>{page_title} • тииҥ VPN 🐿</title>
 <style>
   :root {{
     --bg: #0d0f17;
@@ -1256,9 +1292,9 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
 </head>
 <body>
 <div class="card">
-  <div class="badge">🚀 Быстрый старт в 1 клик</div>
-  <h1>Подключение к тииҥ VPN</h1>
-  <p class="subtitle">Выберите способ подключения и нажмите кнопку установленного приложения:</p>
+  <div class="badge">{page_badge}</div>
+  <h1>{page_title}</h1>
+  <p class="subtitle">{page_subtitle}</p>
 
   <div class="server-tabs">
     <button type="button" class="server-tab {'active' if not use_ru else ''}" id="tab-de" onclick="switchServer('de')">🇩🇪 Способ 1: Основной</button>
@@ -1299,6 +1335,8 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
       <span>🛡️</span> Открыть в Streisand
     </a>
   </div>
+
+  {tg_step2_block}
 
   <div style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 16px; padding: 14px 16px; margin: 16px 0; text-align: left;">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 6px;">
@@ -1609,7 +1647,10 @@ async def proxy_subscription(token: str, request: Request = None):
         return Response(content=raw_body, headers=headers)
 
     routing_link = _happ_routing_deeplink()
-    headers = _build_headers(expires_at, is_json=wants_singbox, is_clash=(wants_clash and not wants_singbox), routing_link=routing_link)
+    is_rescue = bool(token in ("tg", "tg_rescue") or (user and user.get("web_token") == "tg_rescue") or (key and key.get("client_name") == "tiin_tg_rescue"))
+    custom_title = "🐿 TIIN • Telegram доступ" if is_rescue else None
+    web_page_url = "https://t.me/tiin_vpn_bot" if is_rescue else None
+    headers = _build_headers(expires_at, is_json=wants_singbox, is_clash=(wants_clash and not wants_singbox), routing_link=routing_link, custom_title=custom_title, hide_expire=is_rescue, web_page_url=web_page_url)
 
     # Fast 200 OK response for client connectivity/HEAD checks
     if getattr(request, "method", "GET") == "HEAD":
@@ -1843,6 +1884,26 @@ async def proxy_subscription(token: str, request: Request = None):
                 tuic_remark = "🇩🇪 ⚡ TUIC v5 • Hyper (Админ-тест)"
                 new_lines.append(f"{tuic_link}#{tuic_remark}")
                 vless_entries.append((tuic_link, tuic_remark))
+
+        if is_rescue:
+            # Для rescue-профиля оставляем ровно 3 проверенных надежных узла для мобилок:
+            # 1. RU Selectel Hysteria2 (быстрый UDP)
+            # 2. DE xHTTP на 443 порту (стойкий прямой TCP)
+            # 3. DE IPv6 на szm6 (прямой выход по IPv6)
+            filtered_entries = []
+            for link, remark in vless_entries:
+                if "ru-server" in link and ("hysteria2" in link or "35443" in link):
+                    filtered_entries.append((link, "🇷🇺 ⚡ Hysteria2"))
+                elif "xhttp" in link.lower() and ("mr-empeche" in link or ":443" in link or ":47447" in link):
+                    filtered_entries.append((link, "🇩🇪 🛡️ xHTTP"))
+                elif "szm6.tiinservice.online" in link or "IPv6" in remark:
+                    filtered_entries.append((link, "🇩🇪 🚀 Reality"))
+            
+            order_map = {"🇷🇺 ⚡ Hysteria2": 1, "🇩🇪 🛡️ xHTTP": 2, "🇩🇪 🚀 Reality": 3}
+            filtered_entries.sort(key=lambda x: order_map.get(x[1], 10))
+            if filtered_entries:
+                vless_entries = filtered_entries
+                new_lines = [f"{link}#{remark}" for link, remark in vless_entries]
 
         if wants_singbox:
             singbox_cfg = _build_singbox_config(vless_entries)
