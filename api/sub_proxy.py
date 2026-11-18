@@ -1014,6 +1014,12 @@ function copyUrl(url, btn, method) {{
 </body></html>"""
 
 
+@sub_router.get("/tg", response_class=HTMLResponse)
+async def tg_rescue_landing(request: Request = None):
+    """Единый адрес подключения к Telegram для знакомых и новых пользователей."""
+    return await go_connect_smart_redirect("tg_rescue", request=request)
+
+
 @sub_router.get("/go-connect/{token}", response_class=HTMLResponse)
 async def go_connect_smart_redirect(token: str, request: Request = None):
     """Универсальная страница быстрого подключения и импорта в 1 клик для всех ОС."""
@@ -1333,12 +1339,6 @@ async def go_connect_smart_redirect(token: str, request: Request = None):
     💡 <i>Не удается импортировать первым способом? Нажмите <b>«Способ 2: Резервный РФ»</b> — он подключается напрямую через Selectel СПб и обходит блокировки операторов РФ.</i>
   </p>
 
-  <div class="cabinet-box">
-    <div class="cabinet-desc">Нужен статус подписки, QR-код или подробная пошаговая инструкция?</div>
-    <a class="btn-cabinet" id="btnToCabinet" href="{cabinet_link}">
-      <span>👤</span> Открыть Личный кабинет
-    </a>
-  </div>
 </div>
 
 <script>
@@ -1522,6 +1522,8 @@ async def track_go_connect_event(token: str, req: WebEventRequest, request: Requ
 async def proxy_subscription(token: str, request: Request = None):
     """Эндпоинт подписки – проксирует ответ от XUI и склеивает с Hysteria."""
     token = token.strip() if token else ""
+    if token == "tg":
+        token = "tg_rescue"
     req_client = getattr(request, "client", None) if request else None
     client_ip = (request.headers.get("x-real-ip") or (req_client.host if req_client else "unknown")) if request else "unknown"
     ua = request.headers.get("user-agent", "") if request else ""
