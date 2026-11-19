@@ -11,19 +11,21 @@ from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_TOTP_SECRET, VLESS_
 logger = logging.getLogger(__name__)
 
 class XUIClient:
-    def __init__(self, host, username, password):
+    def __init__(self, host, username, password, proxy: str = None):
         self.host = host.rstrip('/')  # Исправлено: host, не url
         self.username = username
         self.password = password
         self.session = requests.Session()
         self.session.verify = False  # Отключаем проверку SSL для локального подключения
+        if proxy:
+            self.session.proxies = {"http": proxy, "https": proxy}
         self.cookie_file = '/tmp/xui-cookie.txt'
         self._logged_in = False
 
     def _get_csrf_token(self) -> str:
         """Get a fresh CSRF token from the panel."""
         try:
-            csrf_resp = self.session.get(f"{self.host}/csrf-token", timeout=4)
+            csrf_resp = self.session.get(f"{self.host}/csrf-token", timeout=(3, 5))
             return csrf_resp.json().get("obj", "")
         except Exception as e:
             logger.debug(f"CSRF token fetch error: {e}")
@@ -38,7 +40,7 @@ class XUIClient:
                 f"{self.host}/login",
                 data={"username": self.username, "password": self.password},
                 headers={"X-CSRF-Token": csrf_token},
-                timeout=4,
+                timeout=(3, 5),
             )
 
             if response.status_code == 200 and response.json().get("success"):
@@ -54,7 +56,7 @@ class XUIClient:
 
     def _request(self, method, url, **kwargs):
         """Выполняет запрос, при необходимости делает login/re-login."""
-        kwargs.setdefault('timeout', 15)
+        kwargs.setdefault('timeout', (3, 5))
         if not self._logged_in:
             self.login()
 

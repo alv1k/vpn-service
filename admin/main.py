@@ -34,7 +34,7 @@ async def _periodic_broadcast():
         if not _admin_ws_connections:
             continue
         try:
-            online, _ = _get_online_users()
+            online, _ = await asyncio.to_thread(_get_online_users)
             await _broadcast_ws({"type": "online", "data": online})
         except Exception as e:
             logger.warning(f"WS broadcast error: {e}")
