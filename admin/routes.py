@@ -81,9 +81,9 @@ def _get_ru_xui():
     if _ru_xui is None:
         try:
             from bot_xui.utils import XUIClient
-            from config import RU_XUI_HOST, RU_XUI_USERNAME, RU_XUI_PASSWORD
+            from config import RU_XUI_HOST, RU_XUI_USERNAME, RU_XUI_PASSWORD, RU_XUI_PROXY
             if RU_XUI_HOST:
-                _ru_xui = XUIClient(RU_XUI_HOST, RU_XUI_USERNAME, RU_XUI_PASSWORD)
+                _ru_xui = XUIClient(RU_XUI_HOST, RU_XUI_USERNAME, RU_XUI_PASSWORD, proxy=RU_XUI_PROXY)
         except Exception as e:
             logger.warning(f"Failed to init RU XUI client: {e}")
     return _ru_xui
@@ -91,18 +91,35 @@ def _get_ru_xui():
 
 _ru_inbounds_cache = {"ts": 0.0, "data": []}
 
-def _fetch_ru_inbounds_cached(max_age: float = 15.0) -> list[dict]:
+def _fetch_ru_inbounds_cached(max_age: float = 30.0) -> list[dict]:
     global _ru_inbounds_cache
     now = time.time()
     if now - _ru_inbounds_cache["ts"] < max_age and _ru_inbounds_cache["data"]:
         return _ru_inbounds_cache["data"]
+    if now - _ru_inbounds_cache["ts"] < max_age:
+        return _ru_inbounds_cache["data"]
+    _ru_inbounds_cache["ts"] = now
+
     ru_xui = _get_ru_xui()
     if not ru_xui:
         return _ru_inbounds_cache["data"]
+
+    # Fast 0.5s socket check to local proxy 127.0.0.1:10809 before attempting requests
+    try:
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        res = sock.connect_ex(("127.0.0.1", 10809))
+        sock.close()
+        if res != 0:
+            return _ru_inbounds_cache["data"]
+    except Exception:
+        return _ru_inbounds_cache["data"]
+
     try:
         ibs = ru_xui.get_inbounds()
         if ibs:
-            _ru_inbounds_cache = {"ts": now, "data": ibs}
+            _ru_inbounds_cache["data"] = ibs
             return ibs
     except Exception as e:
         logger.debug(f"RU node inbounds fetch error: {e}")
@@ -658,14 +675,18 @@ def _get_online_users() -> tuple[list[dict], set]:
 
 @router.get("/online")
 async def online_users():
-    online, _ = _get_online_users()
+    online, _ = await asyncio.to_thread(_get_online_users)
     return online
 
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     if not await _ws_authenticate(websocket):
-        await websocket.close(code=1008)
+        try:
+            await websocket.accept()
+            await websocket.close(code=1008)
+        except Exception:
+            pass
         return
     await websocket.accept()
     _admin_ws_connections.add(websocket)

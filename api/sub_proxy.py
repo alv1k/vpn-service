@@ -39,7 +39,7 @@ sub_router = APIRouter(); print("DEBUG: sub_router initialized")
 
 SUB_CACHE_TTL = 60  # секунд
 SUB_PROFILE_TITLE = "🐿 TIIN VPN"
-SUB_UPDATE_INTERVAL_HOURS = 12
+SUB_UPDATE_INTERVAL_HOURS = 6
 
 _CACHE: dict[str, tuple[float, bytes, dict[str, str]]] = {}
 _CACHE_LOCK = asyncio.Lock()
@@ -74,13 +74,13 @@ from pathlib import Path
 def _get_active_sni(inbound_key: str = "1") -> str:
     """Возвращает текущий активный и проверенный self-hosted SNI для конкретного инбаунда."""
     defaults = {
-        "1": "de-gateway.tiinservice.online",
+        "1": "mr-empeche.tiinservice.online",
         "2": "mr-empeche.tiinservice.online",
-        "10": "de-gateway.tiinservice.online",
+        "10": "mr-empeche.tiinservice.online",
         "14": "mr-empeche.tiinservice.online",
         "15": "mr-empeche.tiinservice.online",
     }
-    return defaults.get(inbound_key, "de-gateway.tiinservice.online")
+    return defaults.get(inbound_key, "mr-empeche.tiinservice.online")
 
 
 def _get_active_reality_sni() -> str:
@@ -1707,7 +1707,7 @@ async def proxy_subscription(token: str, request: Request = None):
 
             if ":7443" in line:
                 import re
-                # Переводим Reality Vision на 100% self-hosted de-gateway.tiinservice.online и стандартный порт 443
+                # Переводим Reality Vision на 100% self-hosted de-gateway.tiinservice.online:443
                 base_link = re.sub(r'@[^:]+:7443', '@de-gateway.tiinservice.online:443', base_link)
                 if "sni=" in base_link:
                     base_link = re.sub(r'sni=[^&]+', 'sni=de-gateway.tiinservice.online', base_link)
@@ -1716,7 +1716,7 @@ async def proxy_subscription(token: str, request: Request = None):
                 remark = "🇩🇪 👁️ Reality • Vision (МТС / РТК)"
 
                 # Параллельно добавляем скрытный IPv6 Self-SNI узел на 443 порту
-                ipv6_link = re.sub(r'@[^:]+:443', '@szm6.tiinservice.online:443', base_link)
+                ipv6_link = re.sub(r'@[^:]+:7443', '@szm6.tiinservice.online:443', line)
                 ipv6_link = re.sub(r'sni=[^&]+', 'sni=szm6.tiinservice.online', ipv6_link)
                 ipv6_remark = "🇩🇪 🚀 Reality • IPv6 (МТС / РТК)"
                 if ipv6_remark not in seen_remarks and ipv6_link not in seen_links:
@@ -1728,12 +1728,12 @@ async def proxy_subscription(token: str, request: Request = None):
                     remark = "🇩🇪 ⚔️ Hysteria2 • Armor-M1"
                 elif ":4443" in line:
                     import re
-                    # Переводим Hysteria 2 Turbo на self-hosted de-gateway.tiinservice.online и стандартный alt-HTTPS порт 8443 (Nginx UDP)
-                    base_link = re.sub(r'@[^:]+:4443', '@de-gateway.tiinservice.online:8443', base_link)
+                    # Переводим Hysteria 2 Turbo на self-hosted mr-empeche.tiinservice.online и стандартный alt-HTTPS порт 8443 (Nginx UDP)
+                    base_link = re.sub(r'@[^:]+:4443', '@mr-empeche.tiinservice.online:8443', base_link)
                     if "sni=" in base_link:
-                        base_link = re.sub(r'sni=[^&]+', 'sni=de-gateway.tiinservice.online', base_link)
+                        base_link = re.sub(r'sni=[^&]+', 'sni=mr-empeche.tiinservice.online', base_link)
                     else:
-                        base_link = f"{base_link}&sni=de-gateway.tiinservice.online"
+                        base_link = f"{base_link}&sni=mr-empeche.tiinservice.online"
                     remark = "🇩🇪 🚀 Hysteria2 • Turbo (Быстрый)"
                 else:
                     remark = "🇩🇪 🚀 Hysteria2"
@@ -1892,7 +1892,7 @@ async def proxy_subscription(token: str, request: Request = None):
                 elif not has_de_xhttp and "xhttp" in link.lower() and ("mr-empeche" in link or ":443" in link or ":47447" in link):
                     filtered_entries.append((link, "🇩🇪 🛡️ xHTTP"))
                     has_de_xhttp = True
-                elif not has_de_reality and link.startswith("vless://") and ("de-gateway.tiinservice.online" in link or "szm6.tiinservice.online" in link or "Reality" in remark):
+                elif not has_de_reality and link.startswith("vless://") and ("mr-empeche" in link or "de-gateway" in link or "szm6" in link or "Reality" in remark):
                     filtered_entries.append((link, "🇩🇪 🚀 Reality"))
                     has_de_reality = True
             
