@@ -364,7 +364,7 @@ class XUIClient:
                                 ct_id = row[0]
                                 now_ms = int(time.time() * 1000)
                                 for i_id in inbound_ids:
-                                    flow = 'xtls-rprx-vision' if i_id in (1, 10) else ''
+                                    flow = 'xtls-rprx-vision' if i_id in (1, 10, 21) else ''
                                     cur.execute("""
                                         INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id, flow_override, created_at)
                                         VALUES (?, ?, ?, ?)
@@ -604,10 +604,15 @@ def generate_hysteria2_link(
     client_name: str,
     sni: str,
     insecure: int = 0,
+    mport: str | None = None,
 ) -> str:
     from urllib.parse import quote
     remark = client_name if client_name else "TIIN VPN"
-    return f"hysteria2://{auth}@{domain}:{port}?sni={sni}&insecure={insecure}#{quote(remark)}"
+    # Port hopping range for DE Hysteria 2 Turbo
+    if mport is None and port in (4443, 8443):
+        mport = "20000-35000"
+    mport_param = f"&mport={mport}" if mport else ""
+    return f"hysteria2://{auth}@{domain}:{port}?sni={sni}&insecure={insecure}{mport_param}#{quote(remark)}"
 
 def get_amneziawg_config(client_email):
     """Получить конфиг AmneziaWG (native AWG 2.0)"""

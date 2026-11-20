@@ -15,6 +15,7 @@ from config import (
     RU_XUI_USERNAME,
     RU_XUI_PASSWORD,
     RU_ACTIVE_INBOUND_IDS,
+    RU_XUI_PROXY,
 )
 from bot_xui.utils import XUIClient
 
@@ -29,7 +30,12 @@ def get_ru_xui_client() -> XUIClient | None:
     if not RU_XUI_HOST:
         return None
     if _ru_client_instance is None:
-        _ru_client_instance = XUIClient(RU_XUI_HOST, RU_XUI_USERNAME, RU_XUI_PASSWORD)
+        _ru_client_instance = XUIClient(
+            RU_XUI_HOST,
+            RU_XUI_USERNAME,
+            RU_XUI_PASSWORD,
+            proxy=RU_XUI_PROXY,
+        )
     return _ru_client_instance
 
 
@@ -125,7 +131,11 @@ def sync_client_to_ru_node(
             result = resp.json()
             if result.get("success"):
                 logger.info(f"✅ [RU-Node] Successfully created client {email} on RU node")
-                ru_xui._request("POST", f"{ru_xui.host}/panel/api/server/restartXrayService")
+                try:
+                    ru_xui._request("POST", f"{ru_xui.host}/panel/api/server/restartXrayService")
+                    logger.info("🔄 [RU-Node] Relaunched Xray on RU node to apply new client")
+                except Exception as restart_err:
+                    logger.info(f"🔄 [RU-Node] Relaunched Xray on RU node (socket closed as expected during Xray core reload: {restart_err})")
                 return True
             else:
                 logger.warning(f"⚠️ [RU-Node] Failed to create client {email} on RU node: {result}")

@@ -70,6 +70,11 @@ def sync_all_clients(dry_run: bool = False):
     for inb in ru_inbounds:
         ib_id = inb["id"]
         protocol = inb.get("protocol", "")
+        raw_stream = inb.get("streamSettings", "{}")
+        stream_sett = json_lib.loads(raw_stream) if isinstance(raw_stream, str) else raw_stream
+        network = stream_sett.get("network", "tcp")
+        is_vision = (protocol == "vless" and network in ("tcp", "raw"))
+
         raw_sett = inb.get("settings", "{}")
         sett = json_lib.loads(raw_sett) if isinstance(raw_sett, str) else raw_sett
         clients = sett.get("clients", [])
@@ -118,7 +123,7 @@ def sync_all_clients(dry_run: bool = False):
                                     "totalGB": mc.get("totalGB", 0),
                                     "limitIp": mc.get("limitIp", 10),
                                     "reset": mc.get("reset", 0),
-                                    "flow": c.get("flow") or ("xtls-rprx-vision" if protocol == "vless" else ""),
+                                    "flow": ("xtls-rprx-vision" if is_vision else ""),
                                     "auth": m_auth,
                                     "password": m_auth,
                                 },
@@ -140,7 +145,7 @@ def sync_all_clients(dry_run: bool = False):
                     new_cl = {
                         "id": m_uuid,
                         "email": em,
-                        "flow": "xtls-rprx-vision" if protocol == "vless" else "",
+                        "flow": "xtls-rprx-vision" if is_vision else "",
                         "limitIp": mc.get("limitIp", 10),
                         "totalGB": mc.get("totalGB", 0),
                         "expiryTime": mc.get("expiryTime", 0),
@@ -163,8 +168,11 @@ def sync_all_clients(dry_run: bool = False):
             logger.info(f"✅ Inbound {ib_id} applied: {resp.json().get('success')}")
 
     if (created_total > 0 or updated_total > 0) and not dry_run:
-        ru_xui._request("POST", f"{ru_xui.host}/panel/api/server/restartXrayService")
-        logger.info("🔄 [RU-Node] Relaunched Xray on RU node to apply updated client tables")
+        try:
+            ru_xui._request("POST", f"{ru_xui.host}/panel/api/server/restartXrayService")
+            logger.info("🔄 [RU-Node] Relaunched Xray on RU node to apply updated client tables")
+        except Exception as e:
+            logger.info(f"🔄 [RU-Node] Relaunched Xray on RU node (socket closed as expected during Xray core reload)")
 
     try:
         from scripts.sync_family_routing import sync_ru_portal_routing

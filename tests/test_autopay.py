@@ -277,6 +277,22 @@ def test_save_user_payment_method_preserves_manual_opt_out():
         assert "autopay_enabled = 1" not in update_call[0][0]
 
 
+def test_save_user_payment_method_preserves_existing_card_with_autopay_off():
+    """When user has autopay_enabled = 0 and an existing card, do not re-enable even if disabled_at is None."""
+    from api.db import save_user_payment_method
+
+    with patch("api.db.execute_query") as mock_eq:
+        mock_eq.side_effect = [
+            {"autopay_disabled_at": None, "autopay_enabled": 0, "payment_method_id": "pm-existing"},  # SELECT
+            1  # UPDATE
+        ]
+        res = save_user_payment_method(12345, "pm-new", "monthly_30d", "vless")
+        assert res["autopay_enabled"] is False
+        # Verify UPDATE sets payment method without enabling autopay
+        update_call = mock_eq.call_args_list[1]
+        assert "autopay_enabled = 1" not in update_call[0][0]
+
+
 def test_enable_autopay_clears_disabled_at():
     """Explicitly enabling autopay via /autopay clears autopay_disabled_at."""
     from api.db import enable_autopay
