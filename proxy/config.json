@@ -48,9 +48,6 @@
         "xhttpSettings": {
           "path": "/api/v1/sync",
           "mode": "packet-up"
-        },
-        "sockopt": {
-          "dialerProxy": "nl-reality"
         }
       }
     },
