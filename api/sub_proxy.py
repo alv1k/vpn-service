@@ -101,7 +101,10 @@ def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
             params = dict(urllib.parse.parse_qsl(parsed.query))
             sni = params.get('sni', server)
             insecure = params.get('insecure', '0') == '1'
-            return {
+            mport = params.get('mport')
+            if not mport and int(port_str) in (4443, 8443):
+                mport = "20000-35000"
+            outbound = {
                 "type": "hysteria2",
                 "tag": remark or "Hysteria2",
                 "server": server,
@@ -114,6 +117,9 @@ def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
                     "alpn": ["h3"]
                 }
             }
+            if mport:
+                outbound["server_ports"] = [mport]
+            return outbound
 
         if parsed.scheme in ("tuic", "tuic5"):
             user_host_port = parsed.netloc
@@ -434,7 +440,10 @@ def _vless_to_clash_proxy(vless_link: str, remark: str) -> dict | None:
             params = dict(urllib.parse.parse_qsl(parsed.query))
             sni = params.get('sni', server)
             insecure = params.get('insecure', '0') == '1'
-            return {
+            mport = params.get('mport')
+            if not mport and int(port_str) in (4443, 8443):
+                mport = "20000-35000"
+            proxy = {
                 "name": tag,
                 "type": "hysteria2",
                 "server": server,
@@ -444,6 +453,9 @@ def _vless_to_clash_proxy(vless_link: str, remark: str) -> dict | None:
                 "skip-cert-verify": insecure,
                 "alpn": ["h3"]
             }
+            if mport:
+                proxy["ports"] = mport
+            return proxy
 
         if parsed.scheme != "vless":
             return None
@@ -1705,10 +1717,10 @@ async def proxy_subscription(token: str, request: Request = None):
             elif ":38745" in line:
                 continue  # xHTTP • Ultra (дублирует и сбоит на МТС/Мегафон)
 
-            if ":7443" in line:
+            if ":7443" in line or ":20443" in line:
                 import re
                 # Переводим Reality Vision на 100% self-hosted de-gateway.tiinservice.online:443
-                base_link = re.sub(r'@[^:]+:7443', '@de-gateway.tiinservice.online:443', base_link)
+                base_link = re.sub(r'@[^:]+:(?:7443|20443)', '@de-gateway.tiinservice.online:443', base_link)
                 if "sni=" in base_link:
                     base_link = re.sub(r'sni=[^&]+', 'sni=de-gateway.tiinservice.online', base_link)
                 else:
@@ -1716,7 +1728,7 @@ async def proxy_subscription(token: str, request: Request = None):
                 remark = "🇩🇪 👁️ Reality • Vision (МТС / РТК)"
 
                 # Параллельно добавляем скрытный IPv6 Self-SNI узел на 443 порту
-                ipv6_link = re.sub(r'@[^:]+:7443', '@szm6.tiinservice.online:443', line)
+                ipv6_link = re.sub(r'@[^:]+:(?:7443|20443)', '@szm6.tiinservice.online:443', line)
                 ipv6_link = re.sub(r'sni=[^&]+', 'sni=szm6.tiinservice.online', ipv6_link)
                 ipv6_remark = "🇩🇪 🚀 Reality • IPv6 (МТС / РТК)"
                 if ipv6_remark not in seen_remarks and ipv6_link not in seen_links:
@@ -1734,6 +1746,8 @@ async def proxy_subscription(token: str, request: Request = None):
                         base_link = re.sub(r'sni=[^&]+', 'sni=mr-empeche.tiinservice.online', base_link)
                     else:
                         base_link = f"{base_link}&sni=mr-empeche.tiinservice.online"
+                    if "mport=" not in base_link:
+                        base_link = f"{base_link}&mport=20000-35000"
                     remark = "🇩🇪 🚀 Hysteria2 • Turbo (Быстрый)"
                 else:
                     remark = "🇩🇪 🚀 Hysteria2"
@@ -1864,8 +1878,8 @@ async def proxy_subscription(token: str, request: Request = None):
             new_lines.insert(0, f"{ru_hy2_link}#{ru_hy2_remark}")
             vless_entries.insert(0, (ru_hy2_link, ru_hy2_remark))
 
-            ru_vless_link = f"vless://{client_uuid}@ru-server.tiinservice.online:8443?type=ws&security=tls&sni=ru-server.tiinservice.online&path=%2Fapi%2Fv1%2Fws"
-            ru_vless_remark = "🇷🇺 🛡️ VLESS • Шлюз (РФ ➔ DE)" if is_admin else "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
+            ru_vless_link = f"vless://{client_uuid}@ru-server.tiinservice.online:443?encryption=none&type=xhttp&security=tls&alpn=h2,http/1.1&fp=chrome&sni=ru-server.tiinservice.online&path=%2Fapi%2Fv1%2Fsync&mode=packet-up"
+            ru_vless_remark = "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
             new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
             vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
 
