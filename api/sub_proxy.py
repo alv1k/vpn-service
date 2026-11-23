@@ -5,6 +5,7 @@
 import asyncio
 import base64
 import logging
+import re
 import time
 import warnings
 
@@ -46,6 +47,23 @@ _CACHE_LOCK = asyncio.Lock()
 
 _RETRY_TRACKER: dict[str, list[float]] = {}
 _LAST_BURST_ALERT: dict[str, float] = {}
+
+RE_VALID_TOKEN = re.compile(r"^[A-Za-z0-9_-]{3,64}$")
+KNOWN_PROBE_TOKENS = frozenset({
+    "security.txt", "robots.txt", "undefined", "null", "none", "favicon.ico", "sitemap.xml"
+})
+
+
+def _is_valid_token_format(token: str) -> bool:
+    """Проверяет формат токена подписки для отсечения зондов сетевых сканеров до обращения к БД."""
+    if not token:
+        return False
+    lower_t = token.lower()
+    if lower_t in KNOWN_PROBE_TOKENS or lower_t.endswith(".txt") or lower_t.endswith(".php") or lower_t.endswith(".json") or lower_t.endswith(".xml") or lower_t.endswith(".html"):
+        return False
+    if "." in token or "/" in token or "\\" in token:
+        return False
+    return bool(RE_VALID_TOKEN.match(token))
 
 
 def _check_retry_burst(key_id: str, client_ip: str, ua: str, tg_id: int | None = None):
@@ -829,6 +847,8 @@ async def _fetch_xui(url: str) -> bytes:
 async def go_happ_redirect(token: str, request: Request = None):
     """Редирект на happ:// deep link для Telegram кнопок."""
     token = token.strip() if token else ""
+    if not _is_valid_token_format(token):
+        raise HTTPException(status_code=404, detail="Not found")
     user = get_user_by_web_token(token)
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1049,6 +1069,8 @@ async def tg_rescue_landing(request: Request = None):
 async def go_connect_smart_redirect(token: str, request: Request = None):
     """Универсальная страница быстрого подключения и импорта в 1 клик для всех ОС."""
     token = token.strip() if token else ""
+    if not _is_valid_token_format(token):
+        raise HTTPException(status_code=404, detail="Not found")
     user = get_user_by_web_token(token)
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1569,6 +1591,10 @@ async def proxy_subscription(token: str, request: Request = None):
     req_client = getattr(request, "client", None) if request else None
     client_ip = (request.headers.get("x-real-ip") or (req_client.host if req_client else "unknown")) if request else "unknown"
     ua = request.headers.get("user-agent", "") if request else ""
+
+    if not _is_valid_token_format(token):
+        logger.info(f"sub_proxy: rejected scanner/probe token '{token[:32]}' from {client_ip} (ua={ua[:40]})")
+        raise HTTPException(status_code=404, detail="Not found")
 
     user = get_user_by_web_token(token)
     if not user:

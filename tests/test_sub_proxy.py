@@ -710,6 +710,40 @@ class TestTuicSingboxOutbound:
         assert clash["grpc-opts"]["grpc-service-name"] == "grpc-stream"
 
 
+class TestTokenFormatValidation:
+
+    def test_valid_tokens(self):
+        from api.sub_proxy import _is_valid_token_format
+        assert _is_valid_token_format("_0OXudvJiAYfwM51EEY_RQ") is True
+        assert _is_valid_token_format("knu9p863rdti3qpn") is True
+        assert _is_valid_token_format("81a8f7ae-610e-4a7c-a4a5-d13d0ca04526") is True
+        assert _is_valid_token_format("tg_rescue") is True
+
+    def test_scanner_probes_rejected(self):
+        from api.sub_proxy import _is_valid_token_format
+        assert _is_valid_token_format("security.txt") is False
+        assert _is_valid_token_format("robots.txt") is False
+        assert _is_valid_token_format("undefined") is False
+        assert _is_valid_token_format("null") is False
+        assert _is_valid_token_format("favicon.ico") is False
+        assert _is_valid_token_format("exploit.php") is False
+        assert _is_valid_token_format("../secret") is False
+        assert _is_valid_token_format("") is False
+        assert _is_valid_token_format("tok") is True
+        assert _is_valid_token_format("token123") is True
+
+    @pytest.mark.asyncio
+    @patch("api.sub_proxy.get_user_by_web_token")
+    async def test_probe_token_raises_404_without_db(self, mock_get_user):
+        from fastapi import HTTPException
+        from api.sub_proxy import proxy_subscription
+        with pytest.raises(HTTPException) as exc:
+            await proxy_subscription("security.txt")
+        assert exc.value.status_code == 404
+        mock_get_user.assert_not_called()
+
+
+
 
 
 
