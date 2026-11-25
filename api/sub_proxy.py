@@ -27,7 +27,7 @@ from api.db import (
 )
 from api.platform_detector import detect_platform
 from api.web_portal import WebEventRequest, _log_webpage_event, _happ_routing_deeplink
-from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID
+from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID, NL_REALITY_PBK, NL_REALITY_SID
 RU_SUB_BASE_URL = "https://ru-server.tiinservice.online"
 
 
@@ -1908,6 +1908,19 @@ async def proxy_subscription(token: str, request: Request = None):
             ru_vless_remark = "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
             new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
             vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
+
+            # Нидерландские резервные узлы (CDN xHTTP + Reality Vision) в конец списка
+            nl_xhttp_link = f"vless://{client_uuid}@api.tottiemottie.biz:443?encryption=none&type=xhttp&security=tls&alpn=h2,http/1.1&fp=chrome&sni=api.tottiemottie.biz&path=%2Fapi%2Fv2%2Fmetrics&mode=packet-up"
+            nl_xhttp_remark = "🇳🇱 🛡️ xHTTP • Cloudflare CDN"
+            new_lines.append(f"{nl_xhttp_link}#{nl_xhttp_remark}")
+            vless_entries.append((nl_xhttp_link, nl_xhttp_remark))
+
+            nl_pbk = NL_REALITY_PBK or "E8Ce4rURFZukxlewAZUNiCW6kJygKZjNnafO8mINyTc"
+            nl_sid = NL_REALITY_SID or "a99293d481cd42d5"
+            nl_reality_link = f"vless://{client_uuid}@app.tottiemottie.biz:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&pbk={nl_pbk}&sni=app.tottiemottie.biz&sid={nl_sid}&fp=chrome"
+            nl_reality_remark = "🇳🇱 🚀 Reality • Direct Exit"
+            new_lines.append(f"{nl_reality_link}#{nl_reality_remark}")
+            vless_entries.append((nl_reality_link, nl_reality_remark))
 
             # Скоростной TUIC v5 (QUIC) — на этапе тестирования доступен СТРОГО для администратора
             if is_admin:
