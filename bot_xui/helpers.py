@@ -137,8 +137,10 @@ from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID
 
 PUBLIC_BASE_URL = PORTAL_BASE_URL
 WEB_BASE_URL = PORTAL_BASE_URL
+import os
 DE_SUB_BASE_URL = "https://344988.snk.wtf"
 RU_SUB_BASE_URL = "https://ru-server.tiinservice.online"
+FALLBACK_SUB_BASE_URL = os.getenv("FALLBACK_SUB_BASE_URL", "https://sub.tottiemottie.biz")
 SUB_URL_BASE = DE_SUB_BASE_URL
 
 

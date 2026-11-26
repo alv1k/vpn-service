@@ -2246,14 +2246,24 @@
             ? `<span style="color:var(--muted)">${u.last_speed_mbps}<span class="speed-unit"> Mbps</span></span>`
             : '<span style="color:var(--muted)">—</span>');
 
+      const ipList = Array.isArray(u.ip_list) && u.ip_list.length > 0 ? u.ip_list.join('\n') : '';
+      let ipCountBadge = `${u.ip_count}`;
+      if (u.ip_count > 10) {
+        ipCountBadge = `<span class="badge" style="background:var(--red);color:#fff;font-weight:700;font-size:0.85em;padding:2px 6px;cursor:help" title="Превышен лимит 10 устройств!&#10;${esc(ipList)}">⚠️ ${u.ip_count} / 10</span>`;
+      } else if (u.ip_count >= 8) {
+        ipCountBadge = `<span style="color:var(--orange);font-weight:700;cursor:help" title="Приближение к лимиту устройств (10):&#10;${esc(ipList)}">${u.ip_count} ⚠️</span>`;
+      } else if (u.ip_count > 1) {
+        ipCountBadge = `<span style="color:var(--orange);font-weight:600;cursor:help" title="${esc(ipList)}">${u.ip_count}</span>`;
+      } else {
+        ipCountBadge = `<span style="color:var(--text);cursor:help" title="${esc(ipList)}">${u.ip_count}</span>`;
+      }
+
       return `<tr>
         <td style="white-space:nowrap"><span class="pulse-dot"></span>${badges}</td>
         <td style="font-weight:500">${portalLink(u.web_token, u.first_name)}${paidTag}</td>
         <td class="mono" style="font-size:0.85em">${namesHtml}</td>
         <td class="mono">${speedHtml}</td>
-        <td>${u.ip_count > 1
-            ? '<span style="color:var(--orange);font-weight:600">' + u.ip_count + '</span>'
-            : u.ip_count}</td>
+        <td>${ipCountBadge}</td>
         <td>${u.expires ? fmtDate(u.expires) + (u.is_test ? ' <span class="badge" style="background:var(--orange);color:#000;font-size:0.65em">TEST</span>' : '') : '—'}</td>
         <td>${platformHtml}</td>
       </tr>`;

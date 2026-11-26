@@ -90,6 +90,7 @@ def _get_ru_xui():
 
 
 _ru_inbounds_cache = {"ts": 0.0, "data": []}
+_ru_client_ips_cache = {"ts": 0.0, "data": {}}
 
 def _fetch_ru_inbounds_cached(max_age: float = 30.0) -> list[dict]:
     global _ru_inbounds_cache
@@ -124,6 +125,54 @@ def _fetch_ru_inbounds_cached(max_age: float = 30.0) -> list[dict]:
     except Exception as e:
         logger.debug(f"RU node inbounds fetch error: {e}")
     return _ru_inbounds_cache["data"]
+
+
+def _fetch_ru_client_ips_cached(max_age: float = 15.0, window_seconds: int = 180) -> dict[str, set[str]]:
+    """Fetch real client IPs from RU 3x-ui API (/panel/api/server/clientIps).
+    Returns {clientEmail: set of fresh IPs} filtered to the last window_seconds."""
+    global _ru_client_ips_cache
+    now = time.time()
+    if now - _ru_client_ips_cache["ts"] < max_age and _ru_client_ips_cache["data"]:
+        return _ru_client_ips_cache["data"]
+
+    ru_xui = _get_ru_xui()
+    if not ru_xui:
+        return _ru_client_ips_cache["data"]
+
+    # Fast 0.5s socket check to local proxy 127.0.0.1:10809 before attempting requests
+    try:
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        res = sock.connect_ex(("127.0.0.1", 10809))
+        sock.close()
+        if res != 0:
+            return _ru_client_ips_cache["data"]
+    except Exception:
+        return _ru_client_ips_cache["data"]
+
+    try:
+        resp = ru_xui._request("GET", f"{ru_xui.host}/panel/api/server/clientIps")
+        if resp.status_code == 200:
+            data = resp.json().get("obj", [])
+            result: dict[str, set[str]] = {}
+            for item in data:
+                email = item.get("clientEmail")
+                if not email:
+                    continue
+                fresh_ips = set()
+                for ip_obj in item.get("ips", []):
+                    ip = ip_obj.get("ip")
+                    ts = ip_obj.get("timestamp", 0)
+                    if ip and (now - ts) <= window_seconds:
+                        fresh_ips.add(ip)
+                if fresh_ips:
+                    result[email] = fresh_ips
+            _ru_client_ips_cache = {"ts": now, "data": result}
+            return result
+    except Exception as e:
+        logger.debug(f"RU node clientIps fetch error: {e}")
+    return _ru_client_ips_cache["data"]
 
 
 def _ping_telegram_dc() -> Optional[int]:
@@ -427,9 +476,10 @@ def _get_online_users() -> tuple[list[dict], set]:
         now_str = time.strftime("%H:%M:%S")
         for email, last_online_ms, ct_inbound_id, inbound_tag, inbound_port in rows:
             is_hysteria = email.endswith("_h")
+            client_ips = set(log_ips.get(email, set()))
             raw_entries.append({
                 "name": email,
-                "ip_count": max(len(log_ips.get(email, [])), 1),
+                "ips": client_ips,
                 "type": "hysteria" if is_hysteria else "vless",
                 "inbound_id": ct_inbound_id,
                 "inbound_tag": inbound_tag or "",
@@ -451,8 +501,10 @@ def _get_online_users() -> tuple[list[dict], set]:
 
         # Also query RU node inbounds for active connections and traffic (cached 15s)
         ru_inbounds = _fetch_ru_inbounds_cached(max_age=15.0)
+        ru_client_ips = _fetch_ru_client_ips_cached(max_age=15.0, window_seconds=180)
         if ru_inbounds:
             ru_now_str = time.strftime("%H:%M:%S")
+            seen_ru_emails = set()
             for ib in ru_inbounds:
                 ib_id = ib.get("id")
                 ib_tag = ib.get("tag") or f"ru-{ib.get('remark', '')}"
@@ -469,20 +521,23 @@ def _get_online_users() -> tuple[list[dict], set]:
                     last_online = cs.get("lastOnline", 0) or 0
                     is_enable = cs.get("enable", False)
                     if is_enable and last_online > cutoff_ms:
-                        is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol.lower()
-                        raw_entries.append({
-                            "name": email,
-                            "ip_count": 1,
-                            "type": "hysteria" if is_hysteria else "vless",
-                            "inbound_id": ib_id,
-                            "inbound_tag": ib_tag,
-                            "inbound_port": ib_port,
-                            "inbound_protocol": ib_protocol,
-                            "inbound_remark": ib_remark,
-                            "is_ru": True,
-                            "last_seen": ru_now_str,
-                            "last_online_ts": last_online / 1000.0,
-                        })
+                        if email not in seen_ru_emails:
+                            seen_ru_emails.add(email)
+                            is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol.lower()
+                            client_ips = set(ru_client_ips.get(email, set()))
+                            raw_entries.append({
+                                "name": email,
+                                "ips": client_ips,
+                                "type": "hysteria" if is_hysteria else "vless",
+                                "inbound_id": ib_id,
+                                "inbound_tag": ib_tag,
+                                "inbound_port": ib_port,
+                                "inbound_protocol": ib_protocol,
+                                "inbound_remark": ib_remark,
+                                "is_ru": True,
+                                "last_seen": ru_now_str,
+                                "last_online_ts": last_online / 1000.0,
+                            })
 
         for e in raw_entries:
             if e["name"] in traffic:
@@ -513,15 +568,14 @@ def _get_online_users() -> tuple[list[dict], set]:
                     tx = int(parts[6]) if parts[6].isdigit() else 0
                     speed, last = _calc_speed_with_last(name, "awg", rx + tx)
                     # Parse endpoint IP from parts[3] (format "ip:port")
-                    awg_ip = 1
+                    awg_ips = set()
                     if len(parts) > 3 and parts[3] and parts[3] != "(none)":
                         ep = parts[3].rsplit(":", 1)[0]
                         if ep and re.match(r'^\d+\.\d+\.\d+\.\d+$', ep):
-                            awg_ip = ep
+                            awg_ips.add(ep)
                     raw_entries.append({
                         "name": name,
-                        "ip_count": 1,
-                        "awg_ip": awg_ip,
+                        "ips": awg_ips,
                         "type": "awg",
                         "last_seen": datetime.fromtimestamp(last_handshake, tz=YAKUTSK_TZ).strftime("%H:%M:%S"),
                         "speed_mbps": _speed_mbps(speed),
@@ -564,7 +618,9 @@ def _get_online_users() -> tuple[list[dict], set]:
                 "protocols": [],
                 "names": [],
                 "inbounds": [],
+                "ips": set(),
                 "ip_count": 0,
+                "ip_list": [],
                 "speed_mbps": 0,
                 "last_speed_mbps": 0,
                 "last_seen": "",
@@ -574,7 +630,10 @@ def _get_online_users() -> tuple[list[dict], set]:
         proto = e["type"]
         if proto not in entry["protocols"]:
             entry["protocols"].append(proto)
-        entry["names"].append(e["name"])
+        if e["name"] not in entry["names"]:
+            entry["names"].append(e["name"])
+        if e.get("ips"):
+            entry["ips"].update(e["ips"])
         # Prefer real-time inbound from access log over SQLite config
         email = e["name"]
         log_tags_dict = log_inbounds.get(email, {})
@@ -619,7 +678,6 @@ def _get_online_users() -> tuple[list[dict], set]:
         # Sort inbounds list chronologically (first connected ➔ later connected)
         entry["inbounds"].sort(key=lambda x: x.get("ts", 0))
 
-        entry["ip_count"] += e.get("ip_count", 0)
         entry["speed_mbps"] = max(entry.get("speed_mbps", 0), e.get("speed_mbps", 0))
         entry["last_speed_mbps"] = max(entry.get("last_speed_mbps", 0), e.get("last_speed_mbps", 0))
         if e.get("last_seen", "") > entry.get("last_seen", ""):
@@ -630,6 +688,11 @@ def _get_online_users() -> tuple[list[dict], set]:
         if e["name"].endswith("_h"):
             base = e["name"][:-2]
             online_identities.add(("vless", base))
+
+    for entry in merged.values():
+        entry["ip_count"] = max(len(entry["ips"]), 1)
+        entry["ip_list"] = sorted(list(entry["ips"]))
+        del entry["ips"]
 
     online = list(merged.values())
 

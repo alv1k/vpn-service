@@ -51,6 +51,7 @@ XUI_SUB_PATH = os.getenv("XUI_SUB_PATH")
 # Portal / Web base URL for client cabinet and subscriptions (accessible without VPN in RU)
 PORTAL_BASE_URL = os.getenv("PORTAL_BASE_URL", "https://ru-server.tiinservice.online")
 SUB_BASE_URL = os.getenv("SUB_BASE_URL", "https://sub.tiinservice.online")
+FALLBACK_SUB_BASE_URL = os.getenv("FALLBACK_SUB_BASE_URL", "https://sub.tottiemottie.biz")
 
 # VLESS настройки
 VLESS_DOMAIN = os.getenv("VLESS_DOMAIN")
