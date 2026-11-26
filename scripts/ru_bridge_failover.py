@@ -18,8 +18,8 @@ STATE_FILE = "/root/data/ru_bridge_state"
 LOG_FILE = "/root/logs/ru-bridge-failover.log"
 TRAFFIC_STATE_FILE = "/root/data/ru_traffic_state.json"
 
-BOT_TOKEN = "8075947163:AAEQ5A4rmMLRXjynOiNH3lXWQV-EHwCkdn8"
-ADMIN_CHAT_ID = "364224373"
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ADMIN_TG_ID = os.getenv("ADMIN_TG_ID", "364224373")
 
 FAIL_THRESHOLD = 2
 RECOVER_THRESHOLD = 2
