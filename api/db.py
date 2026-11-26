@@ -1212,17 +1212,25 @@ def get_users_with_unused_activated_promos(min_days: int = 2) -> list[dict]:
 def save_user_payment_method(tg_id: int, payment_method_id: str, tariff: str, vpn_type: str = "vless") -> dict:
     """
     Save payment method for user.
-    If the user previously manually disabled autopay (autopay_disabled_at is not NULL),
+    If the user previously manually disabled autopay (autopay_disabled_at is not NULL)
+    or has opted out (autopay_enabled = 0 with existing payment_method_id),
     keep autopay_enabled = 0 and do not re-enable it automatically.
     Returns a dict: {'autopay_enabled': bool, 'disabled_at': datetime | None}
     """
     user = execute_query(
-        "SELECT autopay_disabled_at, autopay_enabled FROM users WHERE tg_id = %s",
+        "SELECT autopay_disabled_at, autopay_enabled, payment_method_id FROM users WHERE tg_id = %s",
         (tg_id,), fetch='one'
     )
-    if user and user.get('autopay_disabled_at'):
+    is_opted_out = bool(
+        user and (
+            user.get('autopay_disabled_at')
+            or (user.get('autopay_enabled') == 0 and user.get('payment_method_id'))
+        )
+    )
+    if is_opted_out:
         execute_query(
-            "UPDATE users SET payment_method_id = %s, autopay_tariff = %s, autopay_vpn_type = %s WHERE tg_id = %s",
+            "UPDATE users SET payment_method_id = %s, autopay_tariff = %s, autopay_vpn_type = %s, "
+            "autopay_disabled_at = COALESCE(autopay_disabled_at, NOW()) WHERE tg_id = %s",
             (payment_method_id, tariff, vpn_type, tg_id),
         )
         return {"autopay_enabled": False, "disabled_at": user.get('autopay_disabled_at')}
@@ -1238,12 +1246,19 @@ def save_user_payment_method(tg_id: int, payment_method_id: str, tariff: str, vp
 def save_user_payment_method_by_id(user_id: int, payment_method_id: str, tariff: str, vpn_type: str = "vless") -> dict:
     """Save payment method by user_id (for web users)."""
     user = execute_query(
-        "SELECT autopay_disabled_at, autopay_enabled FROM users WHERE id = %s",
+        "SELECT autopay_disabled_at, autopay_enabled, payment_method_id FROM users WHERE id = %s",
         (user_id,), fetch='one'
     )
-    if user and user.get('autopay_disabled_at'):
+    is_opted_out = bool(
+        user and (
+            user.get('autopay_disabled_at')
+            or (user.get('autopay_enabled') == 0 and user.get('payment_method_id'))
+        )
+    )
+    if is_opted_out:
         execute_query(
-            "UPDATE users SET payment_method_id = %s, autopay_tariff = %s, autopay_vpn_type = %s WHERE id = %s",
+            "UPDATE users SET payment_method_id = %s, autopay_tariff = %s, autopay_vpn_type = %s, "
+            "autopay_disabled_at = COALESCE(autopay_disabled_at, NOW()) WHERE id = %s",
             (payment_method_id, tariff, vpn_type, user_id),
         )
         return {"autopay_enabled": False, "disabled_at": user.get('autopay_disabled_at')}

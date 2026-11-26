@@ -5,6 +5,7 @@
 import asyncio
 import base64
 import logging
+import re
 import time
 import warnings
 
@@ -26,7 +27,7 @@ from api.db import (
 )
 from api.platform_detector import detect_platform
 from api.web_portal import WebEventRequest, _log_webpage_event, _happ_routing_deeplink
-from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID
+from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID, NL_REALITY_PBK, NL_REALITY_SID
 RU_SUB_BASE_URL = "https://ru-server.tiinservice.online"
 
 
@@ -39,13 +40,30 @@ sub_router = APIRouter(); print("DEBUG: sub_router initialized")
 
 SUB_CACHE_TTL = 60  # секунд
 SUB_PROFILE_TITLE = "🐿 TIIN VPN"
-SUB_UPDATE_INTERVAL_HOURS = 12
+SUB_UPDATE_INTERVAL_HOURS = 6
 
 _CACHE: dict[str, tuple[float, bytes, dict[str, str]]] = {}
 _CACHE_LOCK = asyncio.Lock()
 
 _RETRY_TRACKER: dict[str, list[float]] = {}
 _LAST_BURST_ALERT: dict[str, float] = {}
+
+RE_VALID_TOKEN = re.compile(r"^[A-Za-z0-9_-]{3,64}$")
+KNOWN_PROBE_TOKENS = frozenset({
+    "security.txt", "robots.txt", "undefined", "null", "none", "favicon.ico", "sitemap.xml"
+})
+
+
+def _is_valid_token_format(token: str) -> bool:
+    """Проверяет формат токена подписки для отсечения зондов сетевых сканеров до обращения к БД."""
+    if not token:
+        return False
+    lower_t = token.lower()
+    if lower_t in KNOWN_PROBE_TOKENS or lower_t.endswith(".txt") or lower_t.endswith(".php") or lower_t.endswith(".json") or lower_t.endswith(".xml") or lower_t.endswith(".html"):
+        return False
+    if "." in token or "/" in token or "\\" in token:
+        return False
+    return bool(RE_VALID_TOKEN.match(token))
 
 
 def _check_retry_burst(key_id: str, client_ip: str, ua: str, tg_id: int | None = None):
@@ -74,13 +92,13 @@ from pathlib import Path
 def _get_active_sni(inbound_key: str = "1") -> str:
     """Возвращает текущий активный и проверенный self-hosted SNI для конкретного инбаунда."""
     defaults = {
-        "1": "de-gateway.tiinservice.online",
+        "1": "mr-empeche.tiinservice.online",
         "2": "mr-empeche.tiinservice.online",
-        "10": "de-gateway.tiinservice.online",
+        "10": "mr-empeche.tiinservice.online",
         "14": "mr-empeche.tiinservice.online",
         "15": "mr-empeche.tiinservice.online",
     }
-    return defaults.get(inbound_key, "de-gateway.tiinservice.online")
+    return defaults.get(inbound_key, "mr-empeche.tiinservice.online")
 
 
 def _get_active_reality_sni() -> str:
@@ -101,7 +119,10 @@ def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
             params = dict(urllib.parse.parse_qsl(parsed.query))
             sni = params.get('sni', server)
             insecure = params.get('insecure', '0') == '1'
-            return {
+            mport = params.get('mport')
+            if not mport and int(port_str) in (4443, 8443):
+                mport = "20000-35000"
+            outbound = {
                 "type": "hysteria2",
                 "tag": remark or "Hysteria2",
                 "server": server,
@@ -114,6 +135,9 @@ def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
                     "alpn": ["h3"]
                 }
             }
+            if mport:
+                outbound["server_ports"] = [mport]
+            return outbound
 
         if parsed.scheme in ("tuic", "tuic5"):
             user_host_port = parsed.netloc
@@ -434,7 +458,10 @@ def _vless_to_clash_proxy(vless_link: str, remark: str) -> dict | None:
             params = dict(urllib.parse.parse_qsl(parsed.query))
             sni = params.get('sni', server)
             insecure = params.get('insecure', '0') == '1'
-            return {
+            mport = params.get('mport')
+            if not mport and int(port_str) in (4443, 8443):
+                mport = "20000-35000"
+            proxy = {
                 "name": tag,
                 "type": "hysteria2",
                 "server": server,
@@ -444,6 +471,9 @@ def _vless_to_clash_proxy(vless_link: str, remark: str) -> dict | None:
                 "skip-cert-verify": insecure,
                 "alpn": ["h3"]
             }
+            if mport:
+                proxy["ports"] = mport
+            return proxy
 
         if parsed.scheme != "vless":
             return None
@@ -817,6 +847,8 @@ async def _fetch_xui(url: str) -> bytes:
 async def go_happ_redirect(token: str, request: Request = None):
     """Редирект на happ:// deep link для Telegram кнопок."""
     token = token.strip() if token else ""
+    if not _is_valid_token_format(token):
+        raise HTTPException(status_code=404, detail="Not found")
     user = get_user_by_web_token(token)
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1037,6 +1069,8 @@ async def tg_rescue_landing(request: Request = None):
 async def go_connect_smart_redirect(token: str, request: Request = None):
     """Универсальная страница быстрого подключения и импорта в 1 клик для всех ОС."""
     token = token.strip() if token else ""
+    if not _is_valid_token_format(token):
+        raise HTTPException(status_code=404, detail="Not found")
     user = get_user_by_web_token(token)
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1558,6 +1592,10 @@ async def proxy_subscription(token: str, request: Request = None):
     client_ip = (request.headers.get("x-real-ip") or (req_client.host if req_client else "unknown")) if request else "unknown"
     ua = request.headers.get("user-agent", "") if request else ""
 
+    if not _is_valid_token_format(token):
+        logger.info(f"sub_proxy: rejected scanner/probe token '{token[:32]}' from {client_ip} (ua={ua[:40]})")
+        raise HTTPException(status_code=404, detail="Not found")
+
     user = get_user_by_web_token(token)
     if not user:
         # Fallback: токен может быть 3x-ui subId (например, 9wbtovi3fhihszxa)
@@ -1705,10 +1743,10 @@ async def proxy_subscription(token: str, request: Request = None):
             elif ":38745" in line:
                 continue  # xHTTP • Ultra (дублирует и сбоит на МТС/Мегафон)
 
-            if ":7443" in line:
+            if ":7443" in line or ":20443" in line:
                 import re
-                # Переводим Reality Vision на 100% self-hosted de-gateway.tiinservice.online и стандартный порт 443
-                base_link = re.sub(r'@[^:]+:7443', '@de-gateway.tiinservice.online:443', base_link)
+                # Переводим Reality Vision на 100% self-hosted de-gateway.tiinservice.online:443
+                base_link = re.sub(r'@[^:]+:(?:7443|20443)', '@de-gateway.tiinservice.online:443', base_link)
                 if "sni=" in base_link:
                     base_link = re.sub(r'sni=[^&]+', 'sni=de-gateway.tiinservice.online', base_link)
                 else:
@@ -1716,7 +1754,7 @@ async def proxy_subscription(token: str, request: Request = None):
                 remark = "🇩🇪 👁️ Reality • Vision (МТС / РТК)"
 
                 # Параллельно добавляем скрытный IPv6 Self-SNI узел на 443 порту
-                ipv6_link = re.sub(r'@[^:]+:443', '@szm6.tiinservice.online:443', base_link)
+                ipv6_link = re.sub(r'@[^:]+:(?:7443|20443)', '@szm6.tiinservice.online:443', line)
                 ipv6_link = re.sub(r'sni=[^&]+', 'sni=szm6.tiinservice.online', ipv6_link)
                 ipv6_remark = "🇩🇪 🚀 Reality • IPv6 (МТС / РТК)"
                 if ipv6_remark not in seen_remarks and ipv6_link not in seen_links:
@@ -1728,12 +1766,14 @@ async def proxy_subscription(token: str, request: Request = None):
                     remark = "🇩🇪 ⚔️ Hysteria2 • Armor-M1"
                 elif ":4443" in line:
                     import re
-                    # Переводим Hysteria 2 Turbo на self-hosted de-gateway.tiinservice.online и стандартный alt-HTTPS порт 8443 (Nginx UDP)
-                    base_link = re.sub(r'@[^:]+:4443', '@de-gateway.tiinservice.online:8443', base_link)
+                    # Переводим Hysteria 2 Turbo на self-hosted mr-empeche.tiinservice.online и стандартный alt-HTTPS порт 8443 (Nginx UDP)
+                    base_link = re.sub(r'@[^:]+:4443', '@mr-empeche.tiinservice.online:8443', base_link)
                     if "sni=" in base_link:
-                        base_link = re.sub(r'sni=[^&]+', 'sni=de-gateway.tiinservice.online', base_link)
+                        base_link = re.sub(r'sni=[^&]+', 'sni=mr-empeche.tiinservice.online', base_link)
                     else:
-                        base_link = f"{base_link}&sni=de-gateway.tiinservice.online"
+                        base_link = f"{base_link}&sni=mr-empeche.tiinservice.online"
+                    if "mport=" not in base_link:
+                        base_link = f"{base_link}&mport=20000-35000"
                     remark = "🇩🇪 🚀 Hysteria2 • Turbo (Быстрый)"
                 else:
                     remark = "🇩🇪 🚀 Hysteria2"
@@ -1864,10 +1904,23 @@ async def proxy_subscription(token: str, request: Request = None):
             new_lines.insert(0, f"{ru_hy2_link}#{ru_hy2_remark}")
             vless_entries.insert(0, (ru_hy2_link, ru_hy2_remark))
 
-            ru_vless_link = f"vless://{client_uuid}@ru-server.tiinservice.online:8443?type=ws&security=tls&sni=ru-server.tiinservice.online&path=%2Fapi%2Fv1%2Fws"
-            ru_vless_remark = "🇷🇺 🛡️ VLESS • Шлюз (РФ ➔ DE)" if is_admin else "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
+            ru_vless_link = f"vless://{client_uuid}@ru-server.tiinservice.online:443?encryption=none&type=xhttp&security=tls&alpn=h2,http/1.1&fp=chrome&sni=ru-server.tiinservice.online&path=%2Fapi%2Fv1%2Fsync&mode=packet-up"
+            ru_vless_remark = "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
             new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
             vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
+
+            # Нидерландские резервные узлы (CDN xHTTP + Reality Vision) в конец списка
+            nl_xhttp_link = f"vless://{client_uuid}@api.tottiemottie.biz:443?encryption=none&type=xhttp&security=tls&alpn=h2,http/1.1&fp=chrome&sni=api.tottiemottie.biz&path=%2Fapi%2Fv2%2Fmetrics&mode=packet-up"
+            nl_xhttp_remark = "🇳🇱 🛡️ xHTTP • Cloudflare CDN"
+            # new_lines.append(f"{nl_xhttp_link}#{nl_xhttp_remark}")
+            # vless_entries.append((nl_xhttp_link, nl_xhttp_remark))
+
+            nl_pbk = NL_REALITY_PBK or "E8Ce4rURFZukxlewAZUNiCW6kJygKZjNnafO8mINyTc"
+            nl_sid = NL_REALITY_SID or "a99293d481cd42d5"
+            nl_reality_link = f"vless://{client_uuid}@app.tottiemottie.biz:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&pbk={nl_pbk}&sni=app.tottiemottie.biz&sid={nl_sid}&fp=chrome"
+            nl_reality_remark = "🇳🇱 🚀 Reality • Direct Exit"
+            # new_lines.append(f"{nl_reality_link}#{nl_reality_remark}")
+            # vless_entries.append((nl_reality_link, nl_reality_remark))
 
             # Скоростной TUIC v5 (QUIC) — на этапе тестирования доступен СТРОГО для администратора
             if is_admin:
@@ -1892,7 +1945,7 @@ async def proxy_subscription(token: str, request: Request = None):
                 elif not has_de_xhttp and "xhttp" in link.lower() and ("mr-empeche" in link or ":443" in link or ":47447" in link):
                     filtered_entries.append((link, "🇩🇪 🛡️ xHTTP"))
                     has_de_xhttp = True
-                elif not has_de_reality and link.startswith("vless://") and ("de-gateway.tiinservice.online" in link or "szm6.tiinservice.online" in link or "Reality" in remark):
+                elif not has_de_reality and link.startswith("vless://") and ("mr-empeche" in link or "de-gateway" in link or "szm6" in link or "Reality" in remark):
                     filtered_entries.append((link, "🇩🇪 🚀 Reality"))
                     has_de_reality = True
             

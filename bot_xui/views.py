@@ -577,23 +577,29 @@ async def show_single_config(query, client_name: str, xui):
 
 
 async def show_sub_links(query, token: str):
-    """Показывает 2 способа импорта подписки (DE 344988.snk.wtf и RU Selectel)."""
+    """Показывает способы импорта подписки (DE 344988.snk.wtf, RU Selectel и резервное зеркало Cloudflare CDN)."""
+    from bot_xui.helpers import FALLBACK_SUB_BASE_URL
     de_url = f"https://344988.snk.wtf/sub/{token}"
     ru_url = f"https://ru-server.tiinservice.online/sub/{token}"
+    fallback_url = f"{FALLBACK_SUB_BASE_URL}/sub/{token}"
     text = (
-        "🔗 <b>Ссылки для импорта подписки (2 способа)</b>\n\n"
-        "Если в вашем приложении (Happ, Hiddify, v2rayNG, Karing, Shadowrocket) подписка не обновляется или выдает ошибку сети, используйте второй способ:\n\n"
+        "🔗 <b>Ссылки для импорта подписки</b>\n\n"
+        "Если в вашем приложении (Happ, Hiddify, v2rayNG, Karing, Shadowrocket) подписка не обновляется или выдает ошибку сети, используйте альтернативный адрес:\n\n"
         "1️⃣ <b>Способ 1: Основной (Германия)</b>\n"
         f"<code>{de_url}</code>\n"
         "<i>(Прямой европейский канал к серверу Hetzner)</i>\n\n"
         "2️⃣ <b>Способ 2: Резервный шлюз РФ (Selectel СПб)</b>\n"
         f"<code>{ru_url}</code>\n"
         "<i>(Обходит фильтрацию и блокировки МТС, МегаФон, Билайн, Ростелеком)</i>\n\n"
+        "3️⃣ <b>Способ 3: Зеркало Cloudflare CDN (Резерв)</b>\n"
+        f"<code>{fallback_url}</code>\n"
+        "<i>(Защищённый независимый CDN-шлюз с обходом сбоев основного домена)</i>\n\n"
         "💡 <i>Нажмите на любую ссылку выше, чтобы скопировать её в буфер обмена, затем в приложении нажмите «+» ➔ «Добавить из буфера обмена».</i>"
     )
     keyboard = [
         [InlineKeyboardButton("⚡ 1-клик: Основной", url=f"https://344988.snk.wtf/go-connect/{token}")],
         [InlineKeyboardButton("⚡ 1-клик: Резервный РФ", url=f"https://ru-server.tiinservice.online/go-connect/{token}")],
+        [InlineKeyboardButton("⚡ 1-клик: Зеркало CDN", url=f"{FALLBACK_SUB_BASE_URL}/go-connect/{token}")],
         [InlineKeyboardButton("🔙 К списку", callback_data="my_configs")],
     ]
     await safe_edit_text_logged(query, text, "sub_links", reply_markup=InlineKeyboardMarkup(keyboard))

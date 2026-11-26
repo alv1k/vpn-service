@@ -23,12 +23,13 @@
   ],
   "outbounds": [
     {
+      "tag": "ru-out",
       "protocol": "vless",
       "settings": {
         "vnext": [
           {
-            "address": "10.50.0.2",
-            "port": 8443,
+            "address": "ru-server.tiinservice.online",
+            "port": 443,
             "users": [
               {
                 "id": "c136c87c-68d1-4c32-a80c-fef54a8606cf",
@@ -38,21 +39,47 @@
           }
         ]
       },
-      "mux": {
-        "enabled": true,
-        "concurrency": 8
-      },
       "streamSettings": {
-        "network": "ws",
+        "network": "xhttp",
         "security": "tls",
         "tlsSettings": {
           "serverName": "ru-server.tiinservice.online"
         },
-        "wsSettings": {
-          "path": "/api/v1/ws"
+        "xhttpSettings": {
+          "path": "/api/v1/sync",
+          "mode": "packet-up"
         }
+      }
+    },
+    {
+      "tag": "nl-reality",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "2.26.76.210",
+            "port": 443,
+            "users": [
+              {
+                "id": "5f02a856-bd1d-4a4e-9063-78fdb3cefddc",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
       },
-      "tag": "ru-out"
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "baza-stroi.tiinservice.online",
+          "fingerprint": "chrome",
+          "publicKey": "C6vq2sIrgbNuIgeKioqhGrtEkjqy9pouxR6ZzDPMQHM",
+          "shortId": "120a04598efbb8eb",
+          "spiderX": "/"
+        }
+      }
     }
   ]
 }

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TIIN — Прокси для Telegram</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+       background: #0a0a0a; color: #e5e5e5; min-height: 100vh;
+       -webkit-font-smoothing: antialiased; }
+.container { max-width: 600px; margin: 0 auto; padding: 2rem 1.5rem; }
+.header { text-align: center; margin-bottom: 2rem; }
+.header h1 { font-size: 1.6rem; font-weight: 800; color: #fff; margin-bottom: .3rem; }
+.header p { color: #888; font-size: .95rem; }
+.card { background: #141414; border: 1px solid #1e1e1e; border-radius: 16px;
+        padding: 2rem 1.5rem; margin-bottom: 1.5rem; text-align: center; }
+.card h2 { font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: .8rem; }
+.card p { color: #999; font-size: .9rem; line-height: 1.5; }
+.btn { display: inline-block; padding: .9rem 2rem; background: #7c3aed; color: #fff;
+       text-decoration: none; border-radius: 10px; font-size: 1rem; font-weight: 600;
+       transition: background .15s; margin-top: 1rem; }
+.btn:hover { background: #6d28d9; }
+.btn:active { background: #5b21b6; }
+.btn-secondary { display: inline-block; padding: .7rem 1.5rem; background: transparent;
+       color: #7c3aed; text-decoration: none; border-radius: 10px; font-size: .85rem;
+       font-weight: 600; border: 1px solid #7c3aed; margin-top: .8rem;
+       transition: background .15s; }
+.btn-secondary:hover { background: rgba(124,58,237,.1); }
+.divider { border: none; border-top: 1px solid #1e1e1e; margin: 1.5rem 0; }
+.steps { text-align: left; }
+.step { display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 1.2rem; }
+.step-num { flex-shrink: 0; width: 32px; height: 32px; display: flex; align-items: center;
+          justify-content: center; background: #7c3aed; color: #fff; border-radius: 50%;
+          font-size: .85rem; font-weight: 700; }
+.step-body h3 { font-size: .9rem; font-weight: 600; color: #fff; margin-bottom: .2rem; }
+.step-body p { font-size: .82rem; color: #777; line-height: 1.4; }
+.platform-tabs { display: flex; gap: .5rem; flex-wrap: wrap; justify-content: center; margin-bottom: 1rem; }
+.platform-tab { padding: .4rem .9rem; background: #1a1a1a; border: 1px solid #333;
+              border-radius: 8px; font-size: .75rem; color: #888; cursor: pointer;
+              transition: all .15s; }
+.platform-tab.active { border-color: #7c3aed; color: #a78bfa; background: #1a1030; }
+.platform-content { display: none; }
+.platform-content.active { display: block; }
+.copy-box { background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+            padding: .6rem .8rem; font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: .78rem; color: #a78bfa; word-break: break-all; margin-top: .5rem;
+            cursor: pointer; user-select: all; }
+.copy-box:hover { border-color: #7c3aed; }
+.hint { font-size: .75rem; color: #666; margin-top: .4rem; }
+.footer { text-align: center; margin-top: 2rem; padding-top: 1.5rem;
+         border-top: 1px solid #1a1a1a; }
+.footer a { color: #7c3aed; text-decoration: none; font-size: .85rem; }
+.footer a:hover { text-decoration: underline; }
+.badge { display: inline-block; background: rgba(124,58,237,.15); color: #a78bfa;
+         font-size: .7rem; font-weight: 600; padding: .3rem .8rem; border-radius: 20px;
+         border: 1px solid rgba(124,58,237,.3); margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+  <div class="badge">Бесплатно</div>
+  <h1>⚡ Прокси для Telegram</h1>
+  <p>Если Telegram не открывается — подключите прокси в один клик</p>
+</div>
+
+<div class="card">
+  <h2>Быстрое подключение</h2>
+  <p>Нажмите кнопку ниже. Если у вас установлен Telegram, он автоматически подключит прокси.</p>
+  <a class="btn" href="tg://proxy?server=caretg.tiinservice.online&port=8443&secret=7onLTQ6ONSvW7Cnj8uvSaGZjYXJldGcudGlpbnNlcnZpY2Uub25saW5l">Подключить прокси</a>
+  <p class="hint">Не работает? <a href="https://t.me/proxy?server=caretg.tiinservice.online&port=8443&secret=7onLTQ6ONSvW7Cnj8uvSaGZjYXJldGcudGlpbnNlcnZpY2Uub25saW5l" style="color:#7c3aed">Попробуйте эту ссылку</a></p>
+</div>
+
+<hr class="divider">
+
+<div class="card">
+  <h2>Настройка вручную</h2>
+  <p>Если автоматическое подключение не сработало — настройте прокси вручную:</p>
+
+  <div class="platform-tabs">
+    <div class="platform-tab active" onclick="showPlatform('ios')">iOS</div>
+    <div class="platform-tab" onclick="showPlatform('android')">Android</div>
+    <div class="platform-tab" onclick="showPlatform('windows')">Windows</div>
+    <div class="platform-tab" onclick="showPlatform('macos')">macOS</div>
+  </div>
+
+  <div id="platform-ios" class="platform-content active">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body"><h3>Откройте Telegram</h3><p>Запустите приложение Telegram на вашем iPhone или iPad</p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body"><h3>Перейдите в настройки</h3><p>Нажмите «Настройки» → «Данные и память» → «Прокси»</p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body"><h3>Добавьте прокси</h3><p>Нажмите «Добавить прокси» и введите параметры:</p></div>
+    </div>
+  </div>
+
+  <div id="platform-android" class="platform-content">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body"><h3>Откройте Telegram</h3><p>Запустите приложение Telegram на вашем Android-устройстве</p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body"><h3>Перейдите в настройки</h3><p>Нажмите ☰ «Настройки» → «Данные и память» → «Прокси»</p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body"><h3>Добавьте прокси</h3><p>Нажмите «+» и введите параметры:</p></div>
+    </div>
+  </div>
+
+  <div id="platform-windows" class="platform-content">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body"><h3>Откройте Telegram Desktop</h3><p>Запустите Telegram на компьютере</p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body"><h3>Перейдите в настройки</h3><p>Нажмите ☰ «Settings» → «Advanced» → «Connection type» → «Use custom proxy»</p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body"><h3>Добавьте MTProto прокси</h3><p>Выберите MTProto и введите параметры:</p></div>
+    </div>
+  </div>
+
+  <div id="platform-macos" class="platform-content">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body"><h3>Откройте Telegram Desktop</h3><p>Запустите Telegram на Mac</p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body"><h3>Перейдите в настройки</h3><p>Telegram → Settings → Advanced → Connection type → Use custom proxy</p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body"><h3>Добавьте MTProto прокси</h3><p>Выберите MTProto и введите параметры:</p></div>
+    </div>
+  </div>
+
+  <div style="margin-top: 1.2rem; text-align: left;">
+    <p style="font-size: .82rem; color: #888; margin-bottom: .5rem;"><b>Параметры прокси:</b></p>
+    <div class="copy-box" onclick="copyText(this)">caretg.tiinservice.online</div>
+    <p class="hint">Сервер (Server)</p>
+    <div class="copy-box" onclick="copyText(this)">8443</div>
+    <p class="hint">Порт (Port)</p>
+    <div class="copy-box" onclick="copyText(this)">7onLTQ6ONSvW7Cnj8uvSaGZjYXJldGcudGlpbnNlcnZpY2Uub25saW5l</div>
+    <p class="hint">Секрет (Secret)</p>
+  </div>
+</div>
+
+<hr class="divider">
+
+<div class="card">
+  <h2>Что это?</h2>
+  <p>MTProto — это протокол прокси, который позволяет использовать Telegram даже при блокировке. Трафик шифруется и проходит через наш сервер, минуя ограничения.</p>
+  <p style="margin-top: .8rem;">✅ Бесплатно</p>
+  <p>✅ Без лимитов</p>
+  <p>✅ Без логов</p>
+</div>
+
+<div class="card" style="border: 1px solid rgba(124, 58, 237, 0.4); background: linear-gradient(135deg, #13111c 0%, #171520 100%);">
+  <div class="badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80; border-color: rgba(34, 197, 94, 0.3); margin-bottom: 0.6rem;">3 дня бесплатно</div>
+  <h2>🛡️ Безопасный интернет для всех устройств</h2>
+  <p style="margin-bottom: 1rem; color: #999; font-size: 0.9rem;">
+    Быстрое и стабильное подключение для комфортной работы в сети:
+  </p>
+  <div style="display: flex; justify-content: center; gap: 1.2rem; flex-wrap: wrap; margin-bottom: 1.2rem; font-size: 0.88rem; color: #ddd;">
+    <div>📱 <b>10 устройств</b></div>
+    <div>⚡ <b>199 ₽ / мес</b></div>
+    <div>🎁 <b>3 дня на тест</b></div>
+  </div>
+  <a class="btn" href="https://t.me/tiin_service_bot?start=proxy_page" style="background: #2563eb; display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; box-sizing: border-box;">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="#fff"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg>
+    Перейти в @tiin_service_bot
+  </a>
+</div>
+
+<div class="footer">
+  <a href="https://tiinservice.online">tiinservice.online</a>
+  <p style="color: #555; font-size: .75rem; margin-top: .5rem;">© 2026 TIIN. Быстрый и безопасный доступ в интернет.</p>
+</div>
+
+</div>
+
+<script>
+function showPlatform(name) {
+  document.querySelectorAll('.platform-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.platform-tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('platform-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+function copyText(el) {
+  const text = el.textContent;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text);
+    el.style.borderColor = '#22c55e';
+    el.style.color = '#22c55e';
+    setTimeout(() => { el.style.borderColor = '#333'; el.style.color = '#a78bfa'; }, 1000);
+  }
+}
+</script>
+</body>
+</html>

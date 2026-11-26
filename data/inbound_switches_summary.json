@@ -1,0 +1,858 @@
+{
+  "generated_at": "2026-11-17 09:27:46",
+  "source_log": "/home/alvik/vpn-service/logs/inbound_switches.log",
+  "earliest_event": "2026-09-18 04:16:27",
+  "latest_event": "2026-11-17 04:26:18",
+  "total_lines_analyzed": 880320,
+  "total_switches": 188990,
+  "total_roaming": 521606,
+  "monthly_switches": {
+    "2026-09": 101108,
+    "2026-10": 84025,
+    "2026-11": 3857
+  },
+  "monthly_roaming": {
+    "2026-09": 433491,
+    "2026-10": 87876,
+    "2026-11": 239
+  },
+  "gap_distribution": {
+    "< 5s (Flapping)": 125111,
+    "5s - 30s (Rapid)": 49550,
+    "30s - 300s (Moderate)": 13633,
+    "> 300s (Organic)": 696
+  },
+  "switch_matrix": [
+    {
+      "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+      "count": 66782
+    },
+    {
+      "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+      "count": 66699
+    },
+    {
+      "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+      "count": 13106
+    },
+    {
+      "pair": "Hysteria2 Turbo (4443) ➔ Reality Standard (53151)",
+      "count": 13042
+    },
+    {
+      "pair": "xHTTP Stream (47447) ➔ Hysteria2 Turbo (4443)",
+      "count": 9352
+    },
+    {
+      "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Stream (47447)",
+      "count": 9342
+    },
+    {
+      "pair": "Reality Vision (7443) ➔ Reality Standard (53151)",
+      "count": 2389
+    },
+    {
+      "pair": "Reality Standard (53151) ➔ Reality Vision (7443)",
+      "count": 2298
+    },
+    {
+      "pair": "Reality Vision (7443) ➔ xHTTP Stream (47447)",
+      "count": 1421
+    },
+    {
+      "pair": "xHTTP Stream (47447) ➔ Reality Vision (7443)",
+      "count": 1402
+    },
+    {
+      "pair": "xHTTP Armor (48745) ➔ Hysteria2 Turbo (4443)",
+      "count": 870
+    },
+    {
+      "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Armor (48745)",
+      "count": 855
+    },
+    {
+      "pair": "xHTTP Armor (48745) ➔ Reality Vision (7443)",
+      "count": 371
+    },
+    {
+      "pair": "Reality Vision (7443) ➔ xHTTP Armor (48745)",
+      "count": 367
+    },
+    {
+      "pair": "Reality Standard (53151) ➔ xHTTP Stream (47447)",
+      "count": 137
+    },
+    {
+      "pair": "xHTTP Stream (47447) ➔ Reality Standard (53151)",
+      "count": 137
+    },
+    {
+      "pair": "Reality Standard (53151) ➔ xHTTP Armor (48745)",
+      "count": 51
+    },
+    {
+      "pair": "xHTTP Armor (48745) ➔ Reality Standard (53151)",
+      "count": 47
+    },
+    {
+      "pair": "xHTTP Stream (47447) ➔ xHTTP Ultra (38745)",
+      "count": 45
+    },
+    {
+      "pair": "xHTTP Ultra (38745) ➔ xHTTP Stream (47447)",
+      "count": 44
+    },
+    {
+      "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Ultra (38745)",
+      "count": 42
+    },
+    {
+      "pair": "xHTTP Ultra (38745) ➔ Hysteria2 Turbo (4443)",
+      "count": 39
+    },
+    {
+      "pair": "xHTTP Stream (47447) ➔ xHTTP Armor (48745)",
+      "count": 33
+    },
+    {
+      "pair": "xHTTP Armor (48745) ➔ xHTTP Stream (47447)",
+      "count": 24
+    },
+    {
+      "pair": "xHTTP Ultra (38745) ➔ Reality Vision (7443)",
+      "count": 16
+    },
+    {
+      "pair": "Reality Vision (7443) ➔ xHTTP Ultra (38745)",
+      "count": 14
+    },
+    {
+      "pair": "Reality Standard (53151) ➔ xHTTP Ultra (38745)",
+      "count": 13
+    },
+    {
+      "pair": "xHTTP Ultra (38745) ➔ Reality Standard (53151)",
+      "count": 10
+    },
+    {
+      "pair": "xHTTP Ultra (38745) ➔ xHTTP Armor (48745)",
+      "count": 7
+    },
+    {
+      "pair": "Anti-DPI Testing (8081) ➔ Hysteria2 Turbo (4443)",
+      "count": 7
+    },
+    {
+      "pair": "Reality Vision (7443) ➔ Anti-DPI Testing (8081)",
+      "count": 6
+    },
+    {
+      "pair": "Hysteria2 Turbo (4443) ➔ Anti-DPI Testing (8081)",
+      "count": 6
+    },
+    {
+      "pair": "Anti-DPI Testing (8081) ➔ Reality Vision (7443)",
+      "count": 3
+    },
+    {
+      "pair": "xHTTP Armor (48745) ➔ xHTTP Ultra (38745)",
+      "count": 2
+    },
+    {
+      "pair": "Hysteria2 Armor (35443) ➔ Hysteria2 Turbo (4443)",
+      "count": 2
+    },
+    {
+      "pair": "xHTTP Armor (48745) ➔ Hysteria2 Armor (35443)",
+      "count": 1
+    },
+    {
+      "pair": "Reality Vision (7443) ➔ Hysteria2 Armor (35443)",
+      "count": 1
+    },
+    {
+      "pair": "Hysteria2 Turbo (4443) ➔ Hysteria2 Armor (35443)",
+      "count": 1
+    },
+    {
+      "pair": "Hysteria2 Armor (35443) ➔ Anti-DPI Testing (8081)",
+      "count": 1
+    },
+    {
+      "pair": "xHTTP Stream (47447) ➔ Anti-DPI Testing (8081)",
+      "count": 1
+    },
+    {
+      "pair": "Anti-DPI Testing (8081) ➔ xHTTP Stream (47447)",
+      "count": 1
+    },
+    {
+      "pair": "Reality Vision (7443) ➔ Inbound 17443",
+      "count": 1
+    },
+    {
+      "pair": "Reality Standard (53151) ➔ Inbound 17443",
+      "count": 1
+    },
+    {
+      "pair": "Inbound 17443 ➔ Reality Vision (7443)",
+      "count": 1
+    }
+  ],
+  "isp_distribution": {
+    "Other / RU ISP": {
+      "total": 34541,
+      "top_transitions": [
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 18422
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 7941
+        },
+        {
+          "pair": "xHTTP Stream (47447) ➔ Hysteria2 Turbo (4443)",
+          "count": 1948
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 1927
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Stream (47447)",
+          "count": 1002
+        }
+      ]
+    },
+    "Rostelecom (YKT)": {
+      "total": 26765,
+      "top_transitions": [
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 12130
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 11851
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Reality Vision (7443)",
+          "count": 1339
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Reality Standard (53151)",
+          "count": 1079
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Standard (53151)",
+          "count": 169
+        }
+      ]
+    },
+    "Beeline": {
+      "total": 22663,
+      "top_transitions": [
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 10029
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 6268
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Standard (53151)",
+          "count": 4983
+        },
+        {
+          "pair": "xHTTP Stream (47447) ➔ Hysteria2 Turbo (4443)",
+          "count": 573
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Reality Standard (53151)",
+          "count": 298
+        }
+      ]
+    },
+    "Internal VPN / Bridge": {
+      "total": 17814,
+      "top_transitions": [
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 17811
+        },
+        {
+          "pair": "xHTTP Armor (48745) ➔ Reality Vision (7443)",
+          "count": 2
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Reality Vision (7443)",
+          "count": 1
+        }
+      ]
+    },
+    "Unknown": {
+      "total": 14504,
+      "top_transitions": [
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 8822
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Standard (53151)",
+          "count": 4557
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Reality Standard (53151)",
+          "count": 522
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Reality Vision (7443)",
+          "count": 244
+        },
+        {
+          "pair": "xHTTP Stream (47447) ➔ Reality Vision (7443)",
+          "count": 159
+        }
+      ]
+    },
+    "Rostelecom": {
+      "total": 14320,
+      "top_transitions": [
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 5978
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 4840
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Standard (53151)",
+          "count": 2470
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 796
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Stream (47447)",
+          "count": 136
+        }
+      ]
+    },
+    "MTS": {
+      "total": 11096,
+      "top_transitions": [
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Stream (47447)",
+          "count": 4652
+        },
+        {
+          "pair": "xHTTP Stream (47447) ➔ Hysteria2 Turbo (4443)",
+          "count": 2080
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 2075
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 785
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 694
+        }
+      ]
+    },
+    "RU ISP (in-addr)": {
+      "total": 10909,
+      "top_transitions": [
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 6126
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 3688
+        },
+        {
+          "pair": "xHTTP Stream (47447) ➔ Hysteria2 Turbo (4443)",
+          "count": 516
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Stream (47447)",
+          "count": 380
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Armor (48745)",
+          "count": 77
+        }
+      ]
+    },
+    "MegaFon": {
+      "total": 9738,
+      "top_transitions": [
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 3241
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Stream (47447)",
+          "count": 2187
+        },
+        {
+          "pair": "xHTTP Stream (47447) ➔ Hysteria2 Turbo (4443)",
+          "count": 1599
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 1183
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 958
+        }
+      ]
+    },
+    "RU ISP (sknt)": {
+      "total": 9223,
+      "top_transitions": [
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 5748
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 3398
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Reality Standard (53151)",
+          "count": 25
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Standard (53151)",
+          "count": 20
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 20
+        }
+      ]
+    },
+    "RU ISP (kampaneko)": {
+      "total": 4618,
+      "top_transitions": [
+        {
+          "pair": "xHTTP Stream (47447) ➔ Hysteria2 Turbo (4443)",
+          "count": 2468
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Stream (47447)",
+          "count": 729
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 425
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 382
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Standard (53151)",
+          "count": 199
+        }
+      ]
+    },
+    "RU ISP (spd-mgts)": {
+      "total": 4319,
+      "top_transitions": [
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 2319
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 1815
+        },
+        {
+          "pair": "xHTTP Stream (47447) ➔ Hysteria2 Turbo (4443)",
+          "count": 82
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 65
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Stream (47447)",
+          "count": 26
+        }
+      ]
+    },
+    "RU ISP (sstel)": {
+      "total": 3121,
+      "top_transitions": [
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 2745
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 163
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Reality Standard (53151)",
+          "count": 82
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 75
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Reality Vision (7443)",
+          "count": 30
+        }
+      ]
+    },
+    "RU ISP (airnet)": {
+      "total": 2980,
+      "top_transitions": [
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 1265
+        },
+        {
+          "pair": "xHTTP Armor (48745) ➔ Hysteria2 Turbo (4443)",
+          "count": 722
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 719
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ xHTTP Armor (48745)",
+          "count": 244
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ xHTTP Armor (48745)",
+          "count": 8
+        }
+      ]
+    },
+    "RU ISP (ufanet)": {
+      "total": 1133,
+      "top_transitions": [
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Vision (7443)",
+          "count": 595
+        },
+        {
+          "pair": "Reality Vision (7443) ➔ Hysteria2 Turbo (4443)",
+          "count": 452
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Hysteria2 Turbo (4443)",
+          "count": 41
+        },
+        {
+          "pair": "Hysteria2 Turbo (4443) ➔ Reality Standard (53151)",
+          "count": 40
+        },
+        {
+          "pair": "Reality Standard (53151) ➔ Reality Vision (7443)",
+          "count": 3
+        }
+      ]
+    }
+  },
+  "top_users_by_switches": [
+    {
+      "user": "vless_6335998601",
+      "count": 45497
+    },
+    {
+      "user": "tiin_667624374",
+      "count": 42778
+    },
+    {
+      "user": "bwd2scof",
+      "count": 35841
+    },
+    {
+      "user": "tiin_284509567",
+      "count": 20144
+    },
+    {
+      "user": "tiin_138315162",
+      "count": 14106
+    },
+    {
+      "user": "tiin_401499373",
+      "count": 10106
+    },
+    {
+      "user": "tiin_261343964",
+      "count": 7216
+    },
+    {
+      "user": "tiin_115744584",
+      "count": 4020
+    },
+    {
+      "user": "vless_667624374",
+      "count": 2511
+    },
+    {
+      "user": "tiin_158375551",
+      "count": 2282
+    },
+    {
+      "user": "tiin_324a1686",
+      "count": 1364
+    },
+    {
+      "user": "tiin_809512218",
+      "count": 1093
+    },
+    {
+      "user": "tiin_364224373",
+      "count": 679
+    },
+    {
+      "user": "tiin_813312646",
+      "count": 454
+    },
+    {
+      "user": "tiin_web_32",
+      "count": 105
+    },
+    {
+      "user": "tiin_586524944",
+      "count": 86
+    },
+    {
+      "user": "tiin_633680175",
+      "count": 65
+    },
+    {
+      "user": "tiin_785340625",
+      "count": 64
+    },
+    {
+      "user": "tiin_343172709",
+      "count": 57
+    },
+    {
+      "user": "tiin_1017680863",
+      "count": 48
+    },
+    {
+      "user": "tiin_619358991",
+      "count": 41
+    },
+    {
+      "user": "vless_6648354839",
+      "count": 33
+    },
+    {
+      "user": "tiin_464135940",
+      "count": 32
+    },
+    {
+      "user": "tiin_961184090",
+      "count": 29
+    },
+    {
+      "user": "tiin_382693521",
+      "count": 29
+    }
+  ],
+  "top_users_by_roaming": [
+    {
+      "user": "bwd2scof",
+      "count": 332653
+    },
+    {
+      "user": "vless_6335998601",
+      "count": 53915
+    },
+    {
+      "user": "tiin_158375551",
+      "count": 29782
+    },
+    {
+      "user": "tiin_667624374",
+      "count": 23233
+    },
+    {
+      "user": "tiin_284509567",
+      "count": 21409
+    },
+    {
+      "user": "tiin_481296",
+      "count": 17370
+    },
+    {
+      "user": "tiin_web_32",
+      "count": 16153
+    },
+    {
+      "user": "vless_667624374",
+      "count": 14557
+    },
+    {
+      "user": "tiin_364224373",
+      "count": 5276
+    },
+    {
+      "user": "tiin_401499373",
+      "count": 2786
+    },
+    {
+      "user": "tiin_138315162",
+      "count": 2160
+    },
+    {
+      "user": "tiin_191106154",
+      "count": 458
+    },
+    {
+      "user": "tiin_115744584",
+      "count": 294
+    },
+    {
+      "user": "tiin_5254383247",
+      "count": 264
+    },
+    {
+      "user": "tiin_261343964",
+      "count": 151
+    },
+    {
+      "user": "tiin_846148365",
+      "count": 151
+    },
+    {
+      "user": "tiin_8787528828",
+      "count": 128
+    },
+    {
+      "user": "tiin_444329196",
+      "count": 121
+    },
+    {
+      "user": "tiin_813312646",
+      "count": 93
+    },
+    {
+      "user": "tiin_1193303463",
+      "count": 86
+    },
+    {
+      "user": "tiin_50613379",
+      "count": 76
+    },
+    {
+      "user": "tiin_6864368530",
+      "count": 74
+    },
+    {
+      "user": "tiin_911899592",
+      "count": 73
+    },
+    {
+      "user": "tiin_961184090",
+      "count": 66
+    },
+    {
+      "user": "tiin_785340625",
+      "count": 50
+    }
+  ],
+  "top_roaming_isp_transitions": [
+    {
+      "pair": "Internal VPN / Bridge ➔ Unknown",
+      "count": 165837
+    },
+    {
+      "pair": "Unknown ➔ Internal VPN / Bridge",
+      "count": 165777
+    },
+    {
+      "pair": "Unknown ➔ Beeline",
+      "count": 38607
+    },
+    {
+      "pair": "Beeline ➔ Unknown",
+      "count": 34322
+    },
+    {
+      "pair": "Unknown ➔ Other / RU ISP",
+      "count": 16484
+    },
+    {
+      "pair": "Other / RU ISP ➔ Unknown",
+      "count": 16174
+    },
+    {
+      "pair": "Beeline ➔ Other / RU ISP",
+      "count": 13940
+    },
+    {
+      "pair": "Other / RU ISP ➔ Beeline",
+      "count": 13923
+    },
+    {
+      "pair": "MegaFon ➔ Other / RU ISP",
+      "count": 8776
+    },
+    {
+      "pair": "Other / RU ISP ➔ MegaFon",
+      "count": 8663
+    },
+    {
+      "pair": "Rostelecom ➔ Other / RU ISP",
+      "count": 6371
+    },
+    {
+      "pair": "Other / RU ISP ➔ Rostelecom",
+      "count": 6209
+    },
+    {
+      "pair": "Unknown ➔ Rostelecom",
+      "count": 3899
+    },
+    {
+      "pair": "Rostelecom ➔ Unknown",
+      "count": 3745
+    },
+    {
+      "pair": "Other / RU ISP ➔ MTS",
+      "count": 2990
+    },
+    {
+      "pair": "MTS ➔ Other / RU ISP",
+      "count": 2958
+    },
+    {
+      "pair": "Unknown ➔ MegaFon",
+      "count": 1950
+    },
+    {
+      "pair": "MegaFon ➔ Unknown",
+      "count": 1654
+    },
+    {
+      "pair": "Beeline ➔ MegaFon",
+      "count": 1514
+    },
+    {
+      "pair": "MegaFon ➔ Beeline",
+      "count": 1451
+    }
+  ]
+}

@@ -73,6 +73,7 @@ logger = logging.getLogger("switch_monitor")
 INBOUND_NAMES = {
     "4443": "Hysteria2 Turbo (4443)",
     "7443": "Reality Vision (7443)",
+    "20443": "Reality Vision 443 (20443)",
     "48745": "xHTTP Armor (48745)",
     "47447": "xHTTP Stream (47447)",
     "53151": "Reality Standard (53151)",

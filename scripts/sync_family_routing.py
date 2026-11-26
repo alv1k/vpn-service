@@ -110,7 +110,7 @@ conn.close()
     cmd = f"echo {b64_code} | base64 -d | python3"
 
     res = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "root@10.50.0.2", cmd],
+        ["ssh", "-o", "ConnectTimeout=5", "ru-server-nl", cmd],
         capture_output=True, text=True
     )
     if res.returncode == 0 and ("REMOVED_AND_RESTARTED" in res.stdout or "CLEAN" in res.stdout):
