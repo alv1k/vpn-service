@@ -1901,26 +1901,26 @@ async def proxy_subscription(token: str, request: Request = None):
             client_auth = real_hy2_auth or client_uuid.replace('-', '')
             ru_hy2_link = f"hysteria2://{client_auth}@ru-server.tiinservice.online:35443?alpn=h3&fp=chrome&security=tls&sni=ru-server.tiinservice.online"
             ru_hy2_remark = "🇷🇺 ⚡ Hysteria2 • Шлюз (РФ ➔ DE)"
-            new_lines.insert(0, f"{ru_hy2_link}#{ru_hy2_remark}")
-            vless_entries.insert(0, (ru_hy2_link, ru_hy2_remark))
+            # new_lines.insert(0, f"{ru_hy2_link}#{ru_hy2_remark}")
+            # vless_entries.insert(0, (ru_hy2_link, ru_hy2_remark))
 
             ru_vless_link = f"vless://{client_uuid}@ru-server.tiinservice.online:443?encryption=none&type=xhttp&security=tls&alpn=h2,http/1.1&fp=chrome&sni=ru-server.tiinservice.online&path=%2Fapi%2Fv1%2Fsync&mode=packet-up"
             ru_vless_remark = "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
-            new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
-            vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
+            # new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
+            # vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
 
             # Нидерландские резервные узлы (CDN xHTTP + Reality Vision) в конец списка
             nl_xhttp_link = f"vless://{client_uuid}@api.tottiemottie.biz:443?encryption=none&type=xhttp&security=tls&alpn=h2,http/1.1&fp=chrome&sni=api.tottiemottie.biz&path=%2Fapi%2Fv2%2Fmetrics&mode=packet-up"
             nl_xhttp_remark = "🇳🇱 🛡️ xHTTP • Cloudflare CDN"
-            # new_lines.append(f"{nl_xhttp_link}#{nl_xhttp_remark}")
-            # vless_entries.append((nl_xhttp_link, nl_xhttp_remark))
+            new_lines.append(f"{nl_xhttp_link}#{nl_xhttp_remark}")
+            vless_entries.append((nl_xhttp_link, nl_xhttp_remark))
 
             nl_pbk = NL_REALITY_PBK or "E8Ce4rURFZukxlewAZUNiCW6kJygKZjNnafO8mINyTc"
             nl_sid = NL_REALITY_SID or "a99293d481cd42d5"
             nl_reality_link = f"vless://{client_uuid}@app.tottiemottie.biz:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&pbk={nl_pbk}&sni=app.tottiemottie.biz&sid={nl_sid}&fp=chrome"
             nl_reality_remark = "🇳🇱 🚀 Reality • Direct Exit"
-            # new_lines.append(f"{nl_reality_link}#{nl_reality_remark}")
-            # vless_entries.append((nl_reality_link, nl_reality_remark))
+            new_lines.append(f"{nl_reality_link}#{nl_reality_remark}")
+            vless_entries.append((nl_reality_link, nl_reality_remark))
 
             # Скоростной TUIC v5 (QUIC) — на этапе тестирования доступен СТРОГО для администратора
             if is_admin:
