@@ -92,6 +92,80 @@ def _get_ru_xui():
 _ru_inbounds_cache = {"ts": 0.0, "data": []}
 _ru_client_ips_cache = {"ts": 0.0, "data": {}}
 
+# NL node (Netherlands exit node) caches
+_nl_xui = None
+_nl_inbounds_cache = {"ts": 0.0, "data": []}
+_nl_client_ips_cache = {"ts": 0.0, "data": {}}
+
+
+def _get_nl_xui():
+    global _nl_xui
+    if _nl_xui is None:
+        try:
+            from bot_xui.multi_node import get_nl_xui_client
+            _nl_xui = get_nl_xui_client()
+        except Exception as e:
+            logger.warning(f"Failed to init NL XUI client: {e}")
+    return _nl_xui
+
+
+def _fetch_nl_inbounds_cached(max_age: float = 30.0) -> list[dict]:
+    global _nl_inbounds_cache
+    now = time.time()
+    if now - _nl_inbounds_cache["ts"] < max_age:
+        return _nl_inbounds_cache["data"]
+    _nl_inbounds_cache["ts"] = now
+
+    nl_xui = _get_nl_xui()
+    if not nl_xui:
+        return _nl_inbounds_cache["data"]
+
+    try:
+        ibs = nl_xui.get_inbounds()
+        if ibs:
+            _nl_inbounds_cache["data"] = ibs
+            return ibs
+    except Exception as e:
+        logger.debug(f"NL node inbounds fetch error: {e}")
+    return _nl_inbounds_cache["data"]
+
+
+def _fetch_nl_client_ips_cached(max_age: float = 15.0, window_seconds: int = 180) -> dict[str, set[str]]:
+    """Fetch real client IPs from NL 3x-ui API (/panel/api/server/clientIps).
+    Returns {clientEmail: set of fresh IPs} filtered to the last window_seconds."""
+    global _nl_client_ips_cache
+    now = time.time()
+    if now - _nl_client_ips_cache["ts"] < max_age and _nl_client_ips_cache["data"]:
+        return _nl_client_ips_cache["data"]
+
+    nl_xui = _get_nl_xui()
+    if not nl_xui:
+        return _nl_client_ips_cache["data"]
+
+    try:
+        resp = nl_xui._request("GET", f"{nl_xui.host}/panel/api/server/clientIps")
+        if resp.status_code == 200:
+            data = resp.json().get("obj", [])
+            result: dict[str, set[str]] = {}
+            for item in data:
+                email = item.get("clientEmail")
+                if not email:
+                    continue
+                fresh_ips = set()
+                for ip_obj in item.get("ips", []):
+                    ip = ip_obj.get("ip")
+                    ts = ip_obj.get("timestamp", 0)
+                    if ip and (now - ts) <= window_seconds:
+                        fresh_ips.add(ip)
+                if fresh_ips:
+                    result[email] = fresh_ips
+            _nl_client_ips_cache = {"ts": now, "data": result}
+            return result
+    except Exception as e:
+        logger.debug(f"NL node clientIps fetch error: {e}")
+    return _nl_client_ips_cache["data"]
+
+
 def _fetch_ru_inbounds_cached(max_age: float = 30.0) -> list[dict]:
     global _ru_inbounds_cache
     now = time.time()
@@ -539,6 +613,46 @@ def _get_online_users() -> tuple[list[dict], set]:
                                 "last_online_ts": last_online / 1000.0,
                             })
 
+        # Also query NL node inbounds for active connections and traffic (cached 15s)
+        nl_inbounds = _fetch_nl_inbounds_cached(max_age=15.0)
+        nl_client_ips = _fetch_nl_client_ips_cached(max_age=15.0, window_seconds=180)
+        if nl_inbounds:
+            nl_now_str = time.strftime("%H:%M:%S")
+            seen_nl_emails = set()
+            for ib in nl_inbounds:
+                ib_id = ib.get("id")
+                ib_tag = ib.get("tag") or f"nl-{ib.get('remark', '')}"
+                ib_port = ib.get("port") or 0
+                ib_protocol = ib.get("protocol") or "vless"
+                ib_remark = ib.get("remark") or "NL-Node"
+                for cs in ib.get("clientStats", []):
+                    email = cs.get("email", "")
+                    if not email:
+                        continue
+                    # Merge traffic for speed calculation
+                    traffic[email] = traffic.get(email, 0) + cs.get("up", 0) + cs.get("down", 0)
+
+                    last_online = cs.get("lastOnline", 0) or 0
+                    is_enable = cs.get("enable", False)
+                    if is_enable and last_online > cutoff_ms:
+                        if email not in seen_nl_emails:
+                            seen_nl_emails.add(email)
+                            is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol.lower()
+                            client_ips = set(nl_client_ips.get(email, set()))
+                            raw_entries.append({
+                                "name": email,
+                                "ips": client_ips,
+                                "type": "hysteria" if is_hysteria else "vless",
+                                "inbound_id": ib_id,
+                                "inbound_tag": ib_tag,
+                                "inbound_port": ib_port,
+                                "inbound_protocol": ib_protocol,
+                                "inbound_remark": ib_remark,
+                                "is_nl": True,
+                                "last_seen": nl_now_str,
+                                "last_online_ts": last_online / 1000.0,
+                            })
+
         for e in raw_entries:
             if e["name"] in traffic:
                 proto = "hysteria" if e["name"].endswith("_h") else "vless"
@@ -637,7 +751,7 @@ def _get_online_users() -> tuple[list[dict], set]:
         # Prefer real-time inbound from access log over SQLite config
         email = e["name"]
         log_tags_dict = log_inbounds.get(email, {})
-        if log_tags_dict and not e.get("is_ru"):
+        if log_tags_dict and not e.get("is_ru") and not e.get("is_nl"):
             # Sort tags by timestamp ascending (earliest connected first, newer second/third)
             sorted_tags = sorted(log_tags_dict.items(), key=lambda item: item[1])
             for tag, ts in sorted_tags:
@@ -672,6 +786,8 @@ def _get_online_users() -> tuple[list[dict], set]:
                 inbound_info["remark"] = meta.get("remark") or e.get("inbound_remark")
             if e.get("is_ru"):
                 inbound_info["is_ru"] = True
+            if e.get("is_nl"):
+                inbound_info["is_nl"] = True
             if not any(x.get("id") == inbound_info.get("id") and x.get("port") == inbound_info.get("port") and x.get("tag") == inbound_info.get("tag") for x in entry["inbounds"]):
                 entry["inbounds"].append(inbound_info)
 
@@ -969,6 +1085,47 @@ async def offline_users():
                     })
     except Exception as e:
         logger.warning(f"Offline RU Node error: {e}")
+
+    # ── NL Node: get clients + last_online from NL exit node ──
+    try:
+        now_ms = int(time.time() * 1000)
+        nl_inbounds = _fetch_nl_inbounds_cached(max_age=30.0)
+        if nl_inbounds:
+            for ib in nl_inbounds:
+                ib_protocol = (ib.get("protocol") or "vless").lower()
+                for cs in ib.get("clientStats", []):
+                    email = cs.get("email", "").strip()
+                    if not email or email in online_names:
+                        continue
+                    is_hysteria = email.endswith("_h") or "hysteria" in ib_protocol
+                    proto_type = "hysteria" if is_hysteria else "vless"
+                    identity = (proto_type, email)
+                    if identity in online_identities:
+                        continue
+                    if not cs.get("enable", True):
+                        continue
+                    expiry = cs.get("expiryTime", 0)
+                    if expiry and 0 < expiry < now_ms:
+                        continue  # expired
+
+                    last_online = cs.get("lastOnline", 0) or 0
+                    last_str = ""
+                    if last_online > 0:
+                        try:
+                            last_str = datetime.fromtimestamp(
+                                last_online / 1000, tz=YAKUTSK_TZ
+                            ).strftime("%Y-%m-%d %H:%M")
+                        except Exception:
+                            pass
+
+                    raw_entries.append({
+                        "name": email,
+                        "type": proto_type,
+                        "last_seen": last_str,
+                        "last_seen_ts": last_online,
+                    })
+    except Exception as e:
+        logger.warning(f"Offline NL Node error: {e}")
 
     # ── AWG: last handshake for all peers ──
     if awg_db:

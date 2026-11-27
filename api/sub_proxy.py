@@ -303,10 +303,11 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
                     "domain": [
                         "344988.snk.wtf",
                         "ru-server.tiinservice.online",
+                        "uploads.tiinservice.online",
                     ],
                     "domain_suffix": [
                         ".ru", ".su", ".рф",
-                        "snk.wtf", "tiinservice.online",
+                        "snk.wtf",
                         "2gis.com", "vk.com", "tinkoff.com", "sberbank.com",
                         "playerok.com", "aviasales.ru", "lamoda.ru",
                         "megamarket.tech", "x5.tech"
@@ -338,10 +339,10 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
                     "domain": [
                         "344988.snk.wtf",
                         "ru-server.tiinservice.online",
+                        "uploads.tiinservice.online",
                     ],
                     "domain_suffix": [
                         "snk.wtf",
-                        "tiinservice.online",
                     ],
                     "outbound": "direct",
                 },
@@ -594,7 +595,8 @@ def _build_clash_config(vless_lines: list[tuple[str, str]]) -> str:
 
     rules = [
         "DOMAIN-SUFFIX,snk.wtf,DIRECT",
-        "DOMAIN-SUFFIX,tiinservice.online,DIRECT",
+        "DOMAIN,ru-server.tiinservice.online,DIRECT",
+        "DOMAIN,uploads.tiinservice.online,DIRECT",
         "DOMAIN-SUFFIX,gosuslugi.ru,DIRECT",
         "DOMAIN-SUFFIX,esia.gosuslugi.ru,DIRECT",
         "DOMAIN-SUFFIX,gu-st.ru,DIRECT",
@@ -741,7 +743,7 @@ async def shadowrocket_rules():
     )
 
 
-def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash: bool = False, routing_link: str | None = None, custom_title: str | None = None, hide_expire: bool = False, web_page_url: str | None = None) -> dict[str, str]:
+def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash: bool = False, routing_link: str | None = None, custom_title: str | None = None, hide_expire: bool = False, web_page_url: str | None = None, announce: str | None = None, announce_url: str | None = None) -> dict[str, str]:
     expire_ts = int(expires_at.timestamp()) if expires_at else 0
     now_dt = datetime.utcnow()
     
@@ -785,6 +787,10 @@ def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash:
     if routing_link:
         headers["routing"] = routing_link
         headers["routing-enable"] = "true"
+    if announce:
+        headers["announce"] = urllib.parse.quote(announce, safe="")
+    if announce_url:
+        headers["announce-url"] = announce_url
     return headers
 
 
@@ -1667,11 +1673,26 @@ async def proxy_subscription(token: str, request: Request = None):
 
     # If expired and VPN client → return expired message
     if is_expired and not is_browser:
+        from urllib.parse import quote as _urlquote
         renewal_url = f"{PORTAL_BASE_URL}/my/{token}"
-        expired_vless = f"vless://dummy@expired:443?type=tcp#❌ Подписка истекла — продлите: {renewal_url}"
-        raw_body = base64.b64encode(expired_vless.encode())
-        
-        headers = _build_headers(expires_at)
+        bot_url = "https://t.me/tiin_service_bot"
+        promo_lines = [
+            "❌ Подписка истекла",
+            "🎁 Скидка 25% по промокоду QUANTUM25",
+            "💬 Продлить: @tiin_service_bot",
+            f"🔗 Кабинет: {renewal_url}",
+        ]
+        expired_nodes = "\n".join(
+            f"vless://dummy@expired:443?type=tcp#{_urlquote(text)}"
+            for text in promo_lines
+        )
+        raw_body = base64.b64encode(expired_nodes.encode())
+
+        headers = _build_headers(
+            expires_at,
+            announce="Подписка истекла. Продлите со скидкой 25% по промокоду QUANTUM25 — @tiin_service_bot",
+            announce_url=bot_url,
+        )
         async with _CACHE_LOCK:
             _CACHE[token] = (time.time(), raw_body, headers)
         return Response(content=raw_body, headers=headers)

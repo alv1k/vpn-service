@@ -580,6 +580,7 @@
           <button class="btn active" id="btn-filter-all" onclick="setOnlineFilter('all')" style="font-size:11px;padding:3px 8px;font-weight:600">Все (<span id="count-filter-all">0</span>)</button>
           <button class="btn" id="btn-filter-de" onclick="setOnlineFilter('de')" style="font-size:11px;padding:3px 8px">🇩🇪 Германия (<span id="count-filter-de">0</span>)</button>
           <button class="btn" id="btn-filter-ru" onclick="setOnlineFilter('ru')" style="font-size:11px;padding:3px 8px">🇷🇺 Россия (<span id="count-filter-ru">0</span>)</button>
+          <button class="btn" id="btn-filter-nl" onclick="setOnlineFilter('nl')" style="font-size:11px;padding:3px 8px">🇳🇱 Нидерланды (<span id="count-filter-nl">0</span>)</button>
         </div>
       </div>
       <div class="table-wrap mb">
@@ -2103,7 +2104,7 @@
 
     function setOnlineFilter(f) {
       _onlineFilter = f;
-      ['all', 'de', 'ru'].forEach(id => {
+      ['all', 'de', 'ru', 'nl'].forEach(id => {
         const btn = document.getElementById(`btn-filter-${id}`);
         if (btn) {
           if (id === f) {
@@ -2132,14 +2133,22 @@
              remark.includes('ru-') || remark.includes('selectel') || remark.includes('🇷🇺');
     }
 
+    function _isNlInbound(ib) {
+      if (!ib) return false;
+      if (ib.is_nl) return true;
+      const tag = (ib.tag || '').toLowerCase();
+      return tag.startsWith('nl-');
+    }
+
     function _formatInboundBadge(ib) {
       const tag = (ib && ib.tag) || '';
       const port = (ib && ib.port) || 0;
       const ibId = (ib && ib.id) ? Number(ib.id) : null;
       const remark = (ib && ib.remark) || '';
       const isRu = _isRuBridgeInbound(ib) || Boolean(ib && ib.is_ru);
-      const flag = isRu ? '🇷🇺' : '🇩🇪';
-      const shortLabel = isRu ? '🇷🇺 RU' : '🇩🇪 DE';
+      const isNl = Boolean(ib && ib.is_nl);
+      const flag = isRu ? '🇷🇺' : (isNl ? '🇳🇱' : '🇩🇪');
+      const shortLabel = isRu ? '🇷🇺 RU' : (isNl ? '🇳🇱 NL' : '🇩🇪 DE');
 
       let protoName = 'VLESS';
       if (port === 4443 || port === 35443 || (ib && ib.protocol && ib.protocol.includes('hysteria')) || tag.includes('hyst')) {
@@ -2163,9 +2172,9 @@
       const idTag = ibId ? `#${ibId}` : '';
       const portStr = port ? `:${port}` : '';
       const fullLabel = `${flag} ${protoName} ${idTag}${portStr}`.trim();
-      const title = (isRu ? '[🇷🇺 RU Gateway] ' : '[🇩🇪 DE Direct] ') + (remark ? `${fullLabel} — ${remark}` : fullLabel);
+      const title = (isRu ? '[🇷🇺 RU Gateway] ' : (isNl ? '[🇳🇱 NL Node] ' : '[🇩🇪 DE Direct] ')) + (remark ? `${fullLabel} — ${remark}` : fullLabel);
 
-      return `<span class="badge on" style="margin-right:4px;font-size:11px;padding:2px 6px;${isRu ? 'border:1px solid rgba(255,255,255,0.4);font-weight:600' : ''}" title="${esc(title)}">${shortLabel}</span>`;
+      return `<span class="badge on" style="margin-right:4px;font-size:11px;padding:2px 6px;${isRu || isNl ? 'border:1px solid rgba(255,255,255,0.4);font-weight:600' : ''}" title="${esc(title)}">${shortLabel}</span>`;
     }
 
     function _getUserCategory(u) {
@@ -2203,15 +2212,17 @@
         const seenLocs = new Set();
         badges = inbounds.map(ib => {
           const isRu = _isRuBridgeInbound(ib) || Boolean(ib && ib.is_ru);
-          const locKey = isRu ? 'ru' : 'de';
+          const isNl = Boolean(ib && ib.is_nl);
+          const locKey = isRu ? 'ru' : (isNl ? 'nl' : 'de');
           if (seenLocs.has(locKey)) return '';
           seenLocs.add(locKey);
           return _formatInboundBadge(ib);
         }).filter(Boolean).join('');
       } else {
         const isRu = Boolean(u.is_ru);
-        const locLabel = isRu ? '🇷🇺 RU' : '🇩🇪 DE';
-        badges = `<span class="badge on" style="margin-right:4px;font-size:11px;padding:2px 6px;${isRu ? 'border:1px solid rgba(255,255,255,0.4);font-weight:600' : ''}">${locLabel}</span>`;
+        const isNl = Boolean(u.is_nl);
+        const locLabel = isRu ? '🇷🇺 RU' : (isNl ? '🇳🇱 NL' : '🇩🇪 DE');
+        badges = `<span class="badge on" style="margin-right:4px;font-size:11px;padding:2px 6px;${isRu || isNl ? 'border:1px solid rgba(255,255,255,0.4);font-weight:600' : ''}">${locLabel}</span>`;
       }
 
       const platforms = u.platforms || [];
@@ -2273,30 +2284,37 @@
       const totalAll = _onlineUsers.length;
       let countDe = 0;
       let countRu = 0;
+      let countNl = 0;
 
       _onlineUsers.forEach(u => {
         const inbounds = u.inbounds || [];
         const hasRu = inbounds.some(ib => _isRuBridgeInbound(ib));
+        const hasNl = inbounds.some(ib => _isNlInbound(ib));
         if (hasRu) countRu++;
+        else if (hasNl) countNl++;
         else countDe++;
       });
 
       const countAllEl = document.getElementById('count-filter-all');
       const countDeEl = document.getElementById('count-filter-de');
       const countRuEl = document.getElementById('count-filter-ru');
+      const countNlEl = document.getElementById('count-filter-nl');
       const countEl = document.getElementById('online-count');
       const tableEl = document.getElementById('dash-online');
 
       if (countAllEl) countAllEl.textContent = totalAll;
       if (countDeEl) countDeEl.textContent = countDe;
       if (countRuEl) countRuEl.textContent = countRu;
+      if (countNlEl) countNlEl.textContent = countNl;
       if (countEl) countEl.textContent = `(${totalAll})`;
 
       let filtered = _onlineUsers;
       if (_onlineFilter === 'de') {
-        filtered = _onlineUsers.filter(u => !(u.inbounds || []).some(ib => _isRuBridgeInbound(ib)));
+        filtered = _onlineUsers.filter(u => !(u.inbounds || []).some(ib => _isRuBridgeInbound(ib)) && !(u.inbounds || []).some(ib => _isNlInbound(ib)));
       } else if (_onlineFilter === 'ru') {
         filtered = _onlineUsers.filter(u => (u.inbounds || []).some(ib => _isRuBridgeInbound(ib)));
+      } else if (_onlineFilter === 'nl') {
+        filtered = _onlineUsers.filter(u => (u.inbounds || []).some(ib => _isNlInbound(ib)));
       }
 
       const online = [...filtered].sort((a, b) =>
