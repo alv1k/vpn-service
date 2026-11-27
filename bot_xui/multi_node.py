@@ -1,6 +1,6 @@
 """
-Модуль синхронизации клиентов между основным сервером и вторичными нодами (RU-шлюз).
-Выполняет добавление, продление, деактивацию и сверку клиентов в 3x-ui на RU-ноде.
+Модуль синхронизации клиентов между основным сервером и вторичными нодами (RU-шлюз, NL exit).
+Выполняет добавление, продление, деактивацию и сверку клиентов в 3x-ui на RU-ноде и NL-ноде.
 Все вызовы обёрнуты в try/except для изоляции от сбоев сети.
 """
 import logging
@@ -16,12 +16,20 @@ from config import (
     RU_XUI_PASSWORD,
     RU_ACTIVE_INBOUND_IDS,
     RU_XUI_PROXY,
+    NL_XUI_HOST,
+    NL_XUI_USERNAME,
+    NL_XUI_PASSWORD,
+    NL_ACTIVE_INBOUND_IDS,
 )
 from bot_xui.utils import XUIClient
 
 logger = logging.getLogger(__name__)
 
 _ru_client_instance: XUIClient | None = None
+_nl_client_instance: XUIClient | None = None
+
+# NL inbound flow mapping: id=8 → Vision, id=9 → xHTTP (no flow)
+NL_INBOUND_FLOW = {8: "xtls-rprx-vision", 9: ""}
 
 
 def get_ru_xui_client() -> XUIClient | None:
@@ -37,6 +45,22 @@ def get_ru_xui_client() -> XUIClient | None:
             proxy=RU_XUI_PROXY,
         )
     return _ru_client_instance
+
+
+def get_nl_xui_client() -> XUIClient | None:
+    """Возвращает инициализированный клиент для работы с API NL 3x-ui."""
+    global _nl_client_instance
+    if not NL_XUI_HOST:
+        return None
+    if _nl_client_instance is None:
+        _nl_client_instance = XUIClient(
+            NL_XUI_HOST,
+            NL_XUI_USERNAME,
+            NL_XUI_PASSWORD,
+            proxy=None,
+        )
+        _nl_client_instance.session.timeout = 5
+    return _nl_client_instance
 
 
 def sync_client_to_ru_node(
@@ -99,7 +123,6 @@ def sync_client_to_ru_node(
                 logger.warning(f"⚠️ [RU-Node] Failed to update client {email}: {result}")
                 return False
         else:
-            # Клиент не найден на RU-ноде — создаём его
             logger.info(f"ℹ️ [RU-Node] Client {email} not found on RU node. Creating...")
             clean_uuid = str(uuid_str).replace("-", "") if uuid_str and len(str(uuid_str)) > 10 else None
             target_auth = auth or clean_uuid
@@ -146,9 +169,112 @@ def sync_client_to_ru_node(
         return False
 
 
+def sync_client_to_nl_node(
+    email: str,
+    expiry_ms: int | None = None,
+    enable: bool | None = None,
+    uuid_str: str | None = None,
+    auth: str | None = None,
+    sub_id: str | None = None,
+    tg_id: int = 0,
+    limit_ip: int = 10,
+    total_gb: int = 0,
+) -> bool:
+    """
+    Синхронизирует данные клиента с NL-нодой (инбаунды 8, 9).
+    Обёрнуто в try/except с коротким таймаутом (5s) чтобы недоступность NL не блокировала бота.
+    """
+    if not email or not NL_XUI_HOST:
+        return False
+
+    try:
+        nl_xui = get_nl_xui_client()
+        if not nl_xui:
+            return False
+
+        existing = nl_xui.get_client_by_email(email)
+
+        if existing:
+            client = existing.get("client", {})
+            current_expiry = client.get("expiryTime", 0)
+            new_expiry = expiry_ms if expiry_ms is not None else current_expiry
+            new_enable = enable if enable is not None else client.get("enable", True)
+
+            clean_uuid = str(uuid_str).replace("-", "") if uuid_str and len(str(uuid_str)) > 10 else None
+            target_auth = auth or client.get("auth") or clean_uuid
+
+            payload = {
+                "email": email,
+                "totalGB": total_gb if total_gb else client.get("totalGB", 0),
+                "expiryTime": new_expiry,
+                "tgId": tg_id or client.get("tgId", 0),
+                "enable": bool(new_enable),
+                "limitIp": limit_ip if limit_ip else client.get("limitIp", 0),
+                "reset": client.get("reset", 0),
+            }
+            if target_auth:
+                payload["auth"] = str(target_auth)
+                payload["password"] = str(target_auth)
+
+            url = f"{nl_xui.host}/panel/api/clients/update/{email}"
+            resp = nl_xui._request("POST", url, json=payload, headers={"Content-Type": "application/json"}, timeout=(3, 5))
+            result = resp.json()
+            if result.get("success"):
+                logger.info(f"✅ [NL-Node] Updated client {email}")
+                return True
+            else:
+                logger.warning(f"⚠️ [NL-Node] Failed to update client {email}: {result}")
+                return False
+        else:
+            logger.info(f"ℹ️ [NL-Node] Client {email} not found on NL node. Creating...")
+            clean_uuid = str(uuid_str).replace("-", "") if uuid_str and len(str(uuid_str)) > 10 else None
+            target_auth = auth or clean_uuid
+            client_payload = {
+                "email": email,
+                "limitIp": limit_ip,
+                "totalGB": total_gb,
+                "expiryTime": expiry_ms if expiry_ms is not None else 0,
+                "enable": True if enable is None else bool(enable),
+                "tgId": tg_id,
+                "reset": 0,
+                "flow": "xtls-rprx-vision",
+            }
+            if uuid_str and len(str(uuid_str)) > 10:
+                client_payload["id"] = str(uuid_str)
+            if target_auth:
+                client_payload["auth"] = str(target_auth)
+                client_payload["password"] = str(target_auth)
+            if sub_id:
+                client_payload["subId"] = str(sub_id)
+
+            payload = {
+                "client": client_payload,
+                "inboundIds": list(NL_ACTIVE_INBOUND_IDS),
+            }
+
+            url = f"{nl_xui.host}/panel/api/clients/add"
+            resp = nl_xui._request("POST", url, json=payload, headers={"Content-Type": "application/json"}, timeout=(3, 5))
+            result = resp.json()
+            if result.get("success"):
+                logger.info(f"✅ [NL-Node] Created client {email} on NL node")
+                return True
+            else:
+                logger.warning(f"⚠️ [NL-Node] Failed to create client {email}: {result}")
+                return False
+
+    except Exception as e:
+        logger.warning(f"⚠️ [NL-Node] Exception syncing client {email} (non-blocking): {e}")
+        return False
+
+
 def deactivate_ru_client(email: str) -> bool:
     """Деактивирует клиента (enable=False) на RU-ноде при возврате платежа или остановке подписки."""
     return sync_client_to_ru_node(email=email, enable=False)
+
+
+def deactivate_nl_client(email: str) -> bool:
+    """Деактивирует клиента (enable=False) на NL-ноде."""
+    return sync_client_to_nl_node(email=email, enable=False)
 
 
 def delete_ru_client(email: str) -> bool:
@@ -162,4 +288,18 @@ def delete_ru_client(email: str) -> bool:
         return ru_xui.delete_client(inbound_id=0, client_email=email)
     except Exception as e:
         logger.error(f"❌ [RU-Node] Exception deleting client {email} from RU node: {e}")
+        return False
+
+
+def delete_nl_client(email: str) -> bool:
+    """Удаляет клиента из NL 3x-ui."""
+    if not email or not NL_XUI_HOST:
+        return False
+    try:
+        nl_xui = get_nl_xui_client()
+        if not nl_xui:
+            return False
+        return nl_xui.delete_client(inbound_id=0, client_email=email)
+    except Exception as e:
+        logger.warning(f"⚠️ [NL-Node] Exception deleting client {email} from NL node: {e}")
         return False

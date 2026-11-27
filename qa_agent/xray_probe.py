@@ -74,8 +74,14 @@ class XrayProbe:
             stream_settings["xhttpSettings"] = {
                 "path": vless_info.get("path", "/"),
                 "host": vless_info.get("sni", ""),
-                "mode": "stream-one"
+                "mode": "packet-up"
             }
+            if vless_info.get("security") == "tls":
+                stream_settings["tlsSettings"] = {
+                    "serverName": vless_info.get("sni", ""),
+                    "alpn": ["h2", "http/1.1"],
+                    "fingerprint": vless_info.get("fp", "chrome")
+                }
         elif vless_info.get("type") == "ws":
             stream_settings["wsSettings"] = {
                 "path": vless_info.get("path", "/"),

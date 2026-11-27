@@ -51,6 +51,7 @@ XUI_SUB_PATH = os.getenv("XUI_SUB_PATH")
 # Portal / Web base URL for client cabinet and subscriptions (accessible without VPN in RU)
 PORTAL_BASE_URL = os.getenv("PORTAL_BASE_URL", "https://ru-server.tiinservice.online")
 SUB_BASE_URL = os.getenv("SUB_BASE_URL", "https://sub.tiinservice.online")
+FALLBACK_SUB_BASE_URL = os.getenv("FALLBACK_SUB_BASE_URL", "https://sub.tottiemottie.biz")
 
 # VLESS настройки
 VLESS_DOMAIN = os.getenv("VLESS_DOMAIN")
@@ -90,6 +91,15 @@ RU_XUI_USERNAME = os.getenv("RU_XUI_USERNAME", "alvik")
 RU_XUI_PASSWORD = os.getenv("RU_XUI_PASSWORD", XUI_PASSWORD)
 _RAW_RU_INBOUNDS = os.getenv("RU_ACTIVE_INBOUND_IDS", "1,2")
 RU_ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_RU_INBOUNDS.split(",") if x.strip().isdigit()]
+
+# NL Server (Netherlands Exit Node) 3x-ui API
+NL_XUI_HOST = os.getenv("NL_XUI_HOST", "")
+NL_XUI_USERNAME = os.getenv("NL_XUI_USERNAME", "alvik")
+NL_XUI_PASSWORD = os.getenv("NL_XUI_PASSWORD", XUI_PASSWORD)
+_RAW_NL_INBOUNDS = os.getenv("NL_ACTIVE_INBOUND_IDS", "8,9")
+NL_ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_NL_INBOUNDS.split(",") if x.strip().isdigit()]
+NL_REALITY_PBK = os.getenv("NL_REALITY_PBK", "")
+NL_REALITY_SID = os.getenv("NL_REALITY_SID", "")
 
 # Server location (for display in client apps)
 SERVER_LOCATION = os.getenv("SERVER_LOCATION", "Germany")

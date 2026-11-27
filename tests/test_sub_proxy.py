@@ -265,17 +265,23 @@ class TestExpiredSubscription:
         
         # Should return Response with base64 body
         assert response.status_code == 200
-        body_decoded = base64.b64decode(response.body).decode()
+        body_decoded = unquote(base64.b64decode(response.body).decode())
         assert "vless://dummy@expired:443" in body_decoded
         assert "❌ Подписка истекла" in body_decoded
         assert "/my/expired-token" in body_decoded
-        
+        assert "QUANTUM25" in body_decoded
+        assert "@tiin_service_bot" in body_decoded
+
         # Check headers
         assert "subscription-userinfo" in response.headers
         # Expire should be the timestamp of when it expired (past)
         assert "expire=" in response.headers["subscription-userinfo"]
         expire_ts = int(response.headers["subscription-userinfo"].split("expire=")[1].split(";")[0])
         assert expire_ts == int(past.timestamp())
+
+        # Announce headers carry the win-back promo
+        assert "QUANTUM25" in unquote(response.headers["announce"])
+        assert response.headers["announce-url"] == "https://t.me/tiin_service_bot"
 
     @pytest.mark.asyncio
     @patch("api.sub_proxy._fetch_xui", new_callable=AsyncMock, side_effect=RuntimeError("XUI down"))

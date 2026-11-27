@@ -27,7 +27,7 @@ from api.db import (
 )
 from api.platform_detector import detect_platform
 from api.web_portal import WebEventRequest, _log_webpage_event, _happ_routing_deeplink
-from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID
+from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID, NL_REALITY_PBK, NL_REALITY_SID
 RU_SUB_BASE_URL = "https://ru-server.tiinservice.online"
 
 
@@ -303,10 +303,11 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
                     "domain": [
                         "344988.snk.wtf",
                         "ru-server.tiinservice.online",
+                        "uploads.tiinservice.online",
                     ],
                     "domain_suffix": [
                         ".ru", ".su", ".рф",
-                        "snk.wtf", "tiinservice.online",
+                        "snk.wtf",
                         "2gis.com", "vk.com", "tinkoff.com", "sberbank.com",
                         "playerok.com", "aviasales.ru", "lamoda.ru",
                         "megamarket.tech", "x5.tech"
@@ -338,10 +339,10 @@ def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
                     "domain": [
                         "344988.snk.wtf",
                         "ru-server.tiinservice.online",
+                        "uploads.tiinservice.online",
                     ],
                     "domain_suffix": [
                         "snk.wtf",
-                        "tiinservice.online",
                     ],
                     "outbound": "direct",
                 },
@@ -594,7 +595,8 @@ def _build_clash_config(vless_lines: list[tuple[str, str]]) -> str:
 
     rules = [
         "DOMAIN-SUFFIX,snk.wtf,DIRECT",
-        "DOMAIN-SUFFIX,tiinservice.online,DIRECT",
+        "DOMAIN,ru-server.tiinservice.online,DIRECT",
+        "DOMAIN,uploads.tiinservice.online,DIRECT",
         "DOMAIN-SUFFIX,gosuslugi.ru,DIRECT",
         "DOMAIN-SUFFIX,esia.gosuslugi.ru,DIRECT",
         "DOMAIN-SUFFIX,gu-st.ru,DIRECT",
@@ -741,7 +743,7 @@ async def shadowrocket_rules():
     )
 
 
-def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash: bool = False, routing_link: str | None = None, custom_title: str | None = None, hide_expire: bool = False, web_page_url: str | None = None) -> dict[str, str]:
+def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash: bool = False, routing_link: str | None = None, custom_title: str | None = None, hide_expire: bool = False, web_page_url: str | None = None, announce: str | None = None, announce_url: str | None = None) -> dict[str, str]:
     expire_ts = int(expires_at.timestamp()) if expires_at else 0
     now_dt = datetime.utcnow()
     
@@ -785,6 +787,10 @@ def _build_headers(expires_at: datetime | None, is_json: bool = False, is_clash:
     if routing_link:
         headers["routing"] = routing_link
         headers["routing-enable"] = "true"
+    if announce:
+        headers["announce"] = urllib.parse.quote(announce, safe="")
+    if announce_url:
+        headers["announce-url"] = announce_url
     return headers
 
 
@@ -1667,11 +1673,26 @@ async def proxy_subscription(token: str, request: Request = None):
 
     # If expired and VPN client → return expired message
     if is_expired and not is_browser:
+        from urllib.parse import quote as _urlquote
         renewal_url = f"{PORTAL_BASE_URL}/my/{token}"
-        expired_vless = f"vless://dummy@expired:443?type=tcp#❌ Подписка истекла — продлите: {renewal_url}"
-        raw_body = base64.b64encode(expired_vless.encode())
-        
-        headers = _build_headers(expires_at)
+        bot_url = "https://t.me/tiin_service_bot"
+        promo_lines = [
+            "❌ Подписка истекла",
+            "🎁 Скидка 25% по промокоду QUANTUM25",
+            "💬 Продлить: @tiin_service_bot",
+            f"🔗 Кабинет: {renewal_url}",
+        ]
+        expired_nodes = "\n".join(
+            f"vless://dummy@expired:443?type=tcp#{_urlquote(text)}"
+            for text in promo_lines
+        )
+        raw_body = base64.b64encode(expired_nodes.encode())
+
+        headers = _build_headers(
+            expires_at,
+            announce="Подписка истекла. Продлите со скидкой 25% по промокоду QUANTUM25 — @tiin_service_bot",
+            announce_url=bot_url,
+        )
         async with _CACHE_LOCK:
             _CACHE[token] = (time.time(), raw_body, headers)
         return Response(content=raw_body, headers=headers)
@@ -1901,13 +1922,26 @@ async def proxy_subscription(token: str, request: Request = None):
             client_auth = real_hy2_auth or client_uuid.replace('-', '')
             ru_hy2_link = f"hysteria2://{client_auth}@ru-server.tiinservice.online:35443?alpn=h3&fp=chrome&security=tls&sni=ru-server.tiinservice.online"
             ru_hy2_remark = "🇷🇺 ⚡ Hysteria2 • Шлюз (РФ ➔ DE)"
-            new_lines.insert(0, f"{ru_hy2_link}#{ru_hy2_remark}")
-            vless_entries.insert(0, (ru_hy2_link, ru_hy2_remark))
+            # new_lines.insert(0, f"{ru_hy2_link}#{ru_hy2_remark}")
+            # vless_entries.insert(0, (ru_hy2_link, ru_hy2_remark))
 
             ru_vless_link = f"vless://{client_uuid}@ru-server.tiinservice.online:443?encryption=none&type=xhttp&security=tls&alpn=h2,http/1.1&fp=chrome&sni=ru-server.tiinservice.online&path=%2Fapi%2Fv1%2Fsync&mode=packet-up"
             ru_vless_remark = "🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)"
-            new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
-            vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
+            # new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
+            # vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
+
+            # Нидерландские резервные узлы (CDN xHTTP + Reality Vision) в конец списка
+            nl_xhttp_link = f"vless://{client_uuid}@api.tottiemottie.biz:443?encryption=none&type=xhttp&security=tls&alpn=h2,http/1.1&fp=chrome&sni=api.tottiemottie.biz&path=%2Fapi%2Fv2%2Fmetrics&mode=packet-up"
+            nl_xhttp_remark = "🇳🇱 🛡️ xHTTP • Cloudflare CDN"
+            new_lines.append(f"{nl_xhttp_link}#{nl_xhttp_remark}")
+            vless_entries.append((nl_xhttp_link, nl_xhttp_remark))
+
+            nl_pbk = NL_REALITY_PBK or "E8Ce4rURFZukxlewAZUNiCW6kJygKZjNnafO8mINyTc"
+            nl_sid = NL_REALITY_SID or "a99293d481cd42d5"
+            nl_reality_link = f"vless://{client_uuid}@app.tottiemottie.biz:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&pbk={nl_pbk}&sni=app.tottiemottie.biz&sid={nl_sid}&fp=chrome"
+            nl_reality_remark = "🇳🇱 🚀 Reality • Direct Exit"
+            new_lines.append(f"{nl_reality_link}#{nl_reality_remark}")
+            vless_entries.append((nl_reality_link, nl_reality_remark))
 
             # Скоростной TUIC v5 (QUIC) — на этапе тестирования доступен СТРОГО для администратора
             if is_admin:

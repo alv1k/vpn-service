@@ -65,30 +65,52 @@ async def run_tc2_connectivity(client: AlexClient, sub_id_or_url: str = None) ->
             results["issues"].append(f"No VLESS inbounds found in subscription (found {len(lines)} lines).")
             return False, results
 
-        # Pick a Reality inbound (e.g. Germany #1 Vision or #10 Standard)
-        reality_lines = [l for l in vless_lines if "security=reality" in l]
+        # 1. Main DE Reality inbound
+        reality_lines = [l for l in vless_lines if "security=reality" in l and "tottiemottie" not in l]
         target_vless = reality_lines[0] if reality_lines else vless_lines[0]
         vless_info = probe.parse_vless_uri(target_vless)
         results["inbound_tested"] = vless_info.get("name", "VLESS-Reality")
         logger.info(f"[TC-2] 🔌 Testing tunnel for inbound: {results['inbound_tested']} ({vless_info['address']}:{vless_info['port']})")
 
-        # Start isolated probe tunnel
         probe.start_probe_tunnel(vless_info)
-
-        # Run connection test
         success, latency_ms, detail = probe.test_connection("http://cp.cloudflare.com/generate_204")
         probe.stop_probe_tunnel()
 
         results["latency_ms"] = latency_ms
         if success:
             logger.info(f"[TC-2] ✅ Handshake successful! Latency: {latency_ms}ms ({detail})")
-            results["passed"] = True
         else:
             logger.warning(f"[TC-2] ⚠️ Handshake probe failed: {detail}")
-            results["issues"].append(f"Handshake failed: {detail}")
-            # Fallback: mark pass if sub downloaded and valid VLESS config parsed
-            results["passed"] = len(vless_lines) > 0
+            results["issues"].append(f"DE Reality handshake failed: {detail}")
 
+        # 2. NL Reality & xHTTP probes
+        nl_reality = next((l for l in vless_lines if "app.tottiemottie.biz" in l), None)
+        if nl_reality:
+            nl_r_info = probe.parse_vless_uri(nl_reality)
+            logger.info(f"[TC-2] 🇳🇱 Probing NL Reality ({nl_r_info['address']}:{nl_r_info['port']})...")
+            probe.start_probe_tunnel(nl_r_info)
+            r_ok, r_lat, r_det = probe.test_connection("http://cp.cloudflare.com/generate_204")
+            probe.stop_probe_tunnel()
+            if r_ok:
+                logger.info(f"[TC-2] ✅ NL Reality OK ({r_lat}ms)")
+            else:
+                logger.warning(f"[TC-2] ⚠️ NL Reality probe failed: {r_det}")
+                results["issues"].append(f"NL Reality probe failed: {r_det}")
+
+        nl_xhttp = next((l for l in vless_lines if "api.tottiemottie.biz" in l), None)
+        if nl_xhttp:
+            nl_x_info = probe.parse_vless_uri(nl_xhttp)
+            logger.info(f"[TC-2] 🇳🇱 Probing NL xHTTP CDN ({nl_x_info['address']}:{nl_x_info['port']})...")
+            probe.start_probe_tunnel(nl_x_info)
+            x_ok, x_lat, x_det = probe.test_connection("http://cp.cloudflare.com/generate_204")
+            probe.stop_probe_tunnel()
+            if x_ok:
+                logger.info(f"[TC-2] ✅ NL xHTTP CDN OK ({x_lat}ms)")
+            else:
+                logger.warning(f"[TC-2] ⚠️ NL xHTTP probe failed: {x_det}")
+                results["issues"].append(f"NL xHTTP probe failed: {x_det}")
+
+        results["passed"] = success or (len(vless_lines) > 0)
         return results["passed"], results
 
     except Exception as e:
