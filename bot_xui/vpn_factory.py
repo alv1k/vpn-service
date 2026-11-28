@@ -167,8 +167,8 @@ async def create_xui_multi_config(tg_id: int, xui: XUIClient, days: int = None) 
 
     # Sync client to RU secondary node (gateway)
     try:
-        from bot_xui.multi_node import sync_client_to_ru_node
-        sync_client_to_ru_node(
+        from bot_xui.multi_node import sync_client_to_ru_nodes
+        sync_client_to_ru_nodes(
             email=client_email,
             expiry_ms=expiry_ms,
             enable=True,
@@ -246,8 +246,8 @@ async def grant_referral_vpn(tg_id: int, days: int, xui: XUIClient) -> dict | No
             sync_expiry(tg_id, new_expiry_dt)
 
             try:
-                from bot_xui.multi_node import sync_client_to_ru_node
-                sync_client_to_ru_node(
+                from bot_xui.multi_node import sync_client_to_ru_nodes
+                sync_client_to_ru_nodes(
                     email=existing['client']['email'],
                     expiry_ms=new_expiry_ms,
                     enable=True,

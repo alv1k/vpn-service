@@ -9,15 +9,25 @@
 |---|---|---|---|
 | `#4` | `Hysteria2` (`4443/udp`) | Универсальный, 52% трафика | `🇩🇪 🚀 Hysteria2 • Turbo (Быстрый)` |
 | `#1` | `VLESS-Reality` (`7443/tcp`) | Основной TCP (МТС/РТК), 40% | `🇩🇪 👁️ Reality • Vision (МТС / РТК)` |
-| `#15` | `VLESS-xHTTP` (`48745/tcp`) | Стойкий xHTTP (МТС/Билайн) | `🇩🇪 💎 xHTTP • Armor (МТС / Билайн)` |
-| `#2` | `VLESS-xHTTP` (`47447/tcp`) | МегаФон | `🇩🇪 🌊 xHTTP • Stream (МегаФон)` |
-| `#10` | `VLESS-Reality` (`53151/tcp`) | Резерв (Deutsche Bahn SNI) | `🇩🇪 🛡️ Reality • Standard (Bahn)` |
-| `#16` | `Hysteria2` (`35443/udp`) | Резервный UDP | `🇩🇪 ⚔️ Hysteria2 • Armor-M1` |
-| `RU #1` | `VLESS-WS-TLS` (`8443/tcp`) | RU-шлюз Selectel SPB | `🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)` |
-| `RU #2` | `Hysteria2` (`35443/udp`) | RU скоростной шлюз | `🇷🇺 ⚡ Hysteria2 • Шлюз (РФ ➔ DE)` |
+| `#15` | `VLESS-xHTTP` (`48745/tcp`) | ⚠️ выключен (xHTTP-линия передана `#21`/`mr-empeche` :443) | — |
+| `#2` | `VLESS-xHTTP` (`47447/tcp`) | Стелс-xHTTP (МегаФон), рерайт → :443 mr-empeche | `🇩🇪 🌊 xHTTP • Stream (МегаФон)` |
+| `#10` | `VLESS-Reality` (`53151/tcp`) | ⚠️ выключен (резерв, Deutsche Bahn SNI) | — |
+| `#14` | `VLESS-xHTTP` (`38745/tcp`) | ⚠️ выключен (резерв) | — |
+| `#16` | `Hysteria2` (`35443/udp`) | ⚠️ выключен (резервный UDP) | — |
+| `#21` | `VLESS-Reality` (`20443/tcp`) | **Основной Reality**: SNI de-gateway/szm6/test-reality/mr-empeche, за nginx ssl_preread :443, xver/proxy_protocol | `🇩🇪 🚀 Reality • Vision` |
+| `RU #1` | `VLESS-WS-TLS` (`8443/tcp`) | RU-шлюз Selectel SPB (резерв — квота) | `🇷🇺 🛡️ XHTTP • Шлюз (РФ ➔ DE)` |
+| `RU #2` | `Hysteria2` (`35443/udp`) | RU скоростной шлюз Selectel (резерв — квота) | `🇷🇺 ⚡ Hysteria2 • Шлюз (РФ ➔ DE)` |
 | `#17` | AmneziaWG (`443/udp`) | AWG Main, MTU 1280, Split Tunneling 30 CIDR, direct YouTube | — |
 
-### RU Relay Node (`ru-server.tiinservice.online`, `139.100.207.18`)
+### AEZA Node (`193.233.249.164`, основная RU-точка входа, безлимит)
+- 3x-ui **3.11.0**, панель `127.0.0.1:6547`, webBasePath `/VeEVCecDUl1ct7JxNj/`. Доступ с DE — только через SSH-туннель **`aeza-xui-tunnel.service`** (`127.0.0.1:16547 → 127.0.0.1:6547`, `Restart=always`). API-учётка `tiin_sync`, пароль в `/etc/aeza-xui.creds` (600, alvik) — `config.py` читает fallback'ом.
+- **Инбаунд #2**: `VLESS-xHTTP+Reality :443`, SNI `www.avito.ru` (не «дефолтный» шаблон), path `/sdk/v2/sync`, mode `stream-one`, pbk `25WSn8XyOIuDIFndbHyORH-Ef7Car2I5e1fnVMeIWCQ`, приватный shortId `3f42088b4b3e2a15` (28.11.2026). Имя в подписке: `🇷🇺 🚀 RU Server2 • xHTTP Reality (РФ ➔ DE)` — **первый профиль** в выдаче sub_proxy.
+- **Egress**: аутбаунд `to-germany` (VLESS-Reality → `91.132.161.112:443`, SNI `test-reality.tiinservice.online`, добавлен в nginx map DE). Routing: ВСЕ клиенты in-443-tcp → `to-germany` (правило без фильтра user, с 28.11.2026).
+- **Синхронизация клиентов**: `scripts/sync_aeza_node.py` (hourly cron, `10 * * * *`, лог `logs/aeza_sync.log`) — сверка id/subId/expiry/enable с DE, привязка к inbound #2. Источник истины о клиентах ноды — `/panel/api/clients/list` (поле `inboundIds`), НЕ JSON `settings` инбаундов (в 3.11 он устаревает). Клиентские add/update/attach применяются ядром hot (без рестарта); `restartXrayService` — только по флагу `--restart-xray` (рвёт ВСЕ соединения, 28.11.2026 именно так был оборван сеанс пользователя). Инкрементная синхронизация — `sync_client_to_aeza_node()` в `bot_xui/multi_node.py`, вызывается обёрткой `sync_client_to_ru_nodes()` (вместе с Selectel) из vpn_factory/payment/db/webhook.
+- **Гигиена**: SSH только по ключу (`PasswordAuthentication no`), ufw (22, 443/tcp), fail2ban sshd. IP проверяется cheburcheck_monitor.py (critical target). **Anti-detect (28.11.2026)**: xhttp-path нестандартный (`/sdk/v2/sync`), приватный shortId, SNI avito. В ссылках — голый IP (front-домен не привязан): при блокировке IP — смена IP в панели AEZA → правка `AEZA_HOST` в config.py (или env) → restart api.service; клиенты получают новый адрес автообновлением подписки.
+- Клиенты `admin_test1`/`aeza-client1` — тестовые, не удалять (используются для E2E-прогонов).
+
+### RU Relay Node (`ru-server.tiinservice.online`, `139.100.207.18`) — резерв после исчерпания квоты
 - Панель 3x-ui RU: `https://139.100.207.18:2053/0ruabxwdsz96R7jSIN` (env `RU_XUI_HOST/USERNAME/PASSWORD`).
 - **L3 мост AmneziaWG**: `10.50.0.1` (DE) ⇄ `10.50.0.2` (RU), `51850/udp`, MTU 1420, DPI-обфускация `Jc=4, Jmin=40, Jmax=70, S1=33, S2=47, H1..H4` (конфиги `/etc/amnezia/amneziawg/awg-{ru,de}-bridge.conf`). `10.50.0.2` — только для управления 3x-ui API и внутренних туннелей.
 - **Split-Tunneling на RU**: `.ru/.su/.рф`, Яндекс, Госуслуги, банки, маркетплейсы, `geosite:category-ru`, `geoip:ru` → `direct`; зарубежный трафик → `de-bridge` (VLESS Vision на `10.50.0.1:7443`); аварийный failover `olcrtc-germany` (`127.0.0.1:10808`).
@@ -25,7 +35,7 @@
 - **Anti-Loop**: RU-шаблон фиксирует `{"user": ["test_awg_user_01"], "outboundTag": "direct"}` (трафик из DE через `8443` выходит в РФ и не возвращается в `de-bridge`); DE-шаблон — `{"user": ["bwd2scof"], "outboundTag": "direct"}` перед правилами пересылки в РФ. На обоих узлах блокируется `udp:443` (фоллбэк браузеров с QUIC на TCP, устранение таймаутов XTLS Vision).
 - **Межузловой мост RU→DE (primary)**: Hysteria v2 `hy2-bridge.service` → `344988.snk.wtf:35443`, SOCKS5 `127.0.0.1:10888` (на RU). Backup: olcRTC WebRTC, холодный резерв `olcrtc-client.service` (:10808).
 - **Failover-сторож RU**: `/root/scripts/ru_bridge_failover.py` (cron каждую минуту): ping L3-моста → при 2 ошибках поднимает olcRTC и переключает маршрут, при восстановлении возвращает `de-bridge` и гасит olcRTC; уведомления в Telegram; контроль квоты Selectel (тревога при ≥4 ТБ из 5 ТБ, период с 21 числа).
-- **Синхронизация клиентов**: `vpn-service/scripts/sync_ru_node.py` + `bot_xui/multi_node.py` (hourly cron): `id (UUID)`, `auth/password`, `subId`, `expiryTime`, `enable`, `limitIp` — 100% сверка DE ⇄ RU. `XUIClient` таймаут 15с.
+- **Синхронизация клиентов**: `vpn-service/scripts/sync_ru_node.py` + `bot_xui/multi_node.py` (hourly cron): `id (UUID)`, `auth/password`, `subId`, `expiryTime`, `enable`, `limitIp` — 100% сверка DE ⇄ RU. `XUIClient` таймаут 15с. Активный инбаунд — **#4 RU-xHTTP** (`RU_ACTIVE_INBOUND_IDS=4`; #1/#2 выключены). Состояние — через `/panel/api/clients/list` (`inboundIds`); рестарта Xray нет (hot-apply), флаг `--restart-xray` для форсирования.
 
 ### Сторож на DE: `scripts/de_bridge_failover.py` (каждую минуту)
 Проверяет в порядке: L3-мост `10.50.0.2` (ping) → `yaenergo-proxy` (`127.0.0.1:10808`) → `ru-hy2-check` (`127.0.0.1:10887`). Порог `FAIL_THRESHOLD = 3`, при обрыве поднимает `olcrtc.service` как аварийный канал.

@@ -946,13 +946,13 @@ def sync_expiry(tg_id: int, expires_at_utc: datetime):
             xui.update_client_expiry(existing['inbound_id'], existing['client'], exp_ms)
 
         # Re-enable in RU 3x-ui
-        from bot_xui.multi_node import sync_client_to_ru_node
+        from bot_xui.multi_node import sync_client_to_ru_nodes
         raw_uuid = vk.get('client_id') if vk else None
         if not raw_uuid or (isinstance(raw_uuid, str) and raw_uuid.isdigit()) or isinstance(raw_uuid, int):
             raw_uuid = existing['client'].get('uuid') or existing['client'].get('id') if existing else raw_uuid
         uuid_val = str(raw_uuid) if raw_uuid else None
         client_auth = existing['client'].get('auth') or existing['client'].get('password') if existing else None
-        sync_client_to_ru_node(email=email, expiry_ms=exp_ms, enable=True, tg_id=tg_id, uuid_str=uuid_val, auth=client_auth)
+        sync_client_to_ru_nodes(email=email, expiry_ms=exp_ms, enable=True, tg_id=tg_id, uuid_str=uuid_val, auth=client_auth)
 
         # Re-enable in AWG if exists (legacy systemd awg_api disabled)
         # from awg_api import db as awg_db
@@ -1027,12 +1027,12 @@ def sync_expiry_by_user_id(user_id: int, expires_at_utc: datetime):
             if existing:
                 xui.update_client_expiry(existing['inbound_id'], existing['client'], exp_ms)
 
-            from bot_xui.multi_node import sync_client_to_ru_node
+            from bot_xui.multi_node import sync_client_to_ru_nodess
             raw_uuid = vk.get('client_id') if vk else None
             if not raw_uuid or (isinstance(raw_uuid, str) and raw_uuid.isdigit()) or isinstance(raw_uuid, int):
                 raw_uuid = existing['client'].get('uuid') or existing['client'].get('id') if existing else raw_uuid
             client_auth = existing['client'].get('auth') or existing['client'].get('password') if existing else None
-            sync_client_to_ru_node(
+            sync_client_to_ru_nodes(
                 email=email,
                 expiry_ms=exp_ms,
                 enable=True,

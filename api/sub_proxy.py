@@ -27,7 +27,7 @@ from api.db import (
 )
 from api.platform_detector import detect_platform
 from api.web_portal import WebEventRequest, _log_webpage_event, _happ_routing_deeplink
-from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID, NL_REALITY_PBK, NL_REALITY_SID
+from config import PORTAL_BASE_URL, SUB_BASE_URL, ADMIN_TG_ID, NL_REALITY_PBK, NL_REALITY_SID, AEZA_HOST, AEZA_SNI, AEZA_XHTTP_PATH, AEZA_REALITY_PBK, AEZA_REALITY_SID
 RU_SUB_BASE_URL = "https://ru-server.tiinservice.online"
 
 
@@ -105,8 +105,10 @@ def _get_active_reality_sni() -> str:
     return _get_active_sni("1")
 
 
-def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
-    """Конвертирует vless:// или hysteria2:// URI в outbound объект sing-box."""
+def _vless_to_singbox_outbound(vless_link: str, remark: str, allow_xhttp: bool = False) -> dict | None:
+    """Конвертирует vless:// или hysteria2:// URI в outbound объект sing-box.
+    xhttp (Xray SplitHTTP/XHTTP) эмитится только при allow_xhttp=True — поддержка
+    появилась в sing-box 1.12, актуальный Karing использует ядро >= 1.12."""
     try:
         if '#' in vless_link:
             vless_link = vless_link.split('#')[0]
@@ -206,8 +208,16 @@ def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
             outbound["tls"] = tls_cfg
 
         if transport_type in ("xhttp", "splithttp"):
-            # Sing-box does not support Xray-core proprietary xhttp (SplitHTTP) transport
-            return None
+            if not allow_xhttp:
+                # Для ядер без XHTTP (sing-box < 1.12) xhttp-узлы пропускаем
+                return None
+            transport = {
+                "type": "xhttp",
+                "path": params.get("path", "/"),
+            }
+            if params.get("host"):
+                transport["host"] = params["host"]
+            outbound["transport"] = transport
         elif transport_type == "grpc":
             outbound["transport"] = {
                 "type": "grpc",
@@ -226,13 +236,13 @@ def _vless_to_singbox_outbound(vless_link: str, remark: str) -> dict | None:
         return None
 
 
-def _build_singbox_config(vless_lines: list[tuple[str, str]]) -> dict:
+def _build_singbox_config(vless_lines: list[tuple[str, str]], allow_xhttp: bool = False) -> dict:
     """Генерирует полновластный sing-box JSON с зашитой маршрутизацией обхода РФ."""
     outbounds = []
     outbound_tags = []
 
     for link, remark in vless_lines:
-        out = _vless_to_singbox_outbound(link, remark)
+        out = _vless_to_singbox_outbound(link, remark, allow_xhttp=allow_xhttp)
         if out:
             outbounds.append(out)
             outbound_tags.append(out["tag"])
@@ -1930,6 +1940,19 @@ async def proxy_subscription(token: str, request: Request = None):
             # new_lines.insert(1, f"{ru_vless_link}#{ru_vless_remark}")
             # vless_entries.insert(1, (ru_vless_link, ru_vless_remark))
 
+            # AEZA — основная RU-точка входа (безлимит, чистый от детектов путь, выход в DE)
+            aeza_pbk = AEZA_REALITY_PBK or "25WSn8XyOIuDIFndbHyORH-Ef7Car2I5e1fnVMeIWCQ"
+            aeza_sid = AEZA_REALITY_SID or "3f42088b4b3e2a15"
+            aeza_path_enc = urllib.parse.quote(AEZA_XHTTP_PATH, safe="")
+            aeza_link = (
+                f"vless://{client_uuid}@{AEZA_HOST}:443?encryption=none&type=xhttp&security=reality"
+                f"&sni={AEZA_SNI}&fp=firefox&pbk={aeza_pbk}&sid={aeza_sid}"
+                f"&path={aeza_path_enc}&mode=stream-one"
+            )
+            aeza_remark = "🇷🇺 🚀 RU Server2 • xHTTP Reality (РФ ➔ DE)"
+            new_lines.insert(0, f"{aeza_link}#{aeza_remark}")
+            vless_entries.insert(0, (aeza_link, aeza_remark))
+
             # Нидерландские резервные узлы (CDN xHTTP + Reality Vision) в конец списка
             nl_xhttp_link = f"vless://{client_uuid}@api.tottiemottie.biz:443?encryption=none&type=xhttp&security=tls&alpn=h2,http/1.1&fp=chrome&sni=api.tottiemottie.biz&path=%2Fapi%2Fv2%2Fmetrics&mode=packet-up"
             nl_xhttp_remark = "🇳🇱 🛡️ xHTTP • Cloudflare CDN"
@@ -1977,7 +2000,7 @@ async def proxy_subscription(token: str, request: Request = None):
                 new_lines = [f"{link}#{remark}" for link, remark in vless_entries]
 
         if wants_singbox:
-            singbox_cfg = _build_singbox_config(vless_entries)
+            singbox_cfg = _build_singbox_config(vless_entries, allow_xhttp="karing" in ua.lower())
             raw_body = json.dumps(singbox_cfg, ensure_ascii=False, indent=2).encode('utf-8')
         elif wants_clash:
             clash_cfg = _build_clash_config(vless_entries)
