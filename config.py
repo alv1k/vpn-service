@@ -89,8 +89,24 @@ RU_XUI_HOST = os.getenv("RU_XUI_HOST", "https://ru-server.tiinservice.online:205
 RU_XUI_PROXY = os.getenv("RU_XUI_PROXY", "http://127.0.0.1:10809")
 RU_XUI_USERNAME = os.getenv("RU_XUI_USERNAME", "alvik")
 RU_XUI_PASSWORD = os.getenv("RU_XUI_PASSWORD", XUI_PASSWORD)
-_RAW_RU_INBOUNDS = os.getenv("RU_ACTIVE_INBOUND_IDS", "1,2")
+_RAW_RU_INBOUNDS = os.getenv("RU_ACTIVE_INBOUND_IDS", "4")
 RU_ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_RU_INBOUNDS.split(",") if x.strip().isdigit()]
+
+# AEZA Node (RU Unlimited Entry Point) 3x-ui API (доступ через SSH-туннель aeza-xui-tunnel.service)
+AEZA_XUI_HOST = os.getenv("AEZA_XUI_HOST", "http://127.0.0.1:16547/VeEVCecDUl1ct7JxNj/")
+AEZA_XUI_USERNAME = os.getenv("AEZA_XUI_USERNAME", "tiin_sync")
+AEZA_XUI_PASSWORD = os.getenv("AEZA_XUI_PASSWORD", "")
+if not AEZA_XUI_PASSWORD:
+    try:
+        with open("/etc/aeza-xui.creds") as _f:
+            for _line in _f:
+                if _line.startswith("AEZA_XUI_PASSWORD="):
+                    AEZA_XUI_PASSWORD = _line.split("=", 1)[1].strip()
+                    break
+    except OSError:
+        pass
+_RAW_AEZA_INBOUNDS = os.getenv("AEZA_ACTIVE_INBOUND_IDS", "2")
+AEZA_ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_AEZA_INBOUNDS.split(",") if x.strip().isdigit()]
 
 # NL Server (Netherlands Exit Node) 3x-ui API
 NL_XUI_HOST = os.getenv("NL_XUI_HOST", "")
@@ -100,6 +116,13 @@ _RAW_NL_INBOUNDS = os.getenv("NL_ACTIVE_INBOUND_IDS", "8,9")
 NL_ACTIVE_INBOUND_IDS = [int(x.strip()) for x in _RAW_NL_INBOUNDS.split(",") if x.strip().isdigit()]
 NL_REALITY_PBK = os.getenv("NL_REALITY_PBK", "")
 NL_REALITY_SID = os.getenv("NL_REALITY_SID", "")
+
+# AEZA RU entry node (параметры VLESS-xHTTP+Reality инбаунда #2 для ссылок в подписках)
+AEZA_HOST = os.getenv("AEZA_HOST", "193.233.249.164")
+AEZA_SNI = os.getenv("AEZA_SNI", "www.avito.ru")
+AEZA_XHTTP_PATH = os.getenv("AEZA_XHTTP_PATH", "/sdk/v2/sync")
+AEZA_REALITY_PBK = os.getenv("AEZA_REALITY_PBK", "")
+AEZA_REALITY_SID = os.getenv("AEZA_REALITY_SID", "3f42088b4b3e2a15")
 
 # Server location (for display in client apps)
 SERVER_LOCATION = os.getenv("SERVER_LOCATION", "Germany")

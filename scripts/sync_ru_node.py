@@ -37,7 +37,7 @@ def get_direct_or_proxied_ru_client() -> XUIClient | None:
     return get_ru_xui_client()
 
 
-def sync_all_clients(dry_run: bool = False):
+def sync_all_clients(dry_run: bool = False, restart_xray: bool = False):
     logger.info("🚀 Starting full synchronization with RU Node...")
     main_xui = XUIClient(XUI_HOST, XUI_USERNAME, XUI_PASSWORD)
     ru_xui = get_direct_or_proxied_ru_client()
@@ -51,7 +51,7 @@ def sync_all_clients(dry_run: bool = False):
         return
 
     main_inbounds = main_xui.get_inbounds()
-    ru_inbounds = ru_xui.get_inbounds()
+    ru_inbounds = [i for i in ru_xui.get_inbounds() if i.get("id") in RU_ACTIVE_INBOUND_IDS]
 
     logger.info(f"Main inbounds: {len(main_inbounds)}, RU inbounds: {len(ru_inbounds)}")
 
@@ -78,20 +78,14 @@ def sync_all_clients(dry_run: bool = False):
 
     logger.info(f"Found {len(main_clients)} unique clients in Main 3x-ui")
 
-    # 2. Build map of existing RU clients across all inbounds
-    ru_clients_global = {}
-    ru_clients_by_inbound = {}
-
-    for inb in ru_inbounds:
-        ib_id = inb["id"]
-        raw_sett = inb.get("settings", "{}")
-        sett = raw_sett if isinstance(raw_sett, dict) else json_lib.loads(raw_sett)
-        inb_clients = sett.get("clients", [])
-        ru_clients_by_inbound[ib_id] = {c.get("email"): c for c in inb_clients if c.get("email")}
-        for c in inb_clients:
-            em = c.get("email")
-            if em and em not in ru_clients_global:
-                ru_clients_global[em] = c
+    # 2. Каноническое состояние клиентов RU. В 3x-ui 3.11 источник истины —
+    # нормализованные таблицы clients/client_inbounds (JSON settings инбаундов
+    # устаревает), поэтому читаем /panel/api/clients/list с полем inboundIds.
+    resp = ru_xui._request("GET", f"{ru_xui.host}/panel/api/clients/list")
+    if resp.status_code != 200 or not resp.json().get("success"):
+        logger.error(f"❌ Failed to fetch RU clients list: {resp.status_code}")
+        return
+    ru_clients_global = {c["email"]: c for c in resp.json().get("obj", []) if c.get("email")}
 
     updated_total = 0
     created_total = 0
@@ -102,19 +96,26 @@ def sync_all_clients(dry_run: bool = False):
         if em in ru_clients_global:
             rc = ru_clients_global[em]
             m_exp = mc.get("expiryTime", 0)
-            m_enable = mc.get("enable", True)
+            m_enable = bool(mc.get("enable", True))
             m_uuid = mc.get("id") or mc.get("uuid")
             m_auth = mc.get("auth") or (m_uuid.replace("-", "") if m_uuid else None)
             m_sub_id = mc.get("subId")
 
-            id_diff = bool(m_uuid and rc.get("id") != m_uuid)
-            auth_diff = bool(m_auth and (rc.get("auth") != m_auth or rc.get("password") != m_auth))
-            exp_diff = (rc.get("expiryTime") != m_exp)
-            enable_diff = (rc.get("enable") != m_enable)
-            sub_diff = bool(m_sub_id and rc.get("subId") != m_sub_id)
+            diffs = {}
+            if m_uuid and rc.get("uuid") != m_uuid:
+                diffs["uuid"] = (rc.get("uuid"), m_uuid)
+            if m_auth and (rc.get("auth") != m_auth or rc.get("password") != m_auth):
+                diffs["auth"] = (rc.get("auth"), m_auth)
+            if rc.get("expiryTime") != m_exp:
+                diffs["expiryTime"] = (rc.get("expiryTime"), m_exp)
+            if bool(rc.get("enable")) != m_enable:
+                diffs["enable"] = (rc.get("enable"), m_enable)
+            if m_sub_id and rc.get("subId") != m_sub_id:
+                diffs["subId"] = (rc.get("subId"), m_sub_id)
 
-            if id_diff or auth_diff or exp_diff or enable_diff or sub_diff:
-                logger.info(f"🔄 [DIFF] Client {em}: syncing UUID/subId/auth/status")
+            if diffs:
+                logger.info(f"🔄 [DIFF] Client {em}: " + ", ".join(
+                    f"{k}: {old!r} -> {new!r}" for k, (old, new) in diffs.items()))
                 if not dry_run:
                     update_payload = {
                         "email": em,
@@ -138,12 +139,14 @@ def sync_all_clients(dry_run: bool = False):
                             headers={"Content-Type": "application/json"}
                         )
                         if resp.status_code == 200 and resp.json().get("success"):
-                            rc["id"] = m_uuid
+                            rc["uuid"] = m_uuid
                             rc["subId"] = m_sub_id
                             rc["auth"] = m_auth
                             rc["password"] = m_auth
                             rc["expiryTime"] = m_exp
                             rc["enable"] = m_enable
+                        else:
+                            logger.warning(f"Failed to update client {em}: {resp.status_code} {resp.text[:200]}")
                     except Exception as e:
                         logger.warning(f"Failed to update client {em}: {e}")
                 updated_total += 1
@@ -153,71 +156,74 @@ def sync_all_clients(dry_run: bool = False):
     # 4. Synchronize inbound attachments on RU
     for inb in ru_inbounds:
         ib_id = inb["id"]
-        protocol = inb.get("protocol", "")
-        raw_stream = inb.get("streamSettings", "{}")
-        stream_sett = raw_stream if isinstance(raw_stream, dict) else json_lib.loads(raw_stream)
-        network = stream_sett.get("network", "tcp")
-        is_vision = (protocol == "vless" and network in ("tcp", "raw"))
-
-        inb_clients = ru_clients_by_inbound.get(ib_id, {})
 
         for em, mc in main_clients.items():
-            if em not in inb_clients:
-                m_uuid = mc.get("id") or mc.get("uuid")
-                m_auth = mc.get("auth") or (m_uuid.replace("-", "") if m_uuid else None)
-                m_sub_id = mc.get("subId")
-                logger.info(f"➕ [MISSING] Inbound {ib_id} Client {em} missing. Adding...")
+            rc = ru_clients_global.get(em)
+            if rc and ib_id in (rc.get("inboundIds") or []):
+                continue
+            m_uuid = mc.get("id") or mc.get("uuid")
+            m_auth = mc.get("auth") or (m_uuid.replace("-", "") if m_uuid else None)
+            m_sub_id = mc.get("subId")
+            logger.info(f"➕ [MISSING] Inbound {ib_id} Client {em} missing. Adding...")
 
-                if not dry_run:
-                    if em in ru_clients_global:
-                        # Client exists in 3x-ui clients table, attach to inbound
-                        try:
-                            resp = ru_xui._request(
-                                "POST",
-                                f"{ru_xui.host}/panel/api/clients/{em}/attach",
-                                json={"inboundIds": [ib_id]},
-                                headers={"Content-Type": "application/json"}
-                            )
-                            if resp.status_code == 200 and resp.json().get("success"):
-                                inb_clients[em] = dict(mc)
-                        except Exception as e:
-                            logger.warning(f"Failed to attach client {em} to inbound {ib_id}: {e}")
-                    else:
-                        # Client does not exist globally, create via clients/add
-                        new_cl = {
-                            "id": m_uuid,
-                            "email": em,
-                            "flow": "xtls-rprx-vision" if is_vision else "",
-                            "limitIp": mc.get("limitIp", 10),
-                            "totalGB": mc.get("totalGB", 0),
-                            "expiryTime": mc.get("expiryTime", 0),
-                            "enable": mc.get("enable", True),
-                            "tgId": mc.get("tgId", 0),
-                            "subId": m_sub_id or "",
-                            "reset": mc.get("reset", 0),
-                            "auth": m_auth,
-                            "password": m_auth,
-                        }
-                        try:
-                            resp = ru_xui._request(
-                                "POST",
-                                f"{ru_xui.host}/panel/api/clients/add",
-                                json={"client": new_cl, "inboundIds": [ib_id]},
-                                headers={"Content-Type": "application/json"}
-                            )
-                            if resp.status_code == 200 and resp.json().get("success"):
-                                ru_clients_global[em] = new_cl
-                                inb_clients[em] = new_cl
-                        except Exception as e:
-                            logger.warning(f"Failed to create client {em} on inbound {ib_id}: {e}")
+            if not dry_run:
+                if rc:
+                    # Client exists in 3x-ui clients table, attach to inbound
+                    try:
+                        resp = ru_xui._request(
+                            "POST",
+                            f"{ru_xui.host}/panel/api/clients/{em}/attach",
+                            json={"inboundIds": [ib_id]},
+                            headers={"Content-Type": "application/json"}
+                        )
+                        if resp.status_code == 200 and resp.json().get("success"):
+                            rc.setdefault("inboundIds", []).append(ib_id)
+                        else:
+                            logger.warning(f"Failed to attach client {em} to inbound {ib_id}: {resp.status_code} {resp.text[:200]}")
+                    except Exception as e:
+                        logger.warning(f"Failed to attach client {em} to inbound {ib_id}: {e}")
+                else:
+                    # Client does not exist globally, create via clients/add
+                    new_cl = {
+                        "id": m_uuid,
+                        "email": em,
+                        "flow": "",
+                        "limitIp": mc.get("limitIp", 10),
+                        "totalGB": mc.get("totalGB", 0),
+                        "expiryTime": mc.get("expiryTime", 0),
+                        "enable": mc.get("enable", True),
+                        "tgId": mc.get("tgId", 0),
+                        "subId": m_sub_id or "",
+                        "reset": mc.get("reset", 0),
+                        "auth": m_auth,
+                        "password": m_auth,
+                    }
+                    try:
+                        resp = ru_xui._request(
+                            "POST",
+                            f"{ru_xui.host}/panel/api/clients/add",
+                            json={"client": new_cl, "inboundIds": [ib_id]},
+                            headers={"Content-Type": "application/json"}
+                        )
+                        if resp.status_code == 200 and resp.json().get("success"):
+                            new_cl["uuid"] = new_cl.pop("id")
+                            new_cl["inboundIds"] = [ib_id]
+                            ru_clients_global[em] = new_cl
+                        else:
+                            logger.warning(f"Failed to create client {em} on inbound {ib_id}: {resp.status_code} {resp.text[:200]}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create client {em} on inbound {ib_id}: {e}")
                 created_total += 1
 
     if (created_total > 0 or updated_total > 0) and not dry_run:
-        try:
-            ru_xui._request("POST", f"{ru_xui.host}/panel/api/server/restartXrayService")
-            logger.info("🔄 [RU-Node] Relaunched Xray on RU node to apply updated client tables")
-        except Exception as e:
-            logger.info(f"🔄 [RU-Node] Relaunched Xray on RU node (socket closed as expected during Xray core reload: {e})")
+        if restart_xray:
+            try:
+                ru_xui._request("POST", f"{ru_xui.host}/panel/api/server/restartXrayService")
+                logger.info("🔄 [RU-Node] Relaunched Xray on RU node (--restart-xray)")
+            except Exception as e:
+                logger.info(f"🔄 [RU-Node] Relaunched Xray on RU node (socket closed as expected during Xray core reload: {e})")
+        else:
+            logger.info("ℹ️ [RU-Node] Changes applied via 3x-ui API (hot-apply), Xray restart skipped")
 
     try:
         from scripts.sync_family_routing import sync_ru_portal_routing
@@ -233,5 +239,7 @@ def sync_all_clients(dry_run: bool = False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sync 3x-ui clients to RU secondary node")
     parser.add_argument("--dry-run", action="store_true", help="Only check differences without making changes")
+    parser.add_argument("--restart-xray", action="store_true",
+                        help="Force Xray restart after changes (NOT needed for client add/update — 3.11 hot-applies via API; drops all live connections)")
     args = parser.parse_args()
-    sync_all_clients(dry_run=args.dry_run)
+    sync_all_clients(dry_run=args.dry_run, restart_xray=args.restart_xray)

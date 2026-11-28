@@ -235,7 +235,7 @@ async def process_successful_stars_payment(update, context):
     try:
         from bot_xui.utils import XUIClient
         from bot_xui.vpn_factory import create_xui_multi_config
-        from bot_xui.multi_node import sync_client_to_ru_node
+        from bot_xui.multi_node import sync_client_to_ru_nodes
         from bot_xui.awg_manager import get_or_create_3xui_awg_client
         from api.db import sync_expiry
 
@@ -253,7 +253,7 @@ async def process_successful_stars_payment(update, context):
 
         # Синхронизация на RU ноду Selectel SPB
         try:
-            sync_client_to_ru_node(
+            sync_client_to_ru_nodes(
                 email=client_name,
                 expiry_ms=sub_until_ms,
                 enable=True,

@@ -258,8 +258,8 @@ def verify_yookassa_ip(request: Request):
 def deactivate_xui_client(client_name: str) -> bool:
     """Деактивирует клиента в 3x-ui по email (client_name) на основном сервере и на RU-ноде."""
     try:
-        from bot_xui.multi_node import deactivate_ru_client
-        deactivate_ru_client(client_name)
+        from bot_xui.multi_node import deactivate_ru_nodes
+        deactivate_ru_nodes(client_name)
     except Exception as e:
         logger.warning(f"Failed to deactivate client on RU node: {e}")
 
@@ -670,8 +670,8 @@ async def process_successful_payment(payment_id: str, payment_data: dict, vpn_ty
 
                     # Sync to RU Node as well
                     try:
-                        from bot_xui.multi_node import sync_client_to_ru_node
-                        sync_client_to_ru_node(
+                        from bot_xui.multi_node import sync_client_to_ru_nodes
+                        sync_client_to_ru_nodes(
                             email=email,
                             expiry_ms=sub_until_ms,
                             enable=True,

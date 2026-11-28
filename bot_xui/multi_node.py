@@ -16,6 +16,10 @@ from config import (
     RU_XUI_PASSWORD,
     RU_ACTIVE_INBOUND_IDS,
     RU_XUI_PROXY,
+    AEZA_XUI_HOST,
+    AEZA_XUI_USERNAME,
+    AEZA_XUI_PASSWORD,
+    AEZA_ACTIVE_INBOUND_IDS,
     NL_XUI_HOST,
     NL_XUI_USERNAME,
     NL_XUI_PASSWORD,
@@ -27,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _ru_client_instance: XUIClient | None = None
 _nl_client_instance: XUIClient | None = None
+_aeza_client_instance: XUIClient | None = None
 
 # NL inbound flow mapping: id=8 → Vision, id=9 → xHTTP (no flow)
 NL_INBOUND_FLOW = {8: "xtls-rprx-vision", 9: ""}
@@ -45,6 +50,21 @@ def get_ru_xui_client() -> XUIClient | None:
             proxy=RU_XUI_PROXY,
         )
     return _ru_client_instance
+
+
+def get_aeza_xui_client() -> XUIClient | None:
+    """Возвращает клиент для AEZA 3x-ui (через SSH-туннель aeza-xui-tunnel.service)."""
+    global _aeza_client_instance
+    if not AEZA_XUI_HOST:
+        return None
+    if _aeza_client_instance is None:
+        _aeza_client_instance = XUIClient(
+            AEZA_XUI_HOST,
+            AEZA_XUI_USERNAME,
+            AEZA_XUI_PASSWORD,
+            proxy=None,
+        )
+    return _aeza_client_instance
 
 
 def get_nl_xui_client() -> XUIClient | None:
@@ -153,12 +173,7 @@ def sync_client_to_ru_node(
             resp = ru_xui._request("POST", url, json=payload, headers={"Content-Type": "application/json"})
             result = resp.json()
             if result.get("success"):
-                logger.info(f"✅ [RU-Node] Successfully created client {email} on RU node")
-                try:
-                    ru_xui._request("POST", f"{ru_xui.host}/panel/api/server/restartXrayService")
-                    logger.info("🔄 [RU-Node] Relaunched Xray on RU node to apply new client")
-                except Exception as restart_err:
-                    logger.info(f"🔄 [RU-Node] Relaunched Xray on RU node (socket closed as expected during Xray core reload: {restart_err})")
+                logger.info(f"✅ [RU-Node] Successfully created client {email} on RU node (hot-applied via API, no Xray restart)")
                 return True
             else:
                 logger.warning(f"⚠️ [RU-Node] Failed to create client {email} on RU node: {result}")
@@ -166,6 +181,101 @@ def sync_client_to_ru_node(
 
     except Exception as e:
         logger.error(f"❌ [RU-Node] Exception syncing client {email} to RU node: {e}", exc_info=True)
+        return False
+
+
+def sync_client_to_aeza_node(
+    email: str,
+    expiry_ms: int | None = None,
+    enable: bool | None = None,
+    uuid_str: str | None = None,
+    auth: str | None = None,
+    sub_id: str | None = None,
+    tg_id: int = 0,
+    limit_ip: int = 10,
+    total_gb: int = 0,
+) -> bool:
+    """
+    Синхронизирует клиента с AEZA-нодой (основная RU-точка входа, безлимит).
+    Инбаунд #2 — VLESS-xHTTP+Reality, flow не используется.
+    """
+    if not email or not AEZA_XUI_HOST:
+        return False
+
+    try:
+        aeza_xui = get_aeza_xui_client()
+        if not aeza_xui:
+            return False
+
+        existing = aeza_xui.get_client_by_email(email)
+
+        if existing:
+            client = existing.get("client", {})
+            current_expiry = client.get("expiryTime", 0)
+            new_expiry = expiry_ms if expiry_ms is not None else current_expiry
+            new_enable = enable if enable is not None else client.get("enable", True)
+
+            clean_uuid = str(uuid_str).replace("-", "") if uuid_str and len(str(uuid_str)) > 10 else None
+            target_auth = auth or client.get("auth") or clean_uuid
+
+            payload = {
+                "email": email,
+                "totalGB": total_gb if total_gb else client.get("totalGB", 0),
+                "expiryTime": new_expiry,
+                "tgId": tg_id or client.get("tgId", 0),
+                "enable": bool(new_enable),
+                "limitIp": limit_ip if limit_ip else client.get("limitIp", 0),
+                "reset": client.get("reset", 0),
+            }
+            if target_auth:
+                payload["auth"] = str(target_auth)
+                payload["password"] = str(target_auth)
+
+            url = f"{aeza_xui.host}/panel/api/clients/update/{email}"
+            resp = aeza_xui._request("POST", url, json=payload, headers={"Content-Type": "application/json"})
+            result = resp.json()
+            if result.get("success"):
+                logger.info(f"✅ [AEZA-Node] Updated client {email} (expiry={new_expiry}, enable={new_enable})")
+                return True
+            logger.warning(f"⚠️ [AEZA-Node] Failed to update client {email}: {result}")
+            return False
+
+        logger.info(f"ℹ️ [AEZA-Node] Client {email} not found. Creating...")
+        clean_uuid = str(uuid_str).replace("-", "") if uuid_str and len(str(uuid_str)) > 10 else None
+        target_auth = auth or clean_uuid
+        client_payload = {
+            "email": email,
+            "limitIp": limit_ip,
+            "totalGB": total_gb,
+            "expiryTime": expiry_ms if expiry_ms is not None else 0,
+            "enable": True if enable is None else bool(enable),
+            "tgId": tg_id,
+            "reset": 0,
+        }
+        if uuid_str and len(str(uuid_str)) > 10:
+            client_payload["id"] = str(uuid_str)
+        if target_auth:
+            client_payload["auth"] = str(target_auth)
+            client_payload["password"] = str(target_auth)
+        if sub_id:
+            client_payload["subId"] = str(sub_id)
+
+        payload = {
+            "client": client_payload,
+            "inboundIds": list(AEZA_ACTIVE_INBOUND_IDS),
+        }
+
+        url = f"{aeza_xui.host}/panel/api/clients/add"
+        resp = aeza_xui._request("POST", url, json=payload, headers={"Content-Type": "application/json"})
+        result = resp.json()
+        if result.get("success"):
+            logger.info(f"✅ [AEZA-Node] Created client {email} on AEZA node (hot-applied via API, no Xray restart)")
+            return True
+        logger.warning(f"⚠️ [AEZA-Node] Failed to create client {email}: {result}")
+        return False
+
+    except Exception as e:
+        logger.error(f"❌ [AEZA-Node] Exception syncing client {email} to AEZA node: {e}", exc_info=True)
         return False
 
 
@@ -272,9 +382,42 @@ def deactivate_ru_client(email: str) -> bool:
     return sync_client_to_ru_node(email=email, enable=False)
 
 
+def sync_client_to_ru_nodes(email: str, **kwargs) -> bool:
+    """Синхронизирует клиента сразу на обе RU-точки входа: Selectel (RU-нода) и AEZA (безлимит)."""
+    ru_ok = sync_client_to_ru_node(email=email, **kwargs)
+    aeza_ok = sync_client_to_aeza_node(email=email, **kwargs)
+    return ru_ok or aeza_ok
+
+
+def deactivate_ru_nodes(email: str) -> bool:
+    """Деактивирует клиента на обеих RU-точках входа (Selectel + AEZA)."""
+    ru_ok = deactivate_ru_client(email)
+    aeza_ok = deactivate_aeza_client(email)
+    return ru_ok or aeza_ok
+
+
 def deactivate_nl_client(email: str) -> bool:
     """Деактивирует клиента (enable=False) на NL-ноде."""
     return sync_client_to_nl_node(email=email, enable=False)
+
+
+def deactivate_aeza_client(email: str) -> bool:
+    """Деактивирует клиента (enable=False) на AEZA-ноде."""
+    return sync_client_to_aeza_node(email=email, enable=False)
+
+
+def delete_aeza_client(email: str) -> bool:
+    """Удаляет клиента из AEZA 3x-ui."""
+    if not email or not AEZA_XUI_HOST:
+        return False
+    try:
+        aeza_xui = get_aeza_xui_client()
+        if not aeza_xui:
+            return False
+        return aeza_xui.delete_client(inbound_id=0, client_email=email)
+    except Exception as e:
+        logger.error(f"❌ [AEZA-Node] Exception deleting client {email} from AEZA node: {e}")
+        return False
 
 
 def delete_ru_client(email: str) -> bool:
